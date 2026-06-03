@@ -395,3 +395,254 @@ def duplicate_job(
         raise HTTPException(status_code=500, detail="Failed to duplicate job")
 
     return {"job_id": new_res.data[0]["id"]}
+
+
+# ── Section-level regeneration ─────────────────────────────────────────────────
+
+class RerunSectionRequest(BaseModel):
+    row_index: int
+    section_name: str
+
+
+@router.post("/{job_id}/rerun-section")
+def rerun_section(
+    job_id: str,
+    body: RerunSectionRequest,
+    background_tasks: BackgroundTasks,
+    user=Depends(get_current_user),
+    sb=Depends(get_supabase),
+):
+    """Regenerate a single page-copy section for one row without re-running the full pipeline."""
+    res = sb.table("jobs").select("*").eq("id", job_id).eq("user_id", user.id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = res.data[0]
+    results = job.get("results") or []
+    row_index = body.row_index
+
+    if row_index < 0 or row_index >= len(results):
+        raise HTTPException(status_code=400, detail="Row index out of range")
+
+    row_result = results[row_index]
+    section_results = row_result.get("section_results") or {}
+
+    if not section_results:
+        raise HTTPException(status_code=400, detail="Row has no section_results — page copy was not generated")
+
+    if body.section_name not in section_results:
+        raise HTTPException(status_code=400, detail=f"Section '{body.section_name}' not found in row results")
+
+    sb.table("jobs").update({
+        "current_step": f"Regenerating section '{body.section_name}' for row {row_index + 1}...",
+        "updated_at": "now()",
+    }).eq("id", job_id).execute()
+
+    background_tasks.add_task(
+        _rerun_single_section,
+        job_id=job_id,
+        row_index=row_index,
+        section_name=body.section_name,
+        job=job,
+        user_id=user.id,
+        sb=sb,
+    )
+    return {"status": "rerunning"}
+
+
+def _rerun_single_section(
+    job_id: str,
+    row_index: int,
+    section_name: str,
+    job: dict,
+    user_id: str,
+    sb,
+):
+    """
+    Background task: regenerate one page-copy section for one row.
+
+    Uses stored primary_keyword, h1, and section_results for context.
+    Re-fetches SERP (one DFS call) for fresh PAA + AI Overview.
+    Skips competitor scraping — too slow for a spot fix.
+    Rebuilds _full_page, _word_count, and docx after updating the section.
+    """
+    import base64
+    import traceback
+    from utils.copy_gen import _build_section_prompt, PROVIDER_FN, sanitise
+    from utils.templates import get_template
+    from utils.dfs import get_serp_data
+    from routers.all_in_one import _build_combined_docx
+
+    settings = job.get("settings") or {}
+    rows = job.get("rows") or []
+    results = list(job.get("results") or [])
+
+    row_result = results[row_index]
+    stored_row = rows[row_index] if row_index < len(rows) else {}
+
+    try:
+        # ── 1. Credentials ─────────────────────────────────────────────────────
+        api_key = settings.get("api_key", "")
+        dfs_password = settings.get("dfs_password", "")
+        if not api_key or not dfs_password:
+            try:
+                creds = sb.table("user_settings").select("provider_settings").eq("user_id", user_id).execute()
+                if creds.data:
+                    ps = creds.data[0].get("provider_settings") or {}
+                    if not api_key:
+                        api_key = ps.get("api_key", "")
+                    if not dfs_password:
+                        dfs_password = ps.get("dfs_password", "")
+            except Exception:
+                pass
+
+        dfs_login = settings.get("dfs_login", "")
+        provider = settings.get("provider", "Claude")
+        brand_name = settings.get("brand_name", "")
+        business_type = settings.get("business_type", "general")
+        page_type = stored_row.get("page_type") or settings.get("page_type", "service")
+        location_code = int(settings.get("location_code", 2840))
+
+        # ── 2. Brand profile → append to client_brief ──────────────────────────
+        client_brief = settings.get("client_brief", "") or ""
+        brand_profile_id = settings.get("brand_profile_id", "")
+        if brand_profile_id:
+            try:
+                bp = sb.table("brand_profiles").select("data").eq("id", brand_profile_id).eq("user_id", user_id).execute()
+                if bp.data:
+                    bp_data = bp.data[0].get("data") or {}
+                    parts = []
+                    if bp_data.get("tone_of_voice"):
+                        parts.append("Tone of voice: " + bp_data["tone_of_voice"])
+                    if bp_data.get("key_messages"):
+                        parts.append("Key messages: " + bp_data["key_messages"])
+                    if bp_data.get("words_to_avoid"):
+                        parts.append("Words to avoid: " + bp_data["words_to_avoid"])
+                    if bp_data.get("guidelines"):
+                        parts.append(bp_data["guidelines"])
+                    if parts:
+                        client_brief = (client_brief + "\n\n" + "\n".join(parts)).strip()
+            except Exception:
+                pass
+
+        # ── 3. Template and section definition ────────────────────────────────
+        template_key = stored_row.get("template_key") or settings.get("template_key", "service_page")
+        try:
+            template = get_template(template_key)
+        except ValueError:
+            template = get_template("service_page")
+
+        section_def = next((s for s in template["sections"] if s["name"] == section_name), None)
+        if not section_def:
+            sb.table("jobs").update({
+                "current_step": f"Section '{section_name}' not found in template '{template_key}'.",
+                "updated_at": "now()",
+            }).eq("id", job_id).execute()
+            return
+
+        # ── 4. Context from stored result ─────────────────────────────────────
+        primary_keyword = row_result.get("primary_keyword") or ""
+        h1 = row_result.get("h1") or primary_keyword
+        section_results = dict(row_result.get("section_results") or {})
+
+        # previous_section_text: all sections before target in template order
+        section_order = [s["name"] for s in template["sections"]]
+        target_pos = section_order.index(section_name) if section_name in section_order else len(section_order)
+        previous_section_text = "\n\n".join(
+            section_results.get(s, "") for s in section_order[:target_pos] if section_results.get(s)
+        )[-600:]  # cap so prompt stays lean
+
+        # ── 5. Re-fetch SERP for fresh PAA + AI Overview ───────────────────────
+        paa_questions = []
+        ai_overview = ""
+        if primary_keyword and dfs_login and dfs_password:
+            try:
+                serp = get_serp_data(dfs_login, dfs_password, primary_keyword, location_code)
+                paa_questions = serp.get("paa_items") or serp.get("paa") or []
+                ai_overview = serp.get("ai_overview_raw") or serp.get("ai_overview") or ""
+            except Exception:
+                pass  # degrade gracefully
+
+        # ── 6. Build prompt and call AI ────────────────────────────────────────
+        fn = PROVIDER_FN.get(provider)
+        if not fn:
+            raise ValueError(f"Unknown provider: {provider}")
+
+        prompt = _build_section_prompt(
+            section=section_def,
+            primary_keyword=primary_keyword,
+            supporting_keyword=primary_keyword,   # simplified — original assignment not stored
+            lsi_keywords=[],
+            business_type=business_type,
+            brand_name=brand_name,
+            h1=h1,
+            page_type=page_type,
+            paa_questions=paa_questions if section_name == "faq" else [],
+            competitor_excerpts=[],               # not stored — skipped for spot regen
+            client_brief=client_brief,
+            previous_section_text=previous_section_text,
+            client_existing_content="",
+            ai_overview=ai_overview,
+        )
+
+        raw = fn(api_key, prompt)
+        new_text = sanitise(raw, brand_name)
+
+        # ── 7. Patch section, rebuild full_page + word_count ───────────────────
+        section_results[section_name] = new_text
+
+        full_page = "\n\n".join(
+            section_results.get(s, "") for s in section_order if section_results.get(s)
+        )
+        word_count = len(full_page.split())
+
+        # ── 8. Regenerate docx ─────────────────────────────────────────────────
+        docx_b64 = row_result.get("docx_b64")  # keep old if rebuild fails
+        try:
+            docx_bytes = _build_combined_docx(
+                url=row_result.get("url", ""),
+                h1=h1,
+                primary_keyword=primary_keyword,
+                page_type=page_type,
+                template=template,
+                generated_title=row_result.get("generated_title"),
+                generated_description=row_result.get("generated_description"),
+                optimised_h1=row_result.get("optimised_h1"),
+                faq_items=row_result.get("faq_items") or [],
+                faq_schema=row_result.get("faq_schema"),
+                section_results=section_results,
+                word_count=word_count,
+                competitor_urls=row_result.get("competitor_urls") or [],
+                gen_meta=bool(row_result.get("generated_title")),
+                gen_faqs=bool(row_result.get("faq_items")),
+                gen_page_copy=True,
+            )
+            docx_b64 = base64.b64encode(docx_bytes).decode("utf-8")
+        except Exception:
+            pass  # keep old docx
+
+        # ── 9. Re-fetch results to avoid race with other reruns, then patch ────
+        fresh = sb.table("jobs").select("results").eq("id", job_id).execute()
+        current_results = list((fresh.data[0].get("results") or []) if fresh.data else results)
+
+        while len(current_results) <= row_index:
+            current_results.append({})
+
+        current_results[row_index] = {
+            **current_results[row_index],
+            "section_results": section_results,
+            "word_count": word_count,
+            "docx_b64": docx_b64,
+        }
+
+        sb.table("jobs").update({
+            "results": current_results,
+            "current_step": f"Section '{section_name}' regenerated for row {row_index + 1}.",
+            "updated_at": "now()",
+        }).eq("id", job_id).execute()
+
+    except Exception:
+        sb.table("jobs").update({
+            "current_step": f"Section rerun failed (row {row_index + 1}, '{section_name}'): {traceback.format_exc(limit=1)[:140]}",
+            "updated_at": "now()",
+        }).eq("id", job_id).execute()
