@@ -53,6 +53,9 @@ BUSINESS_TYPE_CONTEXT = {
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
 
+_BIZ_CONTEXT = BUSINESS_TYPE_CONTEXT
+
+
 def _build_section_prompt(
     section: dict,
     primary_keyword: str,
@@ -148,55 +151,56 @@ Hard rules for all output:
 
 # ── Provider functions ────────────────────────────────────────────────────────
 
-def _call_claude(api_key: str, prompt: str) -> str:
+def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1500,
+        model=model or "claude-haiku-4-5-20251001",
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
     return msg.content[0].text.strip()
 
 
-def _call_openai(api_key: str, prompt: str) -> str:
+def _call_openai(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=model or "gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500,
+        max_tokens=max_tokens,
     )
     return resp.choices[0].message.content.strip()
 
 
-def _call_gemini(api_key: str, prompt: str) -> str:
+def _call_gemini(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     from google import genai
     client = genai.Client(api_key=api_key)
     resp = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model=model or "gemini-2.0-flash",
         contents=prompt,
     )
     return resp.text.strip()
 
 
-def _call_mistral(api_key: str, prompt: str) -> str:
+def _call_mistral(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     from mistralai import Mistral
     client = Mistral(api_key=api_key)
     resp = client.chat.complete(
-        model="mistral-small-latest",
+        model=model or "mistral-small-latest",
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
     return resp.choices[0].message.content.strip()
 
 
-def _call_groq(api_key: str, prompt: str) -> str:
+def _call_groq(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     from groq import Groq
     client = Groq(api_key=api_key)
     resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=model or "llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1500,
+        max_tokens=max_tokens,
     )
     return resp.choices[0].message.content.strip()
 
@@ -205,8 +209,22 @@ PROVIDER_FN = {
     "Claude": _call_claude,
     "OpenAI": _call_openai,
     "Gemini": _call_gemini,
+    "Gemini (free)": _call_gemini,
     "Mistral": _call_mistral,
+    "Mistral (free tier)": _call_mistral,
     "Groq": _call_groq,
+    "Groq (free tier)": _call_groq,
+}
+
+DEFAULT_MODELS = {
+    "Claude": "claude-haiku-4-5-20251001",
+    "OpenAI": "gpt-4o-mini",
+    "Gemini": "gemini-2.0-flash",
+    "Gemini (free)": "gemini-2.0-flash",
+    "Mistral": "mistral-small-latest",
+    "Mistral (free tier)": "mistral-small-latest",
+    "Groq": "llama-3.3-70b-versatile",
+    "Groq (free tier)": "llama-3.3-70b-versatile",
 }
 
 PROVIDER_DELAY = {
@@ -301,6 +319,62 @@ def generate_page(
 
 # ── FAQ generation (ported from faq-saas-backend) ──────────────────────────
 
+def _build_faq_prompt(
+    keyword: str,
+    page_type: str,
+    brand_name: str,
+    business_type: str,
+    h1: str,
+    ai_overview_sections: list,
+    ai_overview_raw: str,
+    paa_items: list,
+    num_faqs: int,
+    forbidden_phrases: str,
+    page_context: str,
+) -> str:
+    paa_lines = []
+    for item in paa_items[:num_faqs + 3]:
+        question = item.get("question", "") if isinstance(item, dict) else str(item)
+        if question:
+            paa_lines.append(f"- {question}")
+
+    overview = ai_overview_raw or "\n".join(
+        str(section.get("content") or section.get("title") or "")
+        for section in ai_overview_sections
+        if isinstance(section, dict)
+    )
+
+    return f"""Generate exactly {num_faqs} useful FAQs for this page.
+
+Target keyword: {keyword}
+Page type: {page_type}
+Business type: {business_type}
+Brand name: {brand_name or "N/A"}
+Page H1: {h1 or "Not provided"}
+Forbidden phrases: {forbidden_phrases or "None"}
+Page context: {page_context or "Not available"}
+AI Overview: {overview or "Not available"}
+People Also Ask:
+{chr(10).join(paa_lines) or "Not available"}
+
+Rules:
+- Questions and answers must be specific to this page.
+- Do not invent pricing, availability, shipping, returns, guarantees, or other unsupported claims.
+- Never use forbidden phrases or em dashes.
+- Keep each answer concise and direct.
+- Return only a JSON array of objects with question, answer, and source keys.
+"""
+
+
+def _parse_faq_json(raw: str) -> list:
+    raw = re.sub(r"^```(?:json)?\s*", "", (raw or "").strip())
+    raw = re.sub(r"\s*```\s*$", "", raw).strip()
+    result = json.loads(raw)
+    if not isinstance(result, list):
+        raise ValueError("FAQ response must be a JSON array")
+    return result
+
+
 def generate_faq(
     provider: str,
     api_key: str,
@@ -325,13 +399,13 @@ def generate_faq(
     source: "ai_overview" | "paa" | "generated"
     Raises on API failure so callers can handle and log errors.
     """
-    fn = _PROVIDER_FN.get(provider)
+    fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
 
     resolved_model = model or DEFAULT_MODELS.get(provider)
 
-    prompt = _build_prompt(
+    prompt = _build_faq_prompt(
         keyword=keyword,
         page_type=page_type,
         brand_name=brand_name,
@@ -343,8 +417,6 @@ def generate_faq(
         num_faqs=num_faqs,
         forbidden_phrases=forbidden_phrases,
         page_context=page_context,
-        used_question_patterns=used_question_patterns,
-        brand_profile=brand_profile,
     )
 
     raw = fn(api_key, prompt, model=resolved_model)
@@ -518,7 +590,7 @@ def generate_faq_batch(
         prompt_sent: full prompt string sent to the AI
         page_debug_prompts: dict keyed by 0-based index -> per-page context summary for debug
     """
-    fn = _PROVIDER_FN.get(provider)
+    fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -602,7 +674,38 @@ def generate_faq_batch(
 
 
 def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
-    fn = PROVIDERS.get(provider)
+    fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
-    return fn(api_key, **kwargs)
+
+    prompt = f"""Write SEO metadata for this page.
+
+URL: {kwargs.get("url", "")}
+Target keyword: {kwargs.get("keyword", "")}
+Page type: {kwargs.get("page_type", "general")}
+Business type: {kwargs.get("business_type", "general")}
+Brand name: {kwargs.get("brand_name", "") or "N/A"}
+Current H1: {kwargs.get("h1", "") or "Not provided"}
+Forbidden phrases: {kwargs.get("forbidden_phrases", "") or "None"}
+Additional context: {kwargs.get("context", "") or "None"}
+
+Rules:
+- Title maximum 60 characters.
+- Meta description maximum 155 characters.
+- Include the target keyword naturally.
+- Never use forbidden phrases or em dashes.
+- Return only a JSON object with keys: title, description, h1_optimised.
+"""
+    raw = fn(api_key, prompt, max_tokens=512, model=DEFAULT_MODELS.get(provider))
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```\s*$", "", raw).strip()
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError("Meta response must be a JSON object")
+
+    brand_name = kwargs.get("brand_name", "")
+    return {
+        "title": sanitise(result.get("title", ""), brand_name),
+        "description": sanitise(result.get("description", ""), brand_name),
+        "h1_optimised": sanitise(result.get("h1_optimised", ""), brand_name),
+    }

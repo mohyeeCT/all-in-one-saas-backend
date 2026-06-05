@@ -333,14 +333,15 @@ def _process_single_row(
             faq_items = generate_faq(
                 provider=provider,
                 api_key=api_key,
-                url=url,
                 keyword=primary_keyword,
                 page_type=page_type,
                 brand_name=brand_name if include_brand else "",
                 business_type=business_type,
+                h1=h1,
                 num_faqs=num_faqs,
-                paa_questions=paa_for_faq,
-                ai_overview_content=ai_ov_for_faq,
+                paa_items=paa_for_faq,
+                ai_overview_sections=[],
+                ai_overview_raw=ai_ov_for_faq,
                 forbidden_phrases=forbidden_phrases,
                 page_context=page_context,
             )
