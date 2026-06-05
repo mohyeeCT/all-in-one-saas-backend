@@ -16,6 +16,10 @@ def _post(endpoint: str, payload: list, login: str, password: str) -> dict:
     data = resp.json()
     if data.get("status_code") != 20000:
         raise RuntimeError(f"DFS error {data.get('status_code')}: {data.get('status_message')}")
+    for task in data.get("tasks") or []:
+        task_status = task.get("status_code")
+        if task_status is not None and task_status != 20000:
+            raise RuntimeError(f"DFS error {task_status}: {task.get('status_message')}")
     return data
 
 
@@ -66,10 +70,7 @@ def get_ranked_keywords_for_url(url: str, login: str, password: str, location_co
             relative_url
         ]
     }]
-    try:
-        data = _post("dataforseo_labs/google/ranked_keywords/live", payload, login, password)
-    except Exception:
-        return []
+    data = _post("dataforseo_labs/google/ranked_keywords/live", payload, login, password)
 
     results = []
     for task in data.get("tasks", []):
@@ -104,10 +105,7 @@ def get_keyword_ideas(seed_keyword: str, login: str, password: str, location_cod
         "language_code": "en",
         "limit": limit,
     }]
-    try:
-        data = _post("dataforseo_labs/google/keyword_ideas/live", payload, login, password)
-    except Exception:
-        return []
+    data = _post("dataforseo_labs/google/keyword_ideas/live", payload, login, password)
 
     results = []
     for task in data.get("tasks", []):
@@ -146,10 +144,7 @@ def get_serp_content(keyword: str, login: str, password: str, location_code: int
         "asynchronous_ai_overview": True,
     }]
 
-    try:
-        data = _post("serp/google/organic/live/advanced", payload, login, password)
-    except Exception as e:
-        return {"organic": [], "paa": [], "ai_overview": ""}
+    data = _post("serp/google/organic/live/advanced", payload, login, password)
 
     organic = []
     paa = []
