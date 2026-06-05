@@ -558,10 +558,16 @@ def _rerun_single_section(
         if primary_keyword and dfs_login and dfs_password:
             try:
                 serp = get_serp_data(dfs_login, dfs_password, primary_keyword, location_code)
+                if serp.get("error"):
+                    _update_job(sb, job_id, {
+                        "current_step": "DataForSEO SERP refresh failed: " + str(serp["error"])[:120]
+                    })
                 paa_questions = serp.get("paa_items") or serp.get("paa") or []
                 ai_overview = serp.get("ai_overview_raw") or serp.get("ai_overview") or ""
-            except Exception:
-                pass  # degrade gracefully
+            except Exception as e:
+                _update_job(sb, job_id, {
+                    "current_step": "DataForSEO SERP refresh failed: " + str(e)[:120]
+                })
 
         # ── 6. Build prompt and call AI ────────────────────────────────────────
         fn = PROVIDER_FN.get(provider)
