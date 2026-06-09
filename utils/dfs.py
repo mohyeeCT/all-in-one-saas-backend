@@ -44,8 +44,8 @@ def get_keyword_difficulty(keywords: list, login: str, password: str, location_c
     for task in data.get("tasks", []):
         for item in (task.get("result") or []):
             kw = item.get("keyword", "")
-            diff = item.get("keyword_difficulty") or 1
-            result[kw] = max(diff, 1)
+            diff = item.get("keyword_difficulty")
+            result[kw] = max(diff if diff is not None else 1, 1)
     return result
 
 
@@ -80,7 +80,8 @@ def get_ranked_keywords_for_url(url: str, login: str, password: str, location_co
                 kw_info = kw_data.get("keyword_info", {})
                 kw = kw_data.get("keyword", "")
                 vol = kw_info.get("search_volume") or 0
-                diff = ranked.get("keyword_difficulty") or 1
+                diff = ranked.get("keyword_difficulty")
+                diff = diff if diff is not None else 1
                 pos_data = ranked.get("ranked_serp_element", {}).get("serp_item", {})
                 pos = pos_data.get("rank_absolute") or 100
                 if kw:
@@ -113,7 +114,8 @@ def get_keyword_ideas(seed_keyword: str, login: str, password: str, location_cod
             for kw_item in (item.get("items") or []):
                 kw = kw_item.get("keyword", "")
                 vol = (kw_item.get("keyword_info") or {}).get("search_volume") or 0
-                diff = kw_item.get("keyword_difficulty") or 1
+                diff = kw_item.get("keyword_difficulty")
+                diff = diff if diff is not None else 1
                 if kw and kw != seed_keyword:
                     results.append({
                         "keyword": kw,
@@ -240,110 +242,6 @@ def _extract_ai_overview_text(item: dict) -> str:
             return markdown
 
     return ""
-
-
-
-def _extract_paa_answer(paa_el: dict) -> str:
-    """Extract answer text from a PAA element, handling all known expanded_element types.
-
-    Covers:
-    - people_also_ask_expanded_element  (standard text answer)
-    - people_also_ask_ai_overview_expanded_element  (AIO-style answer)
-    - video elements  (use title as fallback)
-    - table/list elements  (flatten to text)
-    - any unknown type  (try all known text fields)
-    """
-    answer_source = (
-        paa_el.get("expanded_element") or
-        paa_el.get("items") or
-        []
-    )
-
-    for el in answer_source:
-        if not isinstance(el, dict):
-            continue
-
-        el_type = el.get("type", "")
-
-        # Standard text answer
-        if el_type == "people_also_ask_expanded_element":
-            answer = (
-                el.get("description", "")
-                or el.get("text", "")
-                or el.get("snippet", "")
-                or el.get("featured_title", "")
-                or ""
-            ).strip()
-            if answer:
-                return answer
-
-        # AI Overview style answer — flatten items[].text
-        elif el_type == "people_also_ask_ai_overview_expanded_element":
-            parts = []
-            for sub in (el.get("items") or []):
-                txt = (sub.get("text", "") or sub.get("content", "") or "").strip()
-                if txt:
-                    parts.append(txt)
-            answer = " ".join(parts).strip()
-            if answer:
-                return answer
-
-        # Video answer — use description or title as fallback text
-        elif el_type in ("video", "youtube_video"):
-            answer = (
-                el.get("description", "")
-                or el.get("title", "")
-                or ""
-            ).strip()
-            if answer:
-                return answer
-
-        # Table answer — flatten rows to readable text
-        elif el_type == "table":
-            rows = el.get("table_element", {}).get("rows", []) if isinstance(el.get("table_element"), dict) else []
-            cells = []
-            for row in rows:
-                for cell in (row.get("cells") or []):
-                    txt = (cell.get("text", "") or "").strip()
-                    if txt:
-                        cells.append(txt)
-            answer = ", ".join(cells[:8])
-            if answer:
-                return answer
-
-        # List answer — join items
-        elif el_type in ("list", "ordered_list", "unordered_list"):
-            items_list = el.get("items") or []
-            parts = []
-            for li in items_list:
-                txt = (li.get("text", "") or li.get("title", "") or "").strip()
-                if txt:
-                    parts.append(txt)
-            answer = "; ".join(parts[:6])
-            if answer:
-                return answer
-
-        # Unknown type — try every known text field
-        else:
-            answer = (
-                el.get("description", "")
-                or el.get("text", "")
-                or el.get("snippet", "")
-                or el.get("featured_title", "")
-                or el.get("title", "")
-                or ""
-            ).strip()
-            if answer:
-                return answer
-
-    # Nothing found in expanded_element — try top-level fields on paa_el itself
-    return (
-        paa_el.get("description", "")
-        or paa_el.get("snippet", "")
-        or paa_el.get("answer", "")
-        or ""
-    ).strip()
-
 
 
 def _extract_paa_answer(paa_el: dict) -> str:
