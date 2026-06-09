@@ -125,3 +125,23 @@ gen_page_copy: bool = True # per-row toggleable
 - The stop button works between rows but cannot interrupt a running AI call
   mid-execution. This is a fundamental threading limitation, not a bug.
 - signal.SIGALRM must never be used — background thread context.
+
+
+## Local Dev Setup
+
+Tests require FastAPI and all backend dependencies. Without a venv, `pytest`
+will fail on collection with `ModuleNotFoundError: No module named 'fastapi'`.
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt pytest
+python -m pytest tests/ -v
+```
+
+CI (GitHub Actions) installs dependencies automatically — this setup is only
+needed for local test runs.
