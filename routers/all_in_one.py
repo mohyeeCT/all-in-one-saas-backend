@@ -184,6 +184,11 @@ def _process_single_row(
     if not ranked and manual_kws:
         ranked = [{"keyword": k, "volume": 10, "difficulty": 1, "score": 1.0} for k in manual_kws]
 
+    keyword_source = "dfs+gsc" if gsc_queries else "dfs"
+    if not ranked and not use_gsc and h1:
+        ranked = [{"keyword": h1, "volume": 0, "difficulty": 50, "score": 0.0}]
+        keyword_source = "h1 fallback"
+
     if not ranked:
         step("✗ no keywords found — skipping")
         return _empty("skipped: no keywords found")
@@ -465,7 +470,7 @@ def _process_single_row(
         "url":                  url,
         "h1":                   h1,
         "primary_keyword":      primary_keyword,
-        "keyword_source":       "dfs+gsc" if gsc_queries else "dfs",
+        "keyword_source":       keyword_source,
         "kw_volume":            (ranked[0].get("volume") if ranked else None),
         "generated_title":      generated_title,
         "generated_description": generated_description,
