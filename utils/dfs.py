@@ -394,14 +394,7 @@ def get_serp_data(login: str, password: str, keyword: str, location_code: int = 
 
     for attempt in range(1, max_attempts + 1):
       try:
-        r = requests.post(
-            f"{DFS_BASE}/serp/google/organic/live/advanced",
-            headers=_auth_header(login, password),
-            json=payload,
-            timeout=45
-        )
-        r.raise_for_status()
-        data = r.json()
+        data = _post("serp/google/organic/live/advanced", payload, login, password)
 
         ai_sections = []
         ai_raw_parts = []

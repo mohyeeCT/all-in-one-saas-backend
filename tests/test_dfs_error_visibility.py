@@ -36,6 +36,41 @@ class DataForSeoErrorVisibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Authentication failed"):
                     call()
 
+    @patch("utils.dfs._post")
+    def test_serp_data_uses_shared_post_helper(self, post):
+        post.return_value = {
+            "status_code": 20000,
+            "tasks": [{
+                "result": [{
+                    "items": [
+                        {
+                            "type": "ai_overview",
+                            "items": [{"text": "Beyond burgers are plant-based patties."}],
+                        },
+                        {
+                            "type": "people_also_ask",
+                            "items": [{
+                                "title": "What are beyond burgers?",
+                                "expanded_element": [{
+                                    "type": "people_also_ask_expanded_element",
+                                    "description": "Plant-based burger patties.",
+                                }],
+                                "url": "https://example.com",
+                            }],
+                        },
+                    ],
+                }],
+            }],
+        }
+
+        result = dfs.get_serp_data("login", "password", "beyond burgers", 2840, False)
+
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "serp/google/organic/live/advanced")
+        self.assertTrue(result["ai_overview_present"])
+        self.assertEqual(result["paa_questions"], ["What are beyond burgers?"])
+        self.assertEqual(result["paa_items"][0]["answer"], "Plant-based burger patties.")
+
 
 if __name__ == "__main__":
     unittest.main()
