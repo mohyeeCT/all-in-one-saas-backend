@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from auth import get_current_user, get_supabase
-from abuse_protection import enforce_job_start, execute_active_job_write
+from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
 from credentials import hydrate_job_settings, load_user_credentials, strip_secret_fields
 from utils.niches import get_niche_context
 from utils.dfs import (
@@ -721,6 +721,7 @@ def run_aio_job(
 ):
     job_id = str(uuid.uuid4())
     enforce_job_start(sb, user.id, "all-in-one", len(request.rows), 50)
+    enforce_rate_limit(sb, user.id, "all-in-one", "job-create", 10)
     runtime_settings = hydrate_job_settings(sb, user.id, request.settings.model_dump())
     saved_credentials = load_user_credentials(sb, user.id)
     if not runtime_settings.get("api_key") or not runtime_settings.get("dfs_password"):
