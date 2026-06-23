@@ -255,7 +255,8 @@ def _rerun_single_row(job_id: str, row_index: int, rows: list, settings: dict, s
         settings_with_key = {**settings, "api_key": api_key, "dfs_password": dfs_password}
 
         # Run the single row through full pipeline
-        from routers.all_in_one import _process_single_row, _update_job
+        from routers.all_in_one import _process_single_row, _safe_gsc_auth_method, _update_job
+        gsc_auth_method = _safe_gsc_auth_method(settings, settings.get("_gsc_credentials"), gsc_client)
         # Re-fetch brand profile if one was used on the original job
         brand_profile = {}
         brand_profile_id = settings.get("brand_profile_id")
@@ -279,6 +280,7 @@ def _rerun_single_row(job_id: str, row_index: int, rows: list, settings: dict, s
             total_rows=len(rows),
             user_id=user_id,
             brand_profile=brand_profile,
+            gsc_auth_method=gsc_auth_method,
         )
 
         # Update just this row's result in the existing results array
@@ -355,12 +357,13 @@ def _rerun_multiple_rows(job_id: str, row_indices: list, rows: list, settings: d
         )
         return
     _clear_credentials_runtime_error(sb, job_id, user_id)
-    from routers.all_in_one import _process_single_row, _update_job
+    from routers.all_in_one import _process_single_row, _safe_gsc_auth_method, _update_job
 
     api_key = settings.get("api_key", "")
     dfs_password = settings.get("dfs_password", "")
 
     gsc_client = _get_runtime_gsc_client(settings, sb, user_id, job_id)
+    gsc_auth_method = _safe_gsc_auth_method(settings, settings.get("_gsc_credentials"), gsc_client)
 
     import re as _re
     branded_terms = [b.strip() for b in settings.get("brand_name", "").split() if b.strip()]
@@ -407,12 +410,18 @@ def _rerun_multiple_rows(job_id: str, row_indices: list, rows: list, settings: d
                 total_rows=len(rows),
                 user_id=user_id,
                 brand_profile=brand_profile,
+                gsc_auth_method=gsc_auth_method,
             )
             results[row_index] = result
             if result.get("error") or result.get("status") == "error":
                 failed += 1
         except Exception as e:
-            results[row_index] = {"url": rows[row_index].get("url", ""), "error": str(e), "status": "error"}
+            results[row_index] = {
+                "url": rows[row_index].get("url", ""),
+                "error": str(e),
+                "status": "error",
+                "gsc_auth_method": gsc_auth_method,
+            }
             failed += 1
 
     sb.table("jobs").update({

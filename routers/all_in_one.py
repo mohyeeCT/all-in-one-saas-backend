@@ -34,6 +34,7 @@ router = APIRouter()
 
 _GSC_RECONNECT_ERROR = "Google Search Console reconnect required."
 _GSC_UNAVAILABLE_ERROR = "Selected Google Search Console connection unavailable."
+_GSC_METHOD_LABELS = {"google_oauth", "service_account", "disabled", "unavailable"}
 
 _RATE_LIMITS = {
     "Claude": 0.5,
@@ -42,6 +43,15 @@ _RATE_LIMITS = {
     "Mistral (free tier)": 2.0,
     "Groq (free tier)": 2.0,
 }
+
+
+def _safe_gsc_auth_method(settings: dict, gsc_credentials: dict | None, gsc_client=None) -> str:
+    if not settings.get("use_gsc"):
+        return "disabled"
+    if not gsc_credentials or not gsc_client:
+        return "unavailable"
+    method = gsc_credentials.get("method")
+    return method if method in _GSC_METHOD_LABELS else "unavailable"
 
 
 def _is_cancelled(sb, job_id: str, user_id: str) -> bool:
@@ -102,6 +112,7 @@ def _process_single_row(
     total_rows: int,
     user_id: str = "",
     brand_profile: dict = None,
+    gsc_auth_method: str = "disabled",
 ) -> dict:
     def step(msg: str):
         _update_job(sb, job_id, user_id, {"current_step": f"Row {row_num}/{total_rows}: {msg}"})
@@ -155,6 +166,7 @@ def _process_single_row(
     def _empty(status: str) -> dict:
         return {
             "url": url, "primary_keyword": None, "keyword_source": status,
+            "gsc_auth_method": gsc_auth_method,
             "generated_title": None, "generated_description": None, "optimised_h1": None,
             "faq_items": [], "faq_schema": None,
             "word_count": 0, "template_name": None,
@@ -496,6 +508,7 @@ def _process_single_row(
         "h1":                   h1,
         "primary_keyword":      primary_keyword,
         "keyword_source":       keyword_source,
+        "gsc_auth_method":      gsc_auth_method,
         "kw_volume":            (ranked[0].get("volume") if ranked else None),
         "generated_title":      generated_title,
         "generated_description": generated_description,
@@ -646,6 +659,9 @@ def _process_job(
                     _update_job(sb, job_id, user_id, {"error": _GSC_UNAVAILABLE_ERROR})
             except Exception:
                 _update_job(sb, job_id, user_id, {"error": _GSC_UNAVAILABLE_ERROR})
+    gsc_auth_method = _safe_gsc_auth_method(settings, gsc_credentials, gsc_client)
+    if settings.get("use_gsc"):
+        _update_job(sb, job_id, user_id, {"current_step": f"GSC auth method: {gsc_auth_method}"})
 
     branded_terms = [b.strip() for b in settings.get("brand_name", "").split() if b.strip()]
     full_brand = settings.get("full_brand_name", "").strip()
@@ -677,6 +693,7 @@ def _process_job(
                 sb=sb, job_id=job_id, row_num=idx + 1, total_rows=total,
                 user_id=user_id,
                 brand_profile=brand_profile,
+                gsc_auth_method=gsc_auth_method,
             )
         except InterruptedError:
             _update_job(sb, job_id, user_id, {
@@ -687,7 +704,14 @@ def _process_job(
             })
             return
         except Exception as e:
-            result = {"url": url, "error": str(e), "status": "error", "word_count": 0, "docx_b64": None}
+            result = {
+                "url": url,
+                "error": str(e),
+                "status": "error",
+                "word_count": 0,
+                "docx_b64": None,
+                "gsc_auth_method": gsc_auth_method,
+            }
 
         results.append(result)
         _update_job(sb, job_id, user_id, {"completed_rows": idx + 1, "results": results})
