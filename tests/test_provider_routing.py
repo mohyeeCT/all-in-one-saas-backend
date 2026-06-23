@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 import unittest
 
 from utils import copy_gen
@@ -13,6 +15,42 @@ class ProviderRoutingTests(unittest.TestCase):
             copy_gen.PROVIDER_FN.pop("Test", None)
         else:
             copy_gen.PROVIDER_FN["Test"] = self.original_provider
+
+    def test_openai_default_uses_current_gpt_5_model(self):
+        self.assertEqual(copy_gen.DEFAULT_MODELS["OpenAI"], "gpt-5.5")
+        self.assertNotEqual(copy_gen.DEFAULT_MODELS["OpenAI"], "gpt-4o-mini")
+
+    def test_openai_gpt5_uses_max_completion_tokens(self):
+        captured = {}
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(message=types.SimpleNamespace(content="{}"))
+                    ]
+                )
+
+        class FakeClient:
+            def __init__(self, api_key):
+                self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+        openai_stub = types.ModuleType("openai")
+        openai_stub.OpenAI = FakeClient
+        original_openai = sys.modules.get("openai")
+        sys.modules["openai"] = openai_stub
+        try:
+            copy_gen._call_openai("key", "prompt", max_tokens=123, model="gpt-5.5")
+        finally:
+            if original_openai is None:
+                sys.modules.pop("openai", None)
+            else:
+                sys.modules["openai"] = original_openai
+
+        self.assertEqual(captured["model"], "gpt-5.5")
+        self.assertEqual(captured["max_completion_tokens"], 123)
+        self.assertNotIn("max_tokens", captured)
 
     def test_generate_faq_routes_through_provider_function(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

@@ -165,10 +165,16 @@ def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str =
 def _call_openai(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
+    resolved_model = model or DEFAULT_MODELS["OpenAI"]
+    token_limit = (
+        {"max_completion_tokens": max_tokens}
+        if resolved_model.startswith("gpt-5")
+        else {"max_tokens": max_tokens}
+    )
     resp = client.chat.completions.create(
-        model=model or "gpt-4o-mini",
+        model=resolved_model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
+        **token_limit,
     )
     return resp.choices[0].message.content.strip()
 
@@ -218,7 +224,7 @@ PROVIDER_FN = {
 
 DEFAULT_MODELS = {
     "Claude": "claude-haiku-4-5-20251001",
-    "OpenAI": "gpt-4o-mini",
+    "OpenAI": "gpt-5.5",
     "Gemini": "gemini-2.0-flash",
     "Gemini (free)": "gemini-2.0-flash",
     "Mistral": "mistral-small-latest",
