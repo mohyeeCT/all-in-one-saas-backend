@@ -95,10 +95,21 @@ def _is_chrome_heading(text: str) -> bool:
     return False
 
 
-def _is_blocked_url(url: str) -> bool:
+def _normalise_page_type(page_type: str) -> str:
+    pt = (page_type or "").lower()
+    if pt in {"product_page", "product"}:
+        return "product"
+    if pt in {"collection_page", "collection", "category"}:
+        return "collection"
+    return pt
+
+
+def _is_blocked_url(url: str, allow_ecommerce_paths: bool = False) -> bool:
     """Returns True if this URL should never be used as a competitor."""
     u = url.lower()
     for pattern in BLOCKED_COMPETITOR_URL_PATTERNS:
+        if allow_ecommerce_paths and pattern in {r"/collections/", r"/products/", r"/shop/"}:
+            continue
         if re.search(pattern, u):
             return True
     return False
@@ -129,7 +140,7 @@ def _clean_markdown(markdown: str) -> str:
     return "\n".join(cleaned)
 
 
-def scrape_url(url: str, timeout: int = 25) -> dict:
+def scrape_url(url: str, timeout: int = 25, api_key: str = "") -> dict:
     """
     Scrapes a URL via Jina Reader and strips page chrome (cart, nav, footer etc).
     Returns:
@@ -139,12 +150,16 @@ def scrape_url(url: str, timeout: int = 25) -> dict:
     X-Target-Selector intentionally omitted - causes 422 errors.
     """
     try:
+        headers = {
+            "Accept": "text/plain",
+            "X-Return-Format": "markdown",
+        }
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
         resp = requests.get(
             f"{JINA_BASE}{url}",
-            headers={
-                "Accept": "text/plain",
-                "X-Return-Format": "markdown",
-            },
+            headers=headers,
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -257,11 +272,15 @@ def is_editorial_competitor(scrape: dict, page_type: str) -> bool:
     - URLs matching blocked patterns (product pages, collection pages, marketplaces)
     - Pages with more than 3 chrome headings (indicates heavy ecommerce template)
     """
+    page_type_norm = _normalise_page_type(page_type)
+    ecommerce_context = page_type_norm in {"product", "collection"}
+
     url = scrape.get("url", "")
-    if _is_blocked_url(url):
+    if _is_blocked_url(url, allow_ecommerce_paths=ecommerce_context):
         return False
 
-    if scrape.get("word_count", 0) < MIN_EDITORIAL_WORD_COUNT:
+    min_words = 120 if ecommerce_context else MIN_EDITORIAL_WORD_COUNT
+    if scrape.get("word_count", 0) < min_words:
         return False
 
     # Count chrome headings - if more than 2, page is mostly chrome
@@ -281,6 +300,7 @@ def classify_competitor_relevance(scrape: dict, business_type: str, page_type: s
     Returns 0.0 to 1.0. Run after is_editorial_competitor passes.
     """
     score = 0.0
+    page_type_norm = _normalise_page_type(page_type)
     body = (scrape.get("body_text", "") + " " + scrape.get("title", "")).lower()
     url = scrape.get("url", "").lower()
     headings = [h["text"].lower() for h in scrape.get("headings", [])]
@@ -291,8 +311,10 @@ def classify_competitor_relevance(scrape: dict, business_type: str, page_type: s
         "blog": ["author", "published", "min read", "posted", "updated", "written by", "last updated"],
         "case_study": ["case study", "client", "results", "challenge", "solution", "outcome"],
         "glossary": ["definition", "what is", "refers to", "meaning", "glossary"],
+        "product": ["add to cart", "product details", "specifications", "materials", "reviews", "size", "variant"],
+        "collection": ["shop", "collection", "category", "filter", "sort", "compare", "buying guide"],
     }
-    for signal in page_type_signals.get(page_type, []):
+    for signal in page_type_signals.get(page_type_norm, []):
         if signal in all_text:
             score += 0.2
 
@@ -301,8 +323,10 @@ def classify_competitor_relevance(scrape: dict, business_type: str, page_type: s
         "blog": ["/blog/", "/post/", "/article/", "/news/", "/learn/", "/guide/", "/resources/"],
         "case_study": ["/case-study", "/case-studies", "/customer-stories", "/success-stories"],
         "glossary": ["/glossary/", "/define/", "/what-is/", "/wiki/"],
+        "product": ["/products/", "/product/", "/p/"],
+        "collection": ["/collections/", "/category/", "/categories/"],
     }
-    for signal in url_page_signals.get(page_type, []):
+    for signal in url_page_signals.get(page_type_norm, []):
         if signal in url:
             score += 0.3
 

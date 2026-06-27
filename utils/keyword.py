@@ -1,6 +1,5 @@
 import math
 import re
-from collections import defaultdict
 
 
 # ── Stemming ──────────────────────────────────────────────────────────────────
@@ -132,7 +131,7 @@ def merge_keyword_pools(
                 "keyword": kw,
                 "volume": item.get("volume", 0),
                 "difficulty": item.get("difficulty", 1),
-                "impressions": item.get("volume", 0),
+                "impressions": 1,
                 "ctr": 0.0,
                 "position": item.get("position", 100.0),
                 "source": "dfs_ranked",
@@ -152,7 +151,7 @@ def merge_keyword_pools(
                 "keyword": kw,
                 "volume": vol,
                 "difficulty": diff,
-                "impressions": vol,
+                "impressions": 1,
                 "ctr": 0.0,
                 "position": 50.0,
                 "source": "manual",
@@ -166,7 +165,7 @@ def assign_keywords_to_sections(ranked_keywords: list, section_names: list) -> d
     Distributes the ranked keyword cluster across template sections.
     First keyword (highest score) goes to the intro/primary slot.
     Remaining keywords assigned one per section in score order.
-    Returns: { section_name: { primary: str, supporting: [str] } }
+    Returns: { section_name: { primary: str, supporting: str } }
     """
     non_branded = [k for k in ranked_keywords if not k.get("branded") and k.get("score", 0) > 0]
 
@@ -177,10 +176,24 @@ def assign_keywords_to_sections(ranked_keywords: list, section_names: list) -> d
     remaining = kw_queue[1:]
 
     for i, section in enumerate(section_names):
-        supporting = remaining[i] if i < len(remaining) else ""
-        assignment[section] = {
-            "primary": primary if i == 0 else "",
-            "supporting": supporting,
+        if isinstance(section, dict):
+            section_name = section["name"]
+            keyword_slot = section.get("keyword_slot", "supporting")
+        else:
+            section_name = str(section)
+            keyword_slot = "primary" if i == 0 else ("none" if section_name in {"cta", "contact"} else "supporting")
+
+        if keyword_slot == "none":
+            supporting = ""
+        elif remaining:
+            supporting_index = max(i - 1, 0) % len(remaining)
+            supporting = remaining[supporting_index]
+        else:
+            supporting = ""
+
+        assignment[section_name] = {
+            "primary": primary if keyword_slot == "primary" else "",
+            "supporting": supporting if keyword_slot in {"supporting", "lsi"} else "",
         }
 
     return assignment

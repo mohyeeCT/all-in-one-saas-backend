@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+from contextlib import nullcontext
 from unittest.mock import patch
 
 supabase_stub = types.ModuleType("supabase")
@@ -66,7 +67,21 @@ def _settings():
 
 
 class AllInOneH1KeywordFallbackTests(unittest.TestCase):
-    def _process(self, row, settings=None, gsc_client=None, ranked=None, brand_profile=None, serp_data=None):
+    def _process(
+        self,
+        row,
+        settings=None,
+        gsc_client=None,
+        ranked=None,
+        brand_profile=None,
+        serp_data=None,
+        patch_combined_docx=True,
+    ):
+        docx_patch = (
+            patch.object(all_in_one, "_build_combined_docx", return_value=b"docx")
+            if patch_combined_docx
+            else nullcontext()
+        )
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -77,7 +92,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                  "get_serp_data",
                  return_value=serp_data or {"organic": [], "paa_items": [], "ai_overview": ""},
              ), \
-             patch.object(all_in_one, "_build_combined_docx", return_value=b"docx"):
+             docx_patch:
             return all_in_one._process_single_row(
                 row=row,
                 settings=settings or _settings(),
@@ -186,7 +201,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             all_in_one,
             "generate_copy",
             return_value={
-                "title": "Industrial Dosing Systems",
+                "title": "Reliable Industrial Dosing Systems",
                 "description": "Learn about industrial dosing systems.",
                 "h1_optimised": "Industrial Dosing Systems",
             },
@@ -301,6 +316,47 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         scrape_url.assert_not_called()
         self.assertEqual(generate_page.call_args.kwargs["client_existing_content"], scraped_content)
 
+    def test_meta_generation_receives_scraped_page_context(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_faqs": True,
+            "jina_api_key": "jina-key",
+            "client_brief": "Client brief note.",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "scrape_page_context", return_value={"success": True, "content": "Scraped page facts."}), \
+             patch.object(all_in_one, "generate_copy", return_value={
+                 "title": "Industrial Dosing Systems",
+                 "description": "Learn about industrial dosing systems.",
+                 "h1_optimised": "Industrial Dosing Systems",
+             }) as generate_copy, \
+             patch.object(all_in_one, "generate_faq", return_value=[]):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        context = generate_copy.call_args.kwargs["context"]
+        self.assertIn("SCRAPED PAGE CONTENT:\nScraped page facts.", context)
+        self.assertIn("CLIENT BRIEF:\nClient brief note.", context)
+
     def test_row_gets_review_flags_for_forbidden_phrase_and_missing_requested_output(self):
         settings = {
             **_settings(),
@@ -350,6 +406,44 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("faq_missing", codes)
         self.assertIn("page_copy_missing", codes)
 
+    def test_meta_title_matching_input_h1_is_flagged_for_review(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Industrial Dosing Systems",
+                "description": "Learn about industrial dosing systems.",
+                "h1_optimised": "Better Industrial Dosing Systems",
+            },
+        ):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        self.assertIn("meta_title_matches_h1", [flag["code"] for flag in result["qa_flags"]])
+
     def test_page_copy_result_stores_context_for_section_reruns(self):
         settings = {
             **_settings(),
@@ -388,9 +482,83 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["keyword_assignment"]["benefits"]["supporting"], "chemical dosing maintenance")
-        self.assertEqual(result["lsi_keywords"]["chemical dosing maintenance"], ["metering pump maintenance"])
+        self.assertEqual(result["keyword_assignment"]["benefits"]["supporting"], "dosing system service")
+        self.assertEqual(result["lsi_keywords"]["dosing system service"], ["metering pump maintenance"])
         self.assertEqual(result["competitor_section_map"]["benefits"], ["Competitor says onboarding is fast."])
+
+    def test_page_copy_scrapes_use_saved_jina_key(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "jina_api_key": "jina-key",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        serp_data = {
+            "organic": [{"url": "https://competitor.example/service"}],
+            "paa_items": [],
+            "ai_overview_raw": "",
+        }
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": False}) as scrape_url, \
+             patch.object(all_in_one, "generate_page", return_value={"hero": "Hero copy", "_word_count": 2}):
+            self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                serp_data=serp_data,
+            )
+
+        self.assertGreaterEqual(scrape_url.call_count, 2)
+        for call in scrape_url.call_args_list:
+            self.assertEqual(call.kwargs["api_key"], "jina-key")
+
+    def test_page_copy_only_docx_uses_richer_export_builder(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={"hero": "Hero copy", "_word_count": 2}), \
+             patch.object(all_in_one, "build_docx", return_value=b"rich-docx") as build_docx:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                patch_combined_docx=False,
+            )
+
+        build_docx.assert_called_once()
+        self.assertEqual(result["docx_b64"], "cmljaC1kb2N4")
 
 
 if __name__ == "__main__":

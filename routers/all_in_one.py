@@ -181,6 +181,7 @@ def _collect_qa_flags(
     generated_title: str,
     generated_description: str,
     optimised_h1: str,
+    input_h1: str,
     faq_items: list,
     section_results: dict,
     forbidden_phrases: list[str],
@@ -194,6 +195,8 @@ def _collect_qa_flags(
             _add_qa_flag(flags, "meta_missing_description", "Meta description was requested but no description was generated.", "meta")
         if not (optimised_h1 or "").strip():
             _add_qa_flag(flags, "meta_missing_h1", "Optimised H1 was requested but no H1 was generated.", "meta")
+        if (generated_title or "").strip().lower() == (input_h1 or "").strip().lower() and (input_h1 or "").strip():
+            _add_qa_flag(flags, "meta_title_matches_h1", "Generated title matches the input H1.", "meta")
 
     if gen_faqs and not faq_items:
         _add_qa_flag(flags, "faq_missing", "FAQs were requested but no FAQ items were generated.", "faq")
@@ -406,7 +409,7 @@ def _process_single_row(
     # ─────────────────────────────────────────────────────────────────────
     page_context = ""
     scraped_page_content = ""
-    if gen_faqs and jina_key:
+    if (gen_faqs or gen_meta) and jina_key:
         step("scraping page context...")
         try:
             sc = scrape_page_context(jina_key, url)
@@ -439,8 +442,7 @@ def _process_single_row(
             except ValueError:
                 template = get_template("service_page")
 
-        section_names = [s["name"] for s in template["sections"]]
-        kw_assignment = assign_keywords_to_sections(ranked, section_names)
+        kw_assignment = assign_keywords_to_sections(ranked, template["sections"])
         competitor_section_map = {s["name"]: [] for s in template["sections"]}
 
         step("scraping competitors...")
@@ -454,7 +456,7 @@ def _process_single_row(
                         continue
                     if client_domain and client_domain in urlparse(comp_url).netloc:
                         continue
-                    sc = scrape_url(comp_url)
+                    sc = scrape_url(comp_url, api_key=jina_key)
                     if not sc["success"]:
                         continue
                     if not is_editorial_competitor(sc, page_type):
@@ -477,10 +479,16 @@ def _process_single_row(
     generated_title = None
     generated_description = None
     optimised_h1 = None
+    input_h1_for_qa = h1
 
     if gen_meta:
         step("generating meta copy...")
         try:
+            meta_context_parts = []
+            if scraped_page_content:
+                meta_context_parts.append("SCRAPED PAGE CONTENT:\n" + scraped_page_content[:10000])
+            if client_brief:
+                meta_context_parts.append("CLIENT BRIEF:\n" + client_brief)
             meta_result = generate_copy(
                 provider=provider,
                 api_key=api_key,
@@ -489,7 +497,7 @@ def _process_single_row(
                 page_type=page_type,
                 brand_name=brand_name if include_brand else "",
                 forbidden_phrases=forbidden_phrase_text,
-                context=settings.get("client_brief", "") or "",
+                context="\n\n".join(meta_context_parts),
                 brand_context=brand_context,
                 business_type=business_type,
                 h1=h1,
@@ -583,7 +591,7 @@ def _process_single_row(
             client_existing_content = scraped_page_content[:800]
         else:
             try:
-                existing = scrape_url(url)
+                existing = scrape_url(url, api_key=jina_key)
                 if existing["success"]:
                     client_existing_content = existing.get("body_text", "")[:800]
             except Exception:
@@ -645,6 +653,7 @@ def _process_single_row(
             gen_meta=gen_meta,
             gen_faqs=gen_faqs,
             gen_page_copy=gen_page_copy,
+            keyword_assignment=kw_assignment,
         )
         docx_b64 = base64.b64encode(docx_bytes).decode("utf-8")
         step("✓ done")
@@ -663,6 +672,7 @@ def _process_single_row(
         generated_title=generated_title or "",
         generated_description=generated_description or "",
         optimised_h1=optimised_h1 or "",
+        input_h1=input_h1_for_qa,
         faq_items=faq_items,
         section_results=section_results,
         forbidden_phrases=forbidden_phrase_list,
@@ -701,8 +711,24 @@ def _build_combined_docx(
     generated_title, generated_description, optimised_h1,
     faq_items, faq_schema, section_results, word_count, competitor_urls,
     gen_meta, gen_faqs, gen_page_copy,
+    keyword_assignment=None,
 ):
     """Build a single docx with meta, FAQs, and page copy in one document."""
+    keyword_assignment = keyword_assignment or {}
+    if gen_page_copy and not gen_meta and not gen_faqs and template:
+        return build_docx(
+            url=url,
+            page_type=page_type,
+            template_name=template["name"],
+            primary_keyword=primary_keyword,
+            section_results=section_results,
+            template_sections=template.get("sections", []),
+            keyword_assignment=keyword_assignment,
+            word_count=word_count,
+            competitor_urls=competitor_urls,
+            h1=h1,
+        )
+
     from docx import Document
     from docx.shared import Pt, RGBColor, Inches
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -784,6 +810,24 @@ def _build_combined_docx(
         doc.add_heading("Competitors Referenced", level=3)
         for cu in competitor_urls:
             doc.add_paragraph(cu, style="List Bullet")
+
+    if gen_page_copy and template:
+        doc.add_heading("Page Copy Diagnostics", level=3)
+        diag_table = doc.add_table(rows=1, cols=4)
+        diag_table.style = "Table Grid"
+        for i, label in enumerate(["Section", "Words", "Keyword Slot", "Keyword Used"]):
+            diag_table.rows[0].cells[i].text = label
+
+        for section in template.get("sections", []):
+            sec_name = section["name"]
+            assign = keyword_assignment.get(sec_name, {})
+            keyword_used = assign.get("primary") or assign.get("supporting") or ""
+            text = section_results.get(sec_name, "")
+            row = diag_table.add_row()
+            row.cells[0].text = section["label"]
+            row.cells[1].text = str(len(text.split()) if text else 0)
+            row.cells[2].text = section.get("keyword_slot", "none")
+            row.cells[3].text = keyword_used
 
     buf = io.BytesIO()
     doc.save(buf)
