@@ -55,6 +55,104 @@ BUSINESS_TYPE_CONTEXT = {
 
 _BIZ_CONTEXT = BUSINESS_TYPE_CONTEXT
 
+PAA_ANSWER_SNIPPET_CHARS = 280
+
+_BIZ_CONTEXT_FAQ = {
+    "b2b": (
+        "This is a B2B page. Answers should be professional, solution-focused, and concise. "
+        "No consumer CTAs. Focus on ROI, process, and expertise."
+    ),
+    "b2c": (
+        "This is a B2C page. Answers can be conversational. Include a light CTA where it fits naturally."
+    ),
+    "ecommerce": (
+        "This is an ecommerce page. Answers should address buying concerns, specs, compatibility, "
+        "fit, materials, use cases, and product selection. Do not create policy, shipping, return, "
+        "availability, pricing, or warranty FAQs."
+    ),
+    "service": (
+        "This is a service page. Answers should build trust, clarify process, and highlight expertise."
+    ),
+    "local": (
+        "This is a local business page. Answers should address local context, service area, "
+        "and proximity where relevant."
+    ),
+    "general": "Write for a general audience. Keep answers clear and helpful.",
+}
+
+_UNSUPPORTED_CLAIM_GUARDRAIL = (
+    "UNSUPPORTED CLAIM RULES:\n"
+    "- Do not generate FAQ questions or answers about return, shipping, delivery, warranty, guarantee, "
+    "eligibility, refund, exchange, availability, stock, pricing, discount, compliance, legal, medical, "
+    "safety, or performance claims.\n"
+    "- Exclude these topics entirely, even if they appear in PAA, AI Overview, scraped page content, "
+    "or generic ecommerce expectations.\n"
+    "- Prefer not to reference shipping or returns. Only use shipping or returns information when brand "
+    "guidance explicitly provides the exact policy details to use.\n"
+    "- Do not use PAA, AI Overview, scraped page content, or generic ecommerce assumptions as source data "
+    "for shipping or returns.\n"
+    "- Treat AI Overview and PAA as research signals, not proof of this business's actual policies, "
+    "inventory, pricing, warranties, guarantees, or eligibility rules.\n"
+    "- Do not use neutral fallback wording for these topics.\n"
+    "- Do not tell readers to check the policy page, contact customer service, review terms, or confirm "
+    "availability, pricing, shipping, returns, refunds, exchanges, warranties, guarantees, or eligibility.\n"
+    "- Replace risky policy or claim questions with safer page-specific questions about product purpose, "
+    "features, materials, fit considerations, compatibility, use cases, care, selection, or comparisons."
+)
+
+
+def _format_paa_answer_snippet(answer: str, max_chars: int = PAA_ANSWER_SNIPPET_CHARS) -> str:
+    answer = " ".join((answer or "").split())
+    if not answer or len(answer) <= max_chars:
+        return answer
+
+    sentence_cut = -1
+    for mark in (".", "!", "?"):
+        idx = answer.rfind(mark, 0, max_chars + 1)
+        if idx > sentence_cut:
+            sentence_cut = idx
+    if sentence_cut >= 0:
+        return answer[:sentence_cut + 1].strip()
+
+    cut = answer[:max_chars].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0].rstrip()
+    return cut.rstrip(" ,;:-") + "..."
+
+
+def _bottom_funnel_product_guardrail(business_type: str, page_type: str) -> str:
+    business_type_norm = (business_type or "").lower()
+    page_type_norm = (page_type or "").lower()
+    if business_type_norm != "ecommerce" and not any(
+        token in page_type_norm for token in ("product", "collection", "category")
+    ):
+        return ""
+    return (
+        "BOTTOM-OF-FUNNEL PRODUCT FAQ RULES:\n"
+        "- For product, collection, category, and ecommerce pages, prioritise pre-purchase decision barriers over broad category education.\n"
+        "- Prefer commercial-intent questions that can be answered from the provided page, H1, keyword, brand profile, AI Overview, PAA, or scraped context.\n"
+        "- Do not invent product facts, specifications, ingredients, compatibility, sizing, materials, performance claims, or setup details.\n"
+        "- Avoid top-of-funnel category education such as \"What is [product/category]?\" unless the page is genuinely informational or the product/category is unfamiliar.\n"
+        "- If context is limited, use safer decision-support questions about choosing, comparing, use cases, care considerations, or what to look for, without making unsupported claims."
+    )
+
+
+def _structured_no_serp_fallback(ai_overview_sections: list, paa_items: list, ai_overview_raw: str = "") -> str:
+    if ai_overview_sections or paa_items or (ai_overview_raw or "").strip():
+        return ""
+    return (
+        "STRUCTURED FALLBACK WHEN SERP SIGNALS ARE EMPTY:\n"
+        "No AI Overview or PAA data is available for this keyword. Build FAQs from the page, H1, keyword, brand profile, business type, and scraped context only.\n"
+        "Choose the most relevant question categories for this page:\n"
+        "- Decision fit: who this is for, when it is a good fit, when another option may be better.\n"
+        "- Selection criteria: what to compare, what to check, what matters before choosing.\n"
+        "- Process or next step: how to get started, what happens next, how to prepare.\n"
+        "- Use case or application: practical scenarios, common needs, suitable situations.\n"
+        "- Trust and expertise: proof points, experience, service approach, quality signals.\n"
+        "- Care, setup, compatibility, or maintenance only if supported by the provided context.\n"
+        "Do not invent facts. Do not create generic category education unless the page is informational. Every FAQ should connect back to this specific page."
+    )
+
 
 def _build_section_prompt(
     section: dict,
@@ -337,37 +435,77 @@ def _build_faq_prompt(
     num_faqs: int,
     forbidden_phrases: str,
     page_context: str,
+    brand_profile: dict = None,
 ) -> str:
+    biz_ctx = _BIZ_CONTEXT_FAQ.get(business_type, _BIZ_CONTEXT_FAQ["general"])
+    bp = brand_profile or {}
+    bp_avoid = bp.get("words_to_avoid", "")
+    combined_forbidden = ", ".join(filter(None, [(forbidden_phrases or "").strip(), bp_avoid.strip()]))
+    forbidden_line = f"Never use these phrases: {combined_forbidden}" if combined_forbidden else ""
+    bottom_funnel_guardrail = _bottom_funnel_product_guardrail(business_type, page_type)
+
+    bp_lines = []
+    if bp:
+        if bp.get("brand_voice"):      bp_lines.append(f"Brand voice: {bp['brand_voice']}")
+        if bp.get("tone"):             bp_lines.append(f"Tone: {bp['tone']}")
+        if bp.get("target_audience"):  bp_lines.append(f"Target audience: {bp['target_audience']}")
+        if bp.get("usps"):             bp_lines.append(f"Unique selling points: {bp['usps']}")
+        if bp.get("key_messages"):     bp_lines.append(f"Key messages to reinforce: {bp['key_messages']}")
+        if bp.get("competitors"):      bp_lines.append(f"Competitors (differentiate from): {bp['competitors']}")
+        if bp.get("products_services"):bp_lines.append(f"Products/services: {bp['products_services']}")
+        if bp.get("example_copy"):     bp_lines.append(f"Example copy to emulate in style (not content):\n{bp['example_copy']}")
+    brand_profile_block = ("BRAND CONTEXT:\n" + "\n".join(bp_lines)) if bp_lines else ""
+
     paa_lines = []
     for item in paa_items[:num_faqs + 3]:
         question = item.get("question", "") if isinstance(item, dict) else str(item)
         if question:
-            paa_lines.append(f"- {question}")
+            line = f"- Q: {question}"
+            if isinstance(item, dict) and item.get("answer"):
+                line += f" | Snippet: {_format_paa_answer_snippet(item['answer'])}"
+            paa_lines.append(line)
 
     overview = ai_overview_raw or "\n".join(
         str(section.get("content") or section.get("title") or "")
         for section in ai_overview_sections
         if isinstance(section, dict)
     )
+    serp_fallback_block = _structured_no_serp_fallback(ai_overview_sections, paa_items, ai_overview_raw)
+    serp_fallback_block_str = f"\n{serp_fallback_block}\n" if serp_fallback_block else ""
 
-    return f"""Generate exactly {num_faqs} useful FAQs for this page.
+    return f"""You are an expert SEO copywriter writing FAQ content for a web page. Your job is to generate questions that real buyers or visitors would ask about THIS SPECIFIC PAGE, then answer them in a way that could rank in Google AI Overviews.
 
 Target keyword: {keyword}
 Page type: {page_type}
-Business type: {business_type}
-Brand name: {brand_name or "N/A"}
-Page H1: {h1 or "Not provided"}
-Forbidden phrases: {forbidden_phrases or "None"}
+Business type context: {biz_ctx}
+Brand name: {brand_name or "N/A"}. When used, use exact casing.
+Page H1 (context only, do not copy verbatim): {h1 or "Not provided"}
+{forbidden_line}
+{brand_profile_block}
+{_UNSUPPORTED_CLAIM_GUARDRAIL}
+{bottom_funnel_guardrail}
 Page context: {page_context or "Not available"}
 AI Overview: {overview or "Not available"}
 People Also Ask:
 {chr(10).join(paa_lines) or "Not available"}
+{serp_fallback_block_str}
 
 Rules:
 - Questions and answers must be specific to this page.
-- Do not invent pricing, availability, shipping, returns, guarantees, or other unsupported claims.
+- Use AI Overview and PAA data as research signals, but do not copy or rephrase questions verbatim.
+- Only use AIO/PAA questions if genuinely relevant to that specific page.
 - Never use forbidden phrases or em dashes.
-- Keep each answer concise and direct.
+- Lead each answer with a direct, complete response in the first sentence.
+- Match answer length to question complexity:
+  - Simple yes/no or definition questions: 1-2 direct sentences, about 20-45 words.
+  - Comparison, selection, fit, material, compatibility, or use-case questions: about 45-80 words.
+  - Complex how, why, or process questions: about 70-120 words when needed.
+  - Do not pad short answers to hit a minimum. Do not cut complex answers before they are complete.
+- Vary question starter types across the FAQ set. Do not let most questions start with the same word.
+- For a 5-question set, use a natural mix such as What, How, Which, Can, Does, Is, When, or Why where relevant.
+- Avoid using more than 2 questions with the same starter word in one page's FAQ set.
+- Do not force awkward starters. Choose starters that match the page, search intent, and answer type.
+- No filler openers (never: "Great question", "Certainly", "Of course", "Absolutely").
 - Return only a JSON array of objects with question, answer, and source keys.
 """
 
@@ -423,6 +561,7 @@ def generate_faq(
         num_faqs=num_faqs,
         forbidden_phrases=forbidden_phrases,
         page_context=page_context,
+        brand_profile=brand_profile,
     )
 
     raw = fn(api_key, prompt, model=resolved_model)
@@ -454,7 +593,9 @@ def _build_batch_prompt(pages: list, num_faqs: int) -> str:
     blocks = []
 
     for i, p in enumerate(pages, start=1):
-        biz_ctx = _BIZ_CONTEXT.get(p.get("business_type", "general"), _BIZ_CONTEXT["general"])
+        business_type = p.get("business_type", "general")
+        page_type = p.get("page_type", "general")
+        biz_ctx = _BIZ_CONTEXT_FAQ.get(business_type, _BIZ_CONTEXT_FAQ["general"])
         keyword = p.get("keyword", "")
         h1 = p.get("h1", "")
         brand_name = p.get("brand_name", "")
@@ -472,6 +613,7 @@ def _build_batch_prompt(pages: list, num_faqs: int) -> str:
         bp_avoid = bp.get("words_to_avoid", "")
         combined_forbidden = ", ".join(filter(None, [forbidden.strip(), bp_avoid.strip()]))
         forbidden_line = f"Never use: {combined_forbidden}" if combined_forbidden else ""
+        bottom_funnel_guardrail = _bottom_funnel_product_guardrail(business_type, page_type)
 
         # Brand profile block for batch
         bp_lines = []
@@ -500,11 +642,15 @@ def _build_batch_prompt(pages: list, num_faqs: int) -> str:
             for p2 in paa_items[:num_faqs + 3]:
                 line = f"- Q: {p2['question']}"
                 if p2.get("answer"):
-                    line += f" | A: {p2['answer'][:100]}"
+                    line += f" | A: {_format_paa_answer_snippet(p2['answer'])}"
                 paa_lines.append(line)
             paa_block = "PAA:\n" + "\n".join(paa_lines)
         else:
             paa_block = "PAA: not available"
+
+        ai_overview_raw = p.get("ai_overview_raw", "")
+        serp_fallback_block = _structured_no_serp_fallback(ao_sections, paa_items, ai_overview_raw)
+        serp_fallback_block_str = f"\n{serp_fallback_block}\n" if serp_fallback_block else ""
 
         if used_patterns:
             patterns = "\n".join(f"- {p3}" for p3 in used_patterns[:15])
@@ -514,18 +660,21 @@ def _build_batch_prompt(pages: list, num_faqs: int) -> str:
 
         block = f"""--- PAGE {i} ---
 Keyword: {keyword}
-Page type: {p.get("page_type", "general")}
+Page type: {page_type}
 Business type: {biz_ctx}
 {h1_line}
 {brand_line}
 {forbidden_line}
 {brand_profile_block}
+{_UNSUPPORTED_CLAIM_GUARDRAIL}
+{bottom_funnel_guardrail}
 
 {ctx}
 
 {ao_block}
 
 {paa_block}
+{serp_fallback_block_str}
 
 {used_block}"""
         blocks.append(block.strip())
@@ -544,11 +693,19 @@ Rules for all pages:
 - Focus on what is unique and specific to each page — not generic questions that apply to every page in the category
 - Where pages are similar products, vary the questions to highlight different aspects of each
 - Lead each answer with a direct, complete response in the first sentence
-- Keep answers 40 to 80 words, written for featured snippet format
+- Match answer length to question complexity:
+  - Simple yes/no or definition questions: 1-2 direct sentences, about 20-45 words.
+  - Comparison, selection, fit, material, compatibility, or use-case questions: about 45-80 words.
+  - Complex how, why, or process questions: about 70-120 words when needed.
+  - Do not pad short answers to hit a minimum. Do not cut complex answers before they are complete.
 - Use AI Overview sections as priority 1 signal, PAA as priority 2, page content as fallback
 - Only use AIO/PAA questions if genuinely relevant to that specific page
 - No em dashes. No filler openers ("Great question", "Certainly", "Of course", "Absolutely")
 - Where possible, avoid repeating question patterns already used on other pages
+- Vary question starter types across the FAQ set. Do not let most questions start with the same word.
+- For a 5-question set, use a natural mix such as What, How, Which, Can, Does, Is, When, or Why where relevant.
+- Avoid using more than 2 questions with the same starter word in one page's FAQ set.
+- Do not force awkward starters. Choose starters that match the page, search intent, and answer type.
 - Do not create FAQs that repeat what the page copy already covers too closely
 - Do not create FAQs that feel redundant with existing copy unless the FAQ format adds clear value
 - Only keep FAQ ideas that fit naturally with the page and fill a real gap or improve clarity

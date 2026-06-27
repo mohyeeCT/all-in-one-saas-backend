@@ -423,6 +423,7 @@ def _process_single_row(
                 ai_overview_raw=ai_ov_for_faq,
                 forbidden_phrases=forbidden_phrases,
                 page_context=page_context,
+                brand_profile=brand_profile,
             )
             step("✓ FAQs: " + str(len(faq_items)) + " generated")
 

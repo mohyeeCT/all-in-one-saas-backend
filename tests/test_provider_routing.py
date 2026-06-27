@@ -53,7 +53,10 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("max_tokens", captured)
 
     def test_generate_faq_routes_through_provider_function(self):
+        captured = {}
+
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
             return json.dumps([
                 {
                     "question": "What does the service include?",
@@ -76,9 +79,38 @@ class ProviderRoutingTests(unittest.TestCase):
             ai_overview_raw="",
             paa_items=[],
             num_faqs=1,
+            forbidden_phrases="banned phrase",
+            page_context="Product page context.",
+            brand_profile={"words_to_avoid": "cheap", "tone": "Helpful"},
         )
 
         self.assertEqual(result[0]["question"], "What does the service include?")
+        self.assertIn("UNSUPPORTED CLAIM RULES:", captured["prompt"])
+        self.assertIn("Do not use neutral fallback wording", captured["prompt"])
+        self.assertIn("Treat AI Overview and PAA as research signals, not proof", captured["prompt"])
+        self.assertIn("Match answer length to question complexity", captured["prompt"])
+        self.assertIn("Simple yes/no or definition questions: 1-2 direct sentences, about 20-45 words.", captured["prompt"])
+        self.assertIn("Vary question starter types across the FAQ set", captured["prompt"])
+        self.assertIn("Avoid using more than 2 questions with the same starter word", captured["prompt"])
+        self.assertIn("No AI Overview or PAA data is available for this keyword.", captured["prompt"])
+        self.assertIn("Never use these phrases: banned phrase, cheap", captured["prompt"])
+        self.assertNotIn("Keep answers 40 to 80 words", captured["prompt"])
+
+    def test_paa_answer_snippets_are_sentence_aware(self):
+        answer = (
+            "This first sentence should remain intact. "
+            "This second sentence should also remain because the shared snippet limit is higher. "
+            "This third sentence is intentionally long enough to push the text beyond the snippet limit so it should be removed, "
+            "with extra explanatory detail about unrelated product attributes, policy ideas, comparisons, buyer concerns, "
+            "and other filler that should never appear in the final sentence-aware snippet."
+        )
+
+        snippet = copy_gen._format_paa_answer_snippet(answer)
+
+        self.assertEqual(
+            snippet,
+            "This first sentence should remain intact. This second sentence should also remain because the shared snippet limit is higher.",
+        )
 
     def test_generate_copy_routes_through_provider_function(self):
         captured = {}
@@ -125,7 +157,10 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
 
     def test_generate_faq_batch_routes_through_provider_function(self):
+        captured = {}
+
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
             return json.dumps({
                 "1": [
                     {
@@ -150,12 +185,21 @@ class ProviderRoutingTests(unittest.TestCase):
                     "h1": "Example Service",
                     "ai_overview_sections": [],
                     "paa_items": [],
+                    "forbidden_phrases": "banned phrase",
+                    "page_context": "Service page context.",
+                    "brand_profile": {"words_to_avoid": "cheap", "tone": "Helpful"},
                 }
             ],
             num_faqs=1,
         )
 
         self.assertEqual(results[0][0]["question"], "What does the service include?")
+        self.assertIn("UNSUPPORTED CLAIM RULES:", captured["prompt"])
+        self.assertIn("Match answer length to question complexity", captured["prompt"])
+        self.assertIn("Vary question starter types across the FAQ set", captured["prompt"])
+        self.assertIn("No AI Overview or PAA data is available for this keyword.", captured["prompt"])
+        self.assertIn("Never use: banned phrase, cheap", captured["prompt"])
+        self.assertNotIn("Keep answers 40 to 80 words", captured["prompt"])
 
 
 if __name__ == "__main__":
