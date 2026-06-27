@@ -66,7 +66,7 @@ def _settings():
 
 
 class AllInOneH1KeywordFallbackTests(unittest.TestCase):
-    def _process(self, row, settings=None, gsc_client=None, ranked=None, brand_profile=None):
+    def _process(self, row, settings=None, gsc_client=None, ranked=None, brand_profile=None, serp_data=None):
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -75,7 +75,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              patch.object(
                  all_in_one,
                  "get_serp_data",
-                 return_value={"organic": [], "paa_items": [], "ai_overview": ""},
+                 return_value=serp_data or {"organic": [], "paa_items": [], "ai_overview": ""},
              ), \
              patch.object(all_in_one, "_build_combined_docx", return_value=b"docx"):
             return all_in_one._process_single_row(
@@ -217,6 +217,180 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("- Example copy to emulate in style, not content:\nExisting brand sample.", brand_context)
         self.assertIn("- Additional brand guidelines:\nAlways mention compliance.", brand_context)
         self.assertNotIn("tone_of_voice", brand_context)
+
+    def test_faq_generation_receives_structured_ai_overview_sections(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        ai_overview_sections = [
+            {"title": "Selection factors", "content": "Compare dosing systems by accuracy and maintenance needs."}
+        ]
+        serp_data = {
+            "organic": [],
+            "paa_items": [{"question": "How do dosing systems work?", "answer": "They control flow."}],
+            "ai_overview_sections": ai_overview_sections,
+            "ai_overview_raw": "Structured AIO raw text.",
+        }
+        with patch.object(
+            all_in_one,
+            "generate_faq",
+            return_value=[{"question": "What matters when choosing a dosing system?", "answer": "Accuracy matters.", "source": "ai_overview"}],
+        ) as generate:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                },
+                settings=settings,
+                ranked=ranked,
+                serp_data=serp_data,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(generate.call_args.kwargs["ai_overview_sections"], ai_overview_sections)
+        self.assertEqual(generate.call_args.kwargs["ai_overview_raw"], "Structured AIO raw text.")
+
+    def test_page_copy_reuses_faq_page_scrape_for_existing_content(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "gen_page_copy": True,
+            "jina_api_key": "jina-key",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        scraped_content = "Client page content from the FAQ scrape."
+
+        with patch.object(all_in_one, "scrape_page_context", return_value={"success": True, "content": scraped_content}) as faq_scrape, \
+             patch.object(all_in_one, "scrape_url", return_value={"success": True, "body_text": "Second scrape content"}) as scrape_url, \
+             patch.object(all_in_one, "generate_faq", return_value=[]), \
+             patch.object(all_in_one, "generate_page", return_value={"hero": "Hero copy", "_word_count": 2}) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        faq_scrape.assert_called_once()
+        scrape_url.assert_not_called()
+        self.assertEqual(generate_page.call_args.kwargs["client_existing_content"], scraped_content)
+
+    def test_row_gets_review_flags_for_forbidden_phrase_and_missing_requested_output(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_faqs": True,
+            "gen_page_copy": True,
+            "forbidden_phrases": "cheap",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Cheap Industrial Dosing Systems",
+                "description": "",
+                "h1_optimised": "Industrial Dosing Systems",
+            },
+        ), \
+             patch.object(all_in_one, "generate_faq", return_value=[]), \
+             patch.object(all_in_one, "generate_page", return_value={"_full_page": "", "_word_count": 0}), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        codes = [flag["code"] for flag in result["qa_flags"]]
+        self.assertIn("forbidden_phrase", codes)
+        self.assertIn("meta_missing_description", codes)
+        self.assertIn("faq_missing", codes)
+        self.assertIn("page_copy_missing", codes)
+
+    def test_page_copy_result_stores_context_for_section_reruns(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [
+            {"keyword": "industrial dosing systems", "volume": 100, "difficulty": 20, "score": 5.0, "branded": False},
+            {"keyword": "dosing system service", "volume": 90, "difficulty": 20, "score": 4.0, "branded": False},
+            {"keyword": "chemical dosing maintenance", "volume": 80, "difficulty": 20, "score": 3.0, "branded": False},
+        ]
+        serp_data = {
+            "organic": [{"url": "https://competitor.example/service"}],
+            "paa_items": [],
+            "ai_overview_raw": "",
+        }
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": True, "body_text": "Competitor or client content"}), \
+             patch.object(all_in_one, "is_editorial_competitor", return_value=True), \
+             patch.object(all_in_one, "classify_competitor_relevance", return_value=1), \
+             patch.object(all_in_one, "map_competitor_sections", return_value={"benefits": ["Competitor says onboarding is fast."]}), \
+             patch.object(all_in_one, "get_keyword_ideas", return_value=[{"keyword": "metering pump maintenance"}]), \
+             patch.object(all_in_one, "generate_page", return_value={"hero": "Hero copy", "benefits": "Benefit copy", "_word_count": 4}):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                serp_data=serp_data,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["keyword_assignment"]["benefits"]["supporting"], "chemical dosing maintenance")
+        self.assertEqual(result["lsi_keywords"]["chemical dosing maintenance"], ["metering pump maintenance"])
+        self.assertEqual(result["competitor_section_map"]["benefits"], ["Competitor says onboarding is fast."])
 
 
 if __name__ == "__main__":

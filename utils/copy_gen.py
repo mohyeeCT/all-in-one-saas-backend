@@ -169,6 +169,7 @@ def _build_section_prompt(
     previous_section_text: str,
     client_existing_content: str,
     ai_overview: str = "",
+    forbidden_phrases: str = "",
 ) -> str:
     kw_slot = section.get("keyword_slot", "none")
     wc_min, wc_max = section.get("word_count", [150, 250])
@@ -221,6 +222,10 @@ def _build_section_prompt(
     if ai_overview and ai_overview.strip():
         ai_overview_block = f"\nGoogle AI Overview for this topic (use as reference for what topics to cover, do not copy):\n{ai_overview[:600]}"
 
+    forbidden_block = ""
+    if forbidden_phrases and forbidden_phrases.strip():
+        forbidden_block = f"- Never use these phrases: {forbidden_phrases.strip()}\n"
+
     prompt = f"""You are writing the '{section['label']}' section of a {page_type} page.
 
 Page H1: {h1 or 'Not provided'}
@@ -239,6 +244,7 @@ Hard rules for all output:
 - Never use em dashes (use a comma or rewrite the sentence)
 - No exclamation marks
 - No generic AI openings like 'In today's world' or 'Great question'
+{forbidden_block}
 - No fluff. Every sentence must add information or move the argument forward
 - Brand name must appear exactly as: {brand_name}
 - Return only the section copy. No preamble, no notes, no explanations.
@@ -253,7 +259,7 @@ def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str =
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
-        model=model or "claude-haiku-4-5-20251001",
+        model=model or "claude-sonnet-4-6",
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -321,7 +327,7 @@ PROVIDER_FN = {
 }
 
 DEFAULT_MODELS = {
-    "Claude": "claude-haiku-4-5-20251001",
+    "Claude": "claude-sonnet-4-6",
     "OpenAI": "gpt-5.5",
     "Gemini": "gemini-2.0-flash",
     "Gemini (free)": "gemini-2.0-flash",
@@ -357,6 +363,7 @@ def generate_page(
     client_existing_content: str,
     provider: str,
     api_key: str,
+    forbidden_phrases: str = "",
     progress_callback=None,
 ) -> dict:
     """
@@ -398,6 +405,8 @@ def generate_page(
             client_brief=client_brief,
             previous_section_text=previous_text,
             client_existing_content=client_existing_content if i == 0 else "",
+            ai_overview=ai_overview,
+            forbidden_phrases=forbidden_phrases,
         )
 
         try:

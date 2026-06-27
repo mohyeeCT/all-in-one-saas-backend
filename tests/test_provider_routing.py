@@ -20,6 +20,9 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(copy_gen.DEFAULT_MODELS["OpenAI"], "gpt-5.5")
         self.assertNotEqual(copy_gen.DEFAULT_MODELS["OpenAI"], "gpt-4o-mini")
 
+    def test_claude_default_uses_sonnet(self):
+        self.assertEqual(copy_gen.DEFAULT_MODELS["Claude"], "claude-sonnet-4-6")
+
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}
 
@@ -155,6 +158,50 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("- Target audience: Facilities managers", captured["prompt"])
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
+
+    def test_generate_page_passes_aio_and_forbidden_phrases_to_sections(self):
+        captured = []
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured.append(prompt)
+            return "Generated section copy."
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+
+        result = copy_gen.generate_page(
+            template={
+                "sections": [
+                    {
+                        "name": "intro",
+                        "label": "Introduction",
+                        "purpose": "Introduce the topic.",
+                        "word_count": [20, 40],
+                        "keyword_slot": "primary",
+                        "heading_level": "none",
+                        "prompt_rules": "Write directly.",
+                    }
+                ]
+            },
+            keyword_assignment={"intro": {"primary": "industrial dosing systems", "supporting": ""}},
+            lsi_keywords={},
+            business_type="service",
+            brand_name="Example",
+            h1="Industrial Dosing Systems",
+            page_type="service",
+            paa_questions=[],
+            ai_overview="Google says accuracy and maintenance are important.",
+            competitor_section_map={},
+            client_brief="",
+            client_existing_content="",
+            provider="Test",
+            api_key="key",
+            forbidden_phrases="cheap, free audit",
+        )
+
+        self.assertEqual(result["intro"], "Generated section copy.")
+        self.assertIn("Google AI Overview for this topic", captured[0])
+        self.assertIn("Google says accuracy and maintenance are important.", captured[0])
+        self.assertIn("Never use these phrases: cheap, free audit", captured[0])
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}

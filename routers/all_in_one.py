@@ -133,6 +133,104 @@ def _build_brand_context(brand_profile: dict | None, niche: str = "") -> str:
     return "\n".join(parts)
 
 
+def _split_forbidden_phrases(*values) -> list[str]:
+    phrases = []
+    seen = set()
+    for value in values:
+        if not value:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            candidates = value
+        else:
+            candidates = re.split(r"[\n,;]+", str(value))
+        for candidate in candidates:
+            phrase = str(candidate).strip()
+            key = phrase.lower()
+            if phrase and key not in seen:
+                phrases.append(phrase)
+                seen.add(key)
+    return phrases
+
+
+def _contains_forbidden_phrase(text: str, phrase: str) -> bool:
+    if not text or not phrase:
+        return False
+    phrase = phrase.strip()
+    escaped = re.escape(phrase)
+    if not escaped:
+        return False
+    left = r"(?<!\w)" if phrase[0].isalnum() else ""
+    right = r"(?!\w)" if phrase[-1].isalnum() else ""
+    return re.search(left + escaped + right, text, flags=re.IGNORECASE) is not None
+
+
+def _add_qa_flag(flags: list[dict], code: str, message: str, output: str = "", phrase: str = ""):
+    flag = {"code": code, "message": message}
+    if output:
+        flag["output"] = output
+    if phrase:
+        flag["phrase"] = phrase
+    flags.append(flag)
+
+
+def _collect_qa_flags(
+    *,
+    gen_meta: bool,
+    gen_faqs: bool,
+    gen_page_copy: bool,
+    generated_title: str,
+    generated_description: str,
+    optimised_h1: str,
+    faq_items: list,
+    section_results: dict,
+    forbidden_phrases: list[str],
+) -> list[dict]:
+    flags = []
+
+    if gen_meta:
+        if not (generated_title or "").strip():
+            _add_qa_flag(flags, "meta_missing_title", "Meta title was requested but no title was generated.", "meta")
+        if not (generated_description or "").strip():
+            _add_qa_flag(flags, "meta_missing_description", "Meta description was requested but no description was generated.", "meta")
+        if not (optimised_h1 or "").strip():
+            _add_qa_flag(flags, "meta_missing_h1", "Optimised H1 was requested but no H1 was generated.", "meta")
+
+    if gen_faqs and not faq_items:
+        _add_qa_flag(flags, "faq_missing", "FAQs were requested but no FAQ items were generated.", "faq")
+
+    page_copy_text = "\n\n".join(str(v) for k, v in (section_results or {}).items() if not str(k).startswith("_"))
+    if gen_page_copy and not page_copy_text.strip():
+        _add_qa_flag(flags, "page_copy_missing", "Page copy was requested but no page sections were generated.", "page_copy")
+
+    outputs = [
+        ("meta_title", generated_title or ""),
+        ("meta_description", generated_description or ""),
+        ("meta_h1", optimised_h1 or ""),
+        ("page_copy", page_copy_text),
+    ]
+    for item in faq_items or []:
+        if isinstance(item, dict):
+            outputs.append(("faq", f"{item.get('question', '')}\n{item.get('answer', '')}"))
+
+    seen_matches = set()
+    for output, text in outputs:
+        for phrase in forbidden_phrases:
+            key = (output, phrase.lower())
+            if key in seen_matches:
+                continue
+            if _contains_forbidden_phrase(text, phrase):
+                _add_qa_flag(
+                    flags,
+                    "forbidden_phrase",
+                    f"Forbidden phrase found in {output}.",
+                    output,
+                    phrase,
+                )
+                seen_matches.add(key)
+
+    return flags
+
+
 def _process_single_row(
     row: dict,
     settings: dict,
@@ -173,6 +271,11 @@ def _process_single_row(
     location_code = int(settings.get("location_code", 2840))
     include_brand = settings.get("include_brand", True)
     forbidden_phrases = settings.get("forbidden_phrases", "")
+    forbidden_phrase_list = _split_forbidden_phrases(
+        forbidden_phrases,
+        (brand_profile or {}).get("words_to_avoid", ""),
+    )
+    forbidden_phrase_text = ", ".join(forbidden_phrase_list)
 
     # Build client brief — merge niche context + brand profile + custom brief
     client_brief = settings.get("client_brief", "") or ""
@@ -284,12 +387,14 @@ def _process_single_row(
     serp_data       = {"organic": [], "paa_items": [], "ai_overview": ""}
     paa_questions   = []
     ai_overview     = ""
+    ai_overview_sections = []
     organic_results = []
     try:
         serp_data       = get_serp_data(dfs_login, dfs_password, primary_keyword, location_code)
         if serp_data.get("error"):
             step("DataForSEO SERP failed: " + str(serp_data["error"])[:120])
         paa_questions   = serp_data.get("paa_items") or serp_data.get("paa") or []
+        ai_overview_sections = serp_data.get("ai_overview_sections") or []
         ai_overview     = serp_data.get("ai_overview_raw") or serp_data.get("ai_overview") or ""
         organic_results = serp_data.get("organic") or []
         step("SERP: " + ("AIO ✓" if ai_overview else "AIO ✗") + ", PAA: " + str(len(paa_questions)) + ", organic: " + str(len(organic_results)))
@@ -300,12 +405,14 @@ def _process_single_row(
     # STEP 3 — Page context scrape (for FAQs)
     # ─────────────────────────────────────────────────────────────────────
     page_context = ""
+    scraped_page_content = ""
     if gen_faqs and jina_key:
         step("scraping page context...")
         try:
             sc = scrape_page_context(jina_key, url)
             if sc.get("success"):
-                page_context = sc["content"]
+                scraped_page_content = sc["content"]
+                page_context = scraped_page_content
                 if client_brief:
                     page_context = (page_context + "\n\n" + client_brief).strip()
                 step("page context: " + str(len(page_context)) + " chars")
@@ -317,6 +424,8 @@ def _process_single_row(
     # ─────────────────────────────────────────────────────────────────────
     competitor_urls_used = []
     competitor_section_map = {}
+    kw_assignment = {}
+    lsi_map = {}
     template = None
 
     if gen_page_copy:
@@ -379,7 +488,7 @@ def _process_single_row(
                 keyword=primary_keyword,
                 page_type=page_type,
                 brand_name=brand_name if include_brand else "",
-                forbidden_phrases=forbidden_phrases,
+                forbidden_phrases=forbidden_phrase_text,
                 context=settings.get("client_brief", "") or "",
                 brand_context=brand_context,
                 business_type=business_type,
@@ -419,7 +528,7 @@ def _process_single_row(
                 h1=h1,
                 num_faqs=num_faqs,
                 paa_items=paa_for_faq,
-                ai_overview_sections=[],
+                ai_overview_sections=ai_overview_sections,
                 ai_overview_raw=ai_ov_for_faq,
                 forbidden_phrases=forbidden_phrases,
                 page_context=page_context,
@@ -459,7 +568,6 @@ def _process_single_row(
         step("generating page copy (" + str(len(template["sections"])) + " sections)...")
 
         # LSI keywords
-        lsi_map = {}
         supporting_kws = list({v.get("supporting", "") for v in kw_assignment.values() if v.get("supporting")})
         for sk in supporting_kws[:3]:
             try:
@@ -471,12 +579,15 @@ def _process_single_row(
 
         # Client existing content
         client_existing_content = ""
-        try:
-            existing = scrape_url(url)
-            if existing["success"]:
-                client_existing_content = existing.get("body_text", "")[:800]
-        except Exception:
-            pass
+        if scraped_page_content:
+            client_existing_content = scraped_page_content[:800]
+        else:
+            try:
+                existing = scrape_url(url)
+                if existing["success"]:
+                    client_existing_content = existing.get("body_text", "")[:800]
+            except Exception:
+                pass
 
         try:
             def on_section(i, total, label):
@@ -499,6 +610,7 @@ def _process_single_row(
                 client_existing_content=client_existing_content,
                 provider=provider,
                 api_key=api_key,
+                forbidden_phrases=forbidden_phrase_text,
                 progress_callback=on_section,
             )
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
@@ -539,6 +651,23 @@ def _process_single_row(
     except Exception as e:
         step("⚠ docx failed: " + str(e)[:60])
 
+    stored_competitor_section_map = {
+        section: [str(excerpt)[:500] for excerpt in excerpts[:3] if str(excerpt).strip()]
+        for section, excerpts in (competitor_section_map or {}).items()
+        if excerpts
+    }
+    qa_flags = _collect_qa_flags(
+        gen_meta=gen_meta,
+        gen_faqs=gen_faqs,
+        gen_page_copy=gen_page_copy,
+        generated_title=generated_title or "",
+        generated_description=generated_description or "",
+        optimised_h1=optimised_h1 or "",
+        faq_items=faq_items,
+        section_results=section_results,
+        forbidden_phrases=forbidden_phrase_list,
+    )
+
     return {
         "url":                  url,
         "h1":                   h1,
@@ -557,9 +686,13 @@ def _process_single_row(
         "word_count":           word_count,
         "template_name":        template["name"] if template else None,
         "section_results":      section_results,
+        "keyword_assignment":   kw_assignment if gen_page_copy else {},
+        "lsi_keywords":         lsi_map if gen_page_copy else {},
+        "competitor_section_map": stored_competitor_section_map if gen_page_copy else {},
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
-        "status":               "ok",
+        "qa_flags":             qa_flags,
+        "status":               "review" if qa_flags else "ok",
     }
 
 

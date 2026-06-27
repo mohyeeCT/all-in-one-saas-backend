@@ -545,7 +545,7 @@ def _rerun_single_section(
     from utils.copy_gen import _build_section_prompt, PROVIDER_FN, sanitise
     from utils.templates import get_template
     from utils.dfs import get_serp_data
-    from routers.all_in_one import _build_combined_docx
+    from routers.all_in_one import _build_combined_docx, _split_forbidden_phrases
 
     try:
         settings = hydrate_job_settings(sb, user_id, job.get("settings") or {})
@@ -583,6 +583,7 @@ def _rerun_single_section(
 
         # ── 2. Brand profile → append to client_brief ──────────────────────────
         client_brief = settings.get("client_brief", "") or ""
+        brand_words_to_avoid = ""
         brand_profile_id = settings.get("brand_profile_id", "")
         if brand_profile_id:
             try:
@@ -595,6 +596,7 @@ def _rerun_single_section(
                     if bp_data.get("key_messages"):
                         parts.append("Key messages: " + bp_data["key_messages"])
                     if bp_data.get("words_to_avoid"):
+                        brand_words_to_avoid = bp_data["words_to_avoid"]
                         parts.append("Words to avoid: " + bp_data["words_to_avoid"])
                     if bp_data.get("guidelines"):
                         parts.append(bp_data["guidelines"])
@@ -602,6 +604,10 @@ def _rerun_single_section(
                         client_brief = (client_brief + "\n\n" + "\n".join(parts)).strip()
             except Exception:
                 pass
+        forbidden_phrase_text = ", ".join(_split_forbidden_phrases(
+            settings.get("forbidden_phrases", ""),
+            brand_words_to_avoid,
+        ))
 
         # ── 3. Template and section definition ────────────────────────────────
         template_key = stored_row.get("template_key") or settings.get("template_key", "service_page")
@@ -619,9 +625,18 @@ def _rerun_single_section(
             return
 
         # ── 4. Context from stored result ─────────────────────────────────────
-        primary_keyword = row_result.get("primary_keyword") or ""
-        h1 = row_result.get("h1") or primary_keyword
+        overall_primary_keyword = row_result.get("primary_keyword") or ""
+        h1 = row_result.get("h1") or overall_primary_keyword
         section_results = dict(row_result.get("section_results") or {})
+        keyword_assignment = row_result.get("keyword_assignment") or {}
+        section_assignment = keyword_assignment.get(section_name) or {}
+        section_primary_keyword = section_assignment.get("primary") or overall_primary_keyword
+        section_supporting_keyword = section_assignment.get("supporting") or overall_primary_keyword
+        lsi_terms = (row_result.get("lsi_keywords") or {}).get(
+            section_supporting_keyword or section_primary_keyword,
+            [],
+        )
+        competitor_excerpts = (row_result.get("competitor_section_map") or {}).get(section_name, [])
 
         # previous_section_text: all sections before target in template order
         section_order = [s["name"] for s in template["sections"]]
@@ -633,9 +648,9 @@ def _rerun_single_section(
         # ── 5. Re-fetch SERP for fresh PAA + AI Overview ───────────────────────
         paa_questions = []
         ai_overview = ""
-        if primary_keyword and dfs_login and dfs_password:
+        if overall_primary_keyword and dfs_login and dfs_password:
             try:
-                serp = get_serp_data(dfs_login, dfs_password, primary_keyword, location_code)
+                serp = get_serp_data(dfs_login, dfs_password, overall_primary_keyword, location_code)
                 if serp.get("error"):
                     _update_job(sb, job_id, user_id, {
                         "current_step": "DataForSEO SERP refresh failed: " + str(serp["error"])[:120]
@@ -654,19 +669,20 @@ def _rerun_single_section(
 
         prompt = _build_section_prompt(
             section=section_def,
-            primary_keyword=primary_keyword,
-            supporting_keyword=primary_keyword,   # simplified — original assignment not stored
-            lsi_keywords=[],
+            primary_keyword=section_primary_keyword,
+            supporting_keyword=section_supporting_keyword,
+            lsi_keywords=lsi_terms,
             business_type=business_type,
             brand_name=brand_name,
             h1=h1,
             page_type=page_type,
             paa_questions=paa_questions if section_name == "faq" else [],
-            competitor_excerpts=[],               # not stored — skipped for spot regen
+            competitor_excerpts=competitor_excerpts,
             client_brief=client_brief,
             previous_section_text=previous_section_text,
             client_existing_content="",
             ai_overview=ai_overview,
+            forbidden_phrases=forbidden_phrase_text,
         )
 
         raw = fn(api_key, prompt)
@@ -686,7 +702,7 @@ def _rerun_single_section(
             docx_bytes = _build_combined_docx(
                 url=row_result.get("url", ""),
                 h1=h1,
-                primary_keyword=primary_keyword,
+                primary_keyword=overall_primary_keyword,
                 page_type=page_type,
                 template=template,
                 generated_title=row_result.get("generated_title"),
