@@ -101,6 +101,38 @@ def _update_job(sb, job_id: str, user_id: str, data: dict):
         pass
 
 
+def _build_brand_context(brand_profile: dict | None, niche: str = "") -> str:
+    lines = []
+    if brand_profile:
+        if brand_profile.get("brand_voice"):
+            lines.append("- Voice: " + brand_profile["brand_voice"])
+        tone = brand_profile.get("tone") or brand_profile.get("tone_of_voice")
+        if tone:
+            lines.append("- Tone: " + tone)
+        if brand_profile.get("target_audience"):
+            lines.append("- Target audience: " + brand_profile["target_audience"])
+        if brand_profile.get("usps"):
+            lines.append("- Unique selling points: " + brand_profile["usps"])
+        if brand_profile.get("key_messages"):
+            lines.append("- Key messages to reinforce: " + brand_profile["key_messages"])
+        if brand_profile.get("competitors"):
+            lines.append("- Competitors to differentiate from: " + brand_profile["competitors"])
+        if brand_profile.get("products_services"):
+            lines.append("- Products/services: " + brand_profile["products_services"])
+        if brand_profile.get("words_to_avoid"):
+            lines.append("- Words to avoid: " + brand_profile["words_to_avoid"])
+        if brand_profile.get("example_copy"):
+            lines.append("- Example copy to emulate in style, not content:\n" + brand_profile["example_copy"])
+        if brand_profile.get("guidelines"):
+            lines.append("- Additional brand guidelines:\n" + brand_profile["guidelines"])
+
+    parts = ["BRAND CONTEXT:\n" + "\n".join(lines)] if lines else []
+    niche_context = get_niche_context(niche)
+    if niche_context:
+        parts.append("NICHE CONTEXT:\n" + niche_context)
+    return "\n".join(parts)
+
+
 def _process_single_row(
     row: dict,
     settings: dict,
@@ -159,6 +191,7 @@ def _process_single_row(
             parts.append(brand_profile["guidelines"])
         if parts:
             client_brief = (client_brief + "\n\n" + "\n".join(parts)).strip()
+    brand_context = _build_brand_context(brand_profile, settings.get("niche", ""))
 
     use_gsc  = settings.get("use_gsc", False)
     site_url = settings.get("site_url", "")
@@ -347,7 +380,8 @@ def _process_single_row(
                 page_type=page_type,
                 brand_name=brand_name if include_brand else "",
                 forbidden_phrases=forbidden_phrases,
-                context=client_brief,
+                context=settings.get("client_brief", "") or "",
+                brand_context=brand_context,
                 business_type=business_type,
                 h1=h1,
             )
@@ -570,13 +604,13 @@ def _build_combined_docx(
             p = doc.add_paragraph()
             p.add_run("Title Tag: ").bold = True
             p.add_run(generated_title)
-            char_note = f"  ({len(generated_title)} chars{'  ⚠ over 60' if len(generated_title) > 60 else ''})"
+            char_note = f"  ({len(generated_title)} chars{'  ⚠ over 90' if len(generated_title) > 90 else ''})"
             p.add_run(char_note)
         if generated_description:
             p = doc.add_paragraph()
             p.add_run("Meta Description: ").bold = True
             p.add_run(generated_description)
-            char_note = f"  ({len(generated_description)} chars{'  ⚠ over 155' if len(generated_description) > 155 else ''})"
+            char_note = f"  ({len(generated_description)} chars{'  ⚠ over 200' if len(generated_description) > 200 else ''})"
             p.add_run(char_note)
         if optimised_h1:
             p = doc.add_paragraph()

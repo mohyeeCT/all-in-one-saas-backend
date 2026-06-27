@@ -684,6 +684,7 @@ def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
 
+    brand_context = kwargs.get("brand_context", "") or "BRAND CONTEXT:\nNone"
     prompt = f"""Write SEO metadata for this page.
 
 URL: {kwargs.get("url", "")}
@@ -695,10 +696,14 @@ Current H1: {kwargs.get("h1", "") or "Not provided"}
 Forbidden phrases: {kwargs.get("forbidden_phrases", "") or "None"}
 Additional context: {kwargs.get("context", "") or "None"}
 
+{brand_context}
+
 Rules:
-- Title maximum 60 characters.
-- Meta description maximum 155 characters.
-- Include the target keyword naturally.
+- Title should aim for up to 90 characters.
+- Meta description should aim for up to 200 characters.
+- H1 has no hard character limit but should aim for under 80 characters.
+- Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
+- Include the target keyword naturally, ideally near the start where it fits.
 - Never use forbidden phrases or em dashes.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """

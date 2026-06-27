@@ -81,7 +81,10 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result[0]["question"], "What does the service include?")
 
     def test_generate_copy_routes_through_provider_function(self):
+        captured = {}
+
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
             return json.dumps({
                 "title": "Example Service",
                 "description": "Learn about the Example service.",
@@ -99,12 +102,27 @@ class ProviderRoutingTests(unittest.TestCase):
             brand_name="Example",
             forbidden_phrases="",
             context="",
+            brand_context=(
+                "BRAND CONTEXT:\n"
+                "- Voice: Plainspoken expert\n"
+                "- Tone: Confident\n"
+                "- Target audience: Facilities managers"
+            ),
             business_type="service",
             h1="Example Service",
         )
 
         self.assertEqual(result["title"], "Example Service")
         self.assertEqual(result["h1_optimised"], "Example Service")
+        self.assertIn("Title should aim for up to 90 characters.", captured["prompt"])
+        self.assertIn("Meta description should aim for up to 200 characters.", captured["prompt"])
+        self.assertIn("H1 has no hard character limit but should aim for under 80 characters.", captured["prompt"])
+        self.assertIn("BRAND CONTEXT:", captured["prompt"])
+        self.assertIn("- Voice: Plainspoken expert", captured["prompt"])
+        self.assertIn("- Tone: Confident", captured["prompt"])
+        self.assertIn("- Target audience: Facilities managers", captured["prompt"])
+        self.assertNotIn("Title maximum 60 characters", captured["prompt"])
+        self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

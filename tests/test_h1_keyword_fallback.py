@@ -1,5 +1,32 @@
 import unittest
+import sys
+import types
 from unittest.mock import patch
+
+supabase_stub = types.ModuleType("supabase")
+supabase_stub.create_client = lambda *args, **kwargs: None
+supabase_stub.Client = object
+sys.modules.setdefault("supabase", supabase_stub)
+
+google_stub = types.ModuleType("google")
+google_auth_stub = types.ModuleType("google.auth")
+google_auth_exceptions_stub = types.ModuleType("google.auth.exceptions")
+google_auth_exceptions_stub.RefreshError = RuntimeError
+google_stub.auth = google_auth_stub
+google_auth_stub.exceptions = google_auth_exceptions_stub
+sys.modules.setdefault("google", google_stub)
+sys.modules.setdefault("google.auth", google_auth_stub)
+sys.modules.setdefault("google.auth.exceptions", google_auth_exceptions_stub)
+
+gsc_stub = types.ModuleType("utils.gsc")
+gsc_stub.GscOAuthConfigError = RuntimeError
+gsc_stub.get_gsc_client = lambda *args, **kwargs: None
+gsc_stub.get_top_queries_for_url = lambda *args, **kwargs: []
+sys.modules.setdefault("utils.gsc", gsc_stub)
+
+docx_export_stub = types.ModuleType("utils.docx_export")
+docx_export_stub.build_docx = lambda *args, **kwargs: b"docx"
+sys.modules.setdefault("utils.docx_export", docx_export_stub)
 
 from routers import all_in_one
 
@@ -39,7 +66,7 @@ def _settings():
 
 
 class AllInOneH1KeywordFallbackTests(unittest.TestCase):
-    def _process(self, row, settings=None, gsc_client=None, ranked=None):
+    def _process(self, row, settings=None, gsc_client=None, ranked=None, brand_profile=None):
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -61,6 +88,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 job_id="job-1",
                 row_num=1,
                 total_rows=1,
+                brand_profile=brand_profile,
             )
 
     def test_uses_h1_when_ranked_pool_empty_and_gsc_disabled(self):
@@ -127,6 +155,68 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         self.assertIsNone(result["primary_keyword"])
         self.assertEqual(result["status"], "skipped: no keywords found")
+
+    def test_meta_generation_receives_structured_brand_context(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        brand_profile = {
+            "brand_voice": "Plainspoken expert",
+            "tone": "Confident",
+            "target_audience": "Facilities managers",
+            "usps": "Same-day support",
+            "key_messages": "Reduce downtime",
+            "competitors": "Acme Rival",
+            "products_services": "Industrial dosing systems",
+            "words_to_avoid": "cheap",
+            "example_copy": "Existing brand sample.",
+            "guidelines": "Always mention compliance.",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Industrial Dosing Systems",
+                "description": "Learn about industrial dosing systems.",
+                "h1_optimised": "Industrial Dosing Systems",
+            },
+        ) as generate:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                },
+                settings=settings,
+                ranked=ranked,
+                brand_profile=brand_profile,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        brand_context = generate.call_args.kwargs["brand_context"]
+        self.assertIn("BRAND CONTEXT:", brand_context)
+        self.assertIn("- Voice: Plainspoken expert", brand_context)
+        self.assertIn("- Tone: Confident", brand_context)
+        self.assertIn("- Target audience: Facilities managers", brand_context)
+        self.assertIn("- Unique selling points: Same-day support", brand_context)
+        self.assertIn("- Key messages to reinforce: Reduce downtime", brand_context)
+        self.assertIn("- Competitors to differentiate from: Acme Rival", brand_context)
+        self.assertIn("- Products/services: Industrial dosing systems", brand_context)
+        self.assertIn("- Words to avoid: cheap", brand_context)
+        self.assertIn("- Example copy to emulate in style, not content:\nExisting brand sample.", brand_context)
+        self.assertIn("- Additional brand guidelines:\nAlways mention compliance.", brand_context)
+        self.assertNotIn("tone_of_voice", brand_context)
 
 
 if __name__ == "__main__":
