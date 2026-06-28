@@ -85,7 +85,7 @@ def _is_cancelled(sb, job_id: str, user_id: str) -> bool:
             .eq("user_id", user_id)
             .execute()
         )
-        return res.data and res.data[0].get("status") == "cancelling"
+        return bool(res.data and res.data[0].get("status") in {"cancelling", "cancelled"})
     except Exception:
         return False
 
