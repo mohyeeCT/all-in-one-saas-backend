@@ -739,6 +739,8 @@ def _process_single_row(
     brand_profile: dict = None,
     gsc_auth_method: str = "disabled",
 ) -> dict:
+    row_started_at = time.monotonic()
+
     def step(msg: str):
         _update_job(sb, job_id, user_id, {"current_step": f"Row {row_num}/{total_rows}: {msg}"})
 
@@ -795,6 +797,46 @@ def _process_single_row(
     site_url = settings.get("site_url", "")
     jina_key = settings.get("jina_api_key", "")
 
+    run_diagnostics = {
+        "provider": provider,
+        "model": model or "",
+        "gsc_auth_method": gsc_auth_method,
+        "page_type": page_type,
+        "template_key": template_key,
+        "generation_requested": {
+            "meta": bool(gen_meta),
+            "faqs": bool(gen_faqs),
+            "page_copy": bool(gen_page_copy),
+        },
+        "input_signal_counts": {
+            "manual_keywords": len(manual_kws),
+            "dfs_ranked": 0,
+            "gsc_queries": 0,
+            "keyword_pool": 0,
+            "ranked_keywords": 0,
+            "serp_organic": 0,
+            "paa_questions": 0,
+            "ai_overview_sections": 0,
+            "competitors_scraped": 0,
+            "page_context_chars": 0,
+            "scraped_page_chars": 0,
+        },
+        "scrape": {
+            "page_context_success": False,
+            "client_existing_content_success": False,
+        },
+        "output_counts": {
+            "faq_items": 0,
+            "sections": 0,
+            "word_count": 0,
+        },
+        "duration_ms": 0,
+    }
+
+    def _finish_diagnostics() -> dict:
+        run_diagnostics["duration_ms"] = int((time.monotonic() - row_started_at) * 1000)
+        return run_diagnostics
+
     def _empty(status: str) -> dict:
         return {
             "url": url, "primary_keyword": None, "keyword_source": status,
@@ -803,6 +845,7 @@ def _process_single_row(
             "faq_items": [], "faq_schema": None,
             "word_count": 0, "template_name": None,
             "competitor_urls": [], "docx_b64": None, "status": status,
+            "run_diagnostics": _finish_diagnostics(),
         }
 
     if not url or not url.startswith("http"):
@@ -815,6 +858,7 @@ def _process_single_row(
     dfs_ranked = []
     try:
         dfs_ranked = get_ranked_keywords_for_url(url, dfs_login, dfs_password, location_code)
+        run_diagnostics["input_signal_counts"]["dfs_ranked"] = len(dfs_ranked)
         step("DFS ranked: " + str(len(dfs_ranked)) + " keywords found")
     except Exception as e:
         step("⚠ DFS ranked failed: " + str(e)[:60])
@@ -825,6 +869,7 @@ def _process_single_row(
         step("fetching GSC queries...")
         try:
             gsc_queries = get_top_queries_for_url(gsc_client, site_url, url, top_n=10)
+            run_diagnostics["input_signal_counts"]["gsc_queries"] = len(gsc_queries)
             step("GSC: " + str(len(gsc_queries)) + " queries")
         except Exception:
             pass
@@ -846,16 +891,20 @@ def _process_single_row(
             step("DataForSEO keyword difficulty failed: " + str(e)[:120])
 
     pool   = merge_keyword_pools(gsc_queries, dfs_ranked, manual_kws, vol_map, diff_map)
+    run_diagnostics["input_signal_counts"]["keyword_pool"] = len(pool)
     pool   = [k for k in pool if k.get("volume", 0) >= min_volume]
     ranked = rank_keywords(pool, branded_terms, h1=h1, exclude_position_one=True)
     ranked = [k for k in ranked if not k.get("branded")]
+    run_diagnostics["input_signal_counts"]["ranked_keywords"] = len(ranked)
 
     if not ranked and manual_kws:
         ranked = [{"keyword": k, "volume": 10, "difficulty": 1, "score": 1.0} for k in manual_kws]
+        run_diagnostics["input_signal_counts"]["ranked_keywords"] = len(ranked)
 
     keyword_source = "dfs+gsc" if gsc_queries else "dfs"
     if not ranked and not use_gsc and h1:
         ranked = [{"keyword": h1, "volume": 0, "difficulty": 50, "score": 0.0}]
+        run_diagnostics["input_signal_counts"]["ranked_keywords"] = len(ranked)
         keyword_source = "h1 fallback"
 
     if not ranked:
@@ -892,6 +941,9 @@ def _process_single_row(
         ai_overview_sections = serp_data.get("ai_overview_sections") or []
         ai_overview     = serp_data.get("ai_overview_raw") or serp_data.get("ai_overview") or ""
         organic_results = serp_data.get("organic") or []
+        run_diagnostics["input_signal_counts"]["paa_questions"] = len(paa_questions)
+        run_diagnostics["input_signal_counts"]["ai_overview_sections"] = len(ai_overview_sections)
+        run_diagnostics["input_signal_counts"]["serp_organic"] = len(organic_results)
         step("SERP: " + ("AIO ✓" if ai_overview else "AIO ✗") + ", PAA: " + str(len(paa_questions)) + ", organic: " + str(len(organic_results)))
     except Exception as e:
         step("⚠ SERP failed: " + str(e)[:60])
@@ -907,9 +959,12 @@ def _process_single_row(
             sc = scrape_page_context(jina_key, url)
             if sc.get("success"):
                 scraped_page_content = sc["content"]
+                run_diagnostics["scrape"]["page_context_success"] = True
+                run_diagnostics["input_signal_counts"]["scraped_page_chars"] = len(scraped_page_content)
                 page_context = scraped_page_content
                 if client_brief:
                     page_context = (page_context + "\n\n" + client_brief).strip()
+                run_diagnostics["input_signal_counts"]["page_context_chars"] = len(page_context)
                 step("page context: " + str(len(page_context)) + " chars")
         except Exception:
             page_context = client_brief
@@ -959,6 +1014,7 @@ def _process_single_row(
                 scored.sort(key=lambda x: x["relevance"], reverse=True)
                 top = scored[:3]
                 competitor_urls_used = [c["comp_url"] for c in top]
+                run_diagnostics["input_signal_counts"]["competitors_scraped"] = len(competitor_urls_used)
                 if top:
                     competitor_section_map = map_competitor_sections(top, template["sections"])
                 step("competitors: " + str(len(competitor_urls_used)) + " scraped")
@@ -1055,6 +1111,7 @@ def _process_single_row(
                 return raw_json, script
 
             faq_schema, faq_script = _build_faq_schema(faq_items)
+            run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
 
         except Exception as e:
             step("⚠ FAQs failed: " + str(e)[:60])
@@ -1083,11 +1140,13 @@ def _process_single_row(
         client_existing_content = ""
         if scraped_page_content:
             client_existing_content = scraped_page_content[:800]
+            run_diagnostics["scrape"]["client_existing_content_success"] = True
         else:
             try:
                 existing = scrape_url(url, api_key=jina_key)
                 if existing["success"]:
                     client_existing_content = existing.get("body_text", "")[:800]
+                    run_diagnostics["scrape"]["client_existing_content_success"] = bool(client_existing_content)
             except Exception:
                 pass
 
@@ -1119,6 +1178,8 @@ def _process_single_row(
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
             full_page       = page_result.get("_full_page", "")
             word_count      = page_result.get("_word_count", 0)
+            run_diagnostics["output_counts"]["sections"] = len(section_results)
+            run_diagnostics["output_counts"]["word_count"] = word_count
             step("✓ page copy: " + str(word_count) + " words")
         except InterruptedError:
             raise
@@ -1240,6 +1301,7 @@ def _process_single_row(
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
         "qa_flags":             qa_flags,
+        "run_diagnostics":      _finish_diagnostics(),
         "status":               "review" if qa_flags else "ok",
     }
 

@@ -931,6 +931,71 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         for call in scrape_url.call_args_list:
             self.assertEqual(call.kwargs["api_key"], "jina-key")
 
+    def test_row_result_includes_safe_run_diagnostics(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "gen_meta": True,
+            "gen_faqs": True,
+            "jina_api_key": "jina-secret",
+            "api_key": "provider-secret",
+            "dfs_password": "dfs-secret",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        serp_data = {
+            "organic": [{"url": "https://competitor.example/service"}],
+            "paa_items": [{"question": "What is dosing?", "answer": "A process."}],
+            "ai_overview_sections": ["Accuracy matters."],
+            "ai_overview_raw": "Accuracy matters.",
+        }
+
+        with patch.object(all_in_one, "scrape_page_context", return_value={"success": True, "content": "Scraped page context."}), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_copy", return_value={
+                 "title": "Industrial Dosing Systems",
+                 "description": "Industrial dosing systems for facilities.",
+                 "h1_optimised": "Industrial Dosing Systems",
+             }), \
+             patch.object(all_in_one, "generate_faq", return_value=[
+                 {"question": "What is dosing?", "answer": "It controls chemicals."}
+             ]), \
+             patch.object(all_in_one, "generate_page", return_value={"hero": "Hero copy", "_word_count": 2}):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                serp_data=serp_data,
+            )
+
+        diagnostics = result["run_diagnostics"]
+        self.assertEqual(diagnostics["provider"], "Claude")
+        self.assertEqual(diagnostics["model"], "")
+        self.assertEqual(diagnostics["gsc_auth_method"], "disabled")
+        self.assertGreaterEqual(diagnostics["duration_ms"], 0)
+        self.assertEqual(diagnostics["input_signal_counts"]["paa_questions"], 1)
+        self.assertEqual(diagnostics["input_signal_counts"]["ai_overview_sections"], 1)
+        self.assertEqual(diagnostics["output_counts"]["faq_items"], 1)
+        self.assertEqual(diagnostics["output_counts"]["sections"], 1)
+        self.assertEqual(diagnostics["generation_requested"], {"meta": True, "faqs": True, "page_copy": True})
+        self.assertNotIn("provider-secret", repr(diagnostics))
+        self.assertNotIn("dfs-secret", repr(diagnostics))
+        self.assertNotIn("jina-secret", repr(diagnostics))
+        self.assertNotIn("Scraped page context.", repr(diagnostics))
+
     def test_page_copy_only_docx_uses_richer_export_builder(self):
         settings = {
             **_settings(),

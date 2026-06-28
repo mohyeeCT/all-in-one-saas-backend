@@ -115,6 +115,17 @@ class ProviderRoutingTests(unittest.TestCase):
             "This first sentence should remain intact. This second sentence should also remain because the shared snippet limit is higher.",
         )
 
+    def test_section_prompt_limits_are_named_and_keep_current_values(self):
+        self.assertEqual(copy_gen.SECTION_LSI_KEYWORD_LIMIT, 3)
+        self.assertEqual(copy_gen.SECTION_PAA_QUESTION_LIMIT, 5)
+        self.assertEqual(copy_gen.SECTION_COMPETITOR_EXCERPT_LIMIT, 3)
+        self.assertEqual(copy_gen.SECTION_EXISTING_CONTENT_CHAR_LIMIT, 400)
+        self.assertEqual(copy_gen.SECTION_CLIENT_BRIEF_CHAR_LIMIT, 300)
+        self.assertEqual(copy_gen.SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT, 300)
+        self.assertEqual(copy_gen.SECTION_AI_OVERVIEW_CHAR_LIMIT, 600)
+        self.assertEqual(copy_gen.SECTION_REVIEWER_NOTE_LIMIT, 5)
+        self.assertEqual(copy_gen.SECTION_REVIEWER_NOTE_CHAR_LIMIT, 300)
+
     def test_generate_copy_routes_through_provider_function(self):
         captured = {}
 

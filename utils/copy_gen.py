@@ -3,6 +3,17 @@ import time
 import json
 
 
+SECTION_LSI_KEYWORD_LIMIT = 3
+SECTION_PAA_QUESTION_LIMIT = 5
+SECTION_COMPETITOR_EXCERPT_LIMIT = 3
+SECTION_EXISTING_CONTENT_CHAR_LIMIT = 400
+SECTION_CLIENT_BRIEF_CHAR_LIMIT = 300
+SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT = 300
+SECTION_AI_OVERVIEW_CHAR_LIMIT = 600
+SECTION_REVIEWER_NOTE_LIMIT = 5
+SECTION_REVIEWER_NOTE_CHAR_LIMIT = 300
+
+
 # ── Sanitiser ─────────────────────────────────────────────────────────────────
 
 def sanitise(text: str, brand_name: str = "") -> str:
@@ -180,33 +191,33 @@ def _build_section_prompt(
     elif kw_slot == "supporting":
         keyword_instruction = f"Include this keyword naturally: {supporting_keyword}" if supporting_keyword else ""
     elif kw_slot == "lsi":
-        lsi_str = ", ".join(lsi_keywords[:3]) if lsi_keywords else ""
+        lsi_str = ", ".join(lsi_keywords[:SECTION_LSI_KEYWORD_LIMIT]) if lsi_keywords else ""
         keyword_instruction = f"Naturally cover these related terms where relevant: {lsi_str}" if lsi_str else ""
     else:
         keyword_instruction = ""
 
     paa_block = ""
     if paa_questions and section["name"] == "faq":
-        paa_lines = "\n".join(f"- {q['question']}" for q in paa_questions[:5])
+        paa_lines = "\n".join(f"- {q['question']}" for q in paa_questions[:SECTION_PAA_QUESTION_LIMIT])
         paa_block = f"\nPeople Also Ask questions to draw from:\n{paa_lines}"
 
     competitor_block = ""
     if competitor_excerpts:
-        excerpts = "\n".join(f"- {e}" for e in competitor_excerpts[:3] if e.strip())
+        excerpts = "\n".join(f"- {e}" for e in competitor_excerpts[:SECTION_COMPETITOR_EXCERPT_LIMIT] if e.strip())
         if excerpts:
             competitor_block = f"\nWhat competitors cover in this section (use as context, not as copy):\n{excerpts}"
 
     existing_block = ""
     if client_existing_content and client_existing_content.strip():
-        existing_block = f"\nClient's existing content on this topic (extract useful facts or claims, do not copy):\n{client_existing_content[:400]}"
+        existing_block = f"\nClient's existing content on this topic (extract useful facts or claims, do not copy):\n{client_existing_content[:SECTION_EXISTING_CONTENT_CHAR_LIMIT]}"
 
     brief_block = ""
     if client_brief and client_brief.strip():
-        brief_block = f"\nClient brief notes:\n{client_brief[:300]}"
+        brief_block = f"\nClient brief notes:\n{client_brief[:SECTION_CLIENT_BRIEF_CHAR_LIMIT]}"
 
     prev_block = ""
     if previous_section_text and previous_section_text.strip():
-        prev_block = f"\nPrevious section (for context and coherence, do not repeat):\n{previous_section_text[-300:]}"
+        prev_block = f"\nPrevious section (for context and coherence, do not repeat):\n{previous_section_text[-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT:]}"
 
     heading_instruction = ""
     heading_level = section.get("heading_level", "h2")
@@ -221,7 +232,7 @@ def _build_section_prompt(
 
     ai_overview_block = ""
     if ai_overview and ai_overview.strip():
-        ai_overview_block = f"\nGoogle AI Overview for this topic (use as reference for what topics to cover, do not copy):\n{ai_overview[:600]}"
+        ai_overview_block = f"\nGoogle AI Overview for this topic (use as reference for what topics to cover, do not copy):\n{ai_overview[:SECTION_AI_OVERVIEW_CHAR_LIMIT]}"
 
     forbidden_block = ""
     if forbidden_phrases and forbidden_phrases.strip():
@@ -230,7 +241,10 @@ def _build_section_prompt(
     correction_block = ""
     cleaned_corrections = [str(note).strip() for note in (reviewer_corrections or []) if str(note).strip()]
     if cleaned_corrections:
-        correction_lines = "\n".join(f"- {note[:300]}" for note in cleaned_corrections[-5:])
+        correction_lines = "\n".join(
+            f"- {note[:SECTION_REVIEWER_NOTE_CHAR_LIMIT]}"
+            for note in cleaned_corrections[-SECTION_REVIEWER_NOTE_LIMIT:]
+        )
         correction_block = (
             "\nReviewer correction notes for this rerun:\n"
             f"{correction_lines}\n"
