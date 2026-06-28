@@ -208,6 +208,72 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Google says accuracy and maintenance are important.", captured[0]["prompt"])
         self.assertIn("Never use these phrases: cheap, free audit", captured[0]["prompt"])
 
+    def test_build_section_prompt_includes_reviewer_corrections(self):
+        prompt = copy_gen._build_section_prompt(
+            section={
+                "name": "benefits",
+                "label": "Benefits",
+                "purpose": "Explain the benefits.",
+                "word_count": [50, 80],
+                "keyword_slot": "primary",
+                "heading_level": "h2",
+                "prompt_rules": "Write clearly.",
+            },
+            primary_keyword="industrial dosing systems",
+            supporting_keyword="",
+            lsi_keywords=[],
+            business_type="service",
+            brand_name="Example",
+            h1="Industrial Dosing Systems",
+            page_type="service",
+            paa_questions=[],
+            competitor_excerpts=[],
+            client_brief="",
+            previous_section_text="",
+            client_existing_content="",
+            reviewer_corrections=[
+                "too salesy, make it factual",
+                "lead with the spec",
+            ],
+        )
+
+        self.assertIn("Reviewer correction notes for this rerun", prompt)
+        self.assertIn("too salesy, make it factual", prompt)
+        self.assertIn("lead with the spec", prompt)
+        self.assertIn("Treat the latest correction as highest priority", prompt)
+
+    def test_score_brand_consistency_routes_through_provider_function(self):
+        captured = {}
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["api_key"] = api_key
+            captured["prompt"] = prompt
+            captured["model"] = model
+            return json.dumps({
+                "score": 64,
+                "reason": "The copy is softer than the requested technical tone.",
+            })
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+
+        result = copy_gen.score_brand_consistency(
+            provider="Test",
+            api_key="key",
+            model="brand-review-model",
+            brand_profile={"tone_of_voice": "precise and technical", "words_to_avoid": "cheap"},
+            outputs={
+                "meta": "Industrial dosing systems for technical teams.",
+                "page_copy": "Helpful, friendly copy that sounds casual.",
+            },
+        )
+
+        self.assertEqual(result["score"], 64)
+        self.assertEqual(captured["api_key"], "key")
+        self.assertEqual(captured["model"], "brand-review-model")
+        self.assertIn("Return strict JSON", captured["prompt"])
+        self.assertIn("precise and technical", captured["prompt"])
+        self.assertIn("cheap", captured["prompt"])
+
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}
 

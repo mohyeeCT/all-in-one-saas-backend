@@ -474,6 +474,7 @@ def duplicate_job(
 class RerunSectionRequest(BaseModel):
     row_index: int
     section_name: str
+    reviewer_instruction: str = ""
 
 
 @router.post("/{job_id}/rerun-section")
@@ -520,6 +521,7 @@ def rerun_section(
         job=job,
         user_id=user.id,
         sb=sb,
+        reviewer_instruction=body.reviewer_instruction,
     )
     return {"status": "rerunning"}
 
@@ -531,6 +533,7 @@ def _rerun_single_section(
     job: dict,
     user_id: str,
     sb,
+    reviewer_instruction: str = "",
 ):
     """
     Background task: regenerate one page-copy section for one row.
@@ -629,6 +632,7 @@ def _rerun_single_section(
         overall_primary_keyword = row_result.get("primary_keyword") or ""
         h1 = row_result.get("h1") or overall_primary_keyword
         section_results = dict(row_result.get("section_results") or {})
+        section_rerun_notes = dict(row_result.get("section_rerun_notes") or {})
         keyword_assignment = row_result.get("keyword_assignment") or {}
         section_assignment = keyword_assignment.get(section_name) or {}
         section_primary_keyword = section_assignment.get("primary") or overall_primary_keyword
@@ -638,6 +642,13 @@ def _rerun_single_section(
             [],
         )
         competitor_excerpts = (row_result.get("competitor_section_map") or {}).get(section_name, [])
+        existing_notes = [
+            str(note).strip()
+            for note in section_rerun_notes.get(section_name, [])
+            if str(note).strip()
+        ]
+        new_note = str(reviewer_instruction or "").strip()
+        reviewer_corrections = (existing_notes + ([new_note] if new_note else []))[-5:]
 
         # previous_section_text: all sections before target in template order
         section_order = [s["name"] for s in template["sections"]]
@@ -684,6 +695,7 @@ def _rerun_single_section(
             client_existing_content="",
             ai_overview=ai_overview,
             forbidden_phrases=forbidden_phrase_text,
+            reviewer_corrections=reviewer_corrections,
         )
 
         raw = fn(api_key, prompt, model=model)
@@ -691,6 +703,8 @@ def _rerun_single_section(
 
         # ── 7. Patch section, rebuild full_page + word_count ───────────────────
         section_results[section_name] = new_text
+        if new_note:
+            section_rerun_notes[section_name] = reviewer_corrections
 
         full_page = "\n\n".join(
             section_results.get(s, "") for s in section_order if section_results.get(s)
@@ -732,6 +746,7 @@ def _rerun_single_section(
         current_results[row_index] = {
             **current_results[row_index],
             "section_results": section_results,
+            "section_rerun_notes": section_rerun_notes,
             "word_count": word_count,
             "docx_b64": docx_b64,
         }

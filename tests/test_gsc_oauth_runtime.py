@@ -755,6 +755,60 @@ class RuntimePathTests(unittest.TestCase):
         self.assertNotIn(private_api_key, repr(final.payload))
         self.assertNotIn("_gsc_credentials", repr(final.payload))
 
+    def test_section_rerun_uses_and_stores_reviewer_instruction(self):
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/page",
+                "page_type": "service",
+                "template_key": "service_page",
+            }],
+            "results": [{
+                "url": "https://example.com/page",
+                "primary_keyword": "technical seo",
+                "h1": "Technical SEO",
+                "section_results": {"hero": "Existing hero"},
+                "section_rerun_notes": {"hero": ["too salesy, make it factual"]},
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "api_key": "runtime-api-secret",
+            "dfs_login": "",
+            "provider": "Claude",
+            "brand_name": "CopyPilot",
+        }
+        provider = Mock(return_value="# Fresh technical SEO hero")
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
+            patch.object(meta, "_build_combined_docx", return_value=b"safe-docx"),
+        ):
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "hero",
+                job,
+                "user-1",
+                sb,
+                reviewer_instruction="lead with the spec",
+            )
+
+        prompt = provider.call_args.args[1]
+        self.assertIn("too salesy, make it factual", prompt)
+        self.assertIn("lead with the spec", prompt)
+        final = [
+            query for query in sb.executed
+            if query.operation == "update" and query.payload and "results" in query.payload
+        ][-1]
+        persisted = final.payload["results"][0]
+        self.assertEqual(
+            persisted["section_rerun_notes"]["hero"],
+            ["too salesy, make it factual", "lead with the spec"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

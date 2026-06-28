@@ -26,7 +26,7 @@ from utils.scraper import (
 from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_copy, sanitise
+    generate_page, generate_faq, generate_copy, sanitise, score_brand_consistency
 )
 from utils.docx_export import build_docx
 
@@ -64,6 +64,13 @@ _GENERIC_OPENERS = (
 _KEYWORD_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into",
     "near", "of", "on", "or", "the", "to", "with", "your",
+}
+
+_CONTENT_GAP_STOPWORDS = _KEYWORD_STOPWORDS | {
+    "about", "also", "buyers", "client", "competitor", "competitors", "content",
+    "cover", "covers", "daily", "does", "example", "explain", "explains",
+    "from", "have", "into", "more", "page", "section", "their", "this",
+    "what", "when", "where", "which", "while",
 }
 
 
@@ -501,6 +508,68 @@ def _apply_cross_row_uniqueness_flags(result: dict, previous_results: list[dict]
             )
 
     return result
+
+
+def _extract_gap_topic_candidates(text: str) -> list[str]:
+    tokens = [
+        token for token in _normalise_similarity_text(text)
+        if len(token) > 3 and token not in _CONTENT_GAP_STOPWORDS
+    ]
+    candidates = []
+    seen = set()
+    for index in range(len(tokens) - 1):
+        phrase = f"{tokens[index]} {tokens[index + 1]}"
+        if phrase not in seen:
+            candidates.append(phrase)
+            seen.add(phrase)
+    if candidates:
+        return candidates
+    return [token for token in tokens if token not in seen]
+
+
+def _topic_present_in_text(topic: str, text: str) -> bool:
+    topic_tokens = _normalise_similarity_text(topic)
+    text_tokens = set(_normalise_similarity_text(text))
+    if not topic_tokens or not text_tokens:
+        return False
+    return any(token in text_tokens for token in topic_tokens)
+
+
+def _build_content_gap_summary(competitor_section_map: dict, section_results: dict) -> list[dict]:
+    diagnostics = []
+    if not competitor_section_map or not section_results:
+        return diagnostics
+
+    for section, excerpts in competitor_section_map.items():
+        generated_text = section_results.get(section, "")
+        if not str(generated_text or "").strip():
+            continue
+
+        missing_topics = []
+        seen = set()
+        for excerpt in excerpts or []:
+            for topic in _extract_gap_topic_candidates(str(excerpt)):
+                if topic in seen or _topic_present_in_text(topic, generated_text):
+                    continue
+                missing_topics.append(topic)
+                seen.add(topic)
+                if len(missing_topics) >= 3:
+                    break
+            if len(missing_topics) >= 3:
+                break
+
+        if missing_topics:
+            diagnostics.append({
+                "section": section,
+                "missing_topics": missing_topics,
+                "summary": (
+                    "Competitors mention "
+                    + ", ".join(missing_topics)
+                    + " but this section does not clearly cover them."
+                ),
+            })
+
+    return diagnostics
 
 
 def _collect_qa_flags(
@@ -1021,6 +1090,7 @@ def _process_single_row(
         for section, excerpts in (competitor_section_map or {}).items()
         if excerpts
     }
+    content_gap_summary = _build_content_gap_summary(stored_competitor_section_map, section_results)
     qa_flags = _collect_qa_flags(
         gen_meta=gen_meta,
         gen_faqs=gen_faqs,
@@ -1035,6 +1105,43 @@ def _process_single_row(
         forbidden_phrases=forbidden_phrase_list,
         template=template,
     )
+    brand_consistency = {}
+    if settings.get("brand_consistency_check") and brand_profile:
+        review_outputs = {}
+        if gen_meta and (generated_title or generated_description or optimised_h1):
+            review_outputs["meta"] = "\n".join(
+                value for value in [generated_title or "", generated_description or "", optimised_h1 or ""] if value
+            )
+        if gen_faqs and faq_items:
+            review_outputs["faqs"] = "\n".join(
+                f"{item.get('question', '')}\n{item.get('answer', '')}"
+                for item in faq_items
+                if isinstance(item, dict)
+            )
+        if gen_page_copy and (full_page or section_results):
+            review_outputs["page_copy"] = full_page or "\n\n".join(str(v) for v in section_results.values())
+
+        if review_outputs:
+            try:
+                brand_consistency = score_brand_consistency(
+                    provider=provider,
+                    api_key=api_key,
+                    model=model,
+                    brand_profile=brand_profile,
+                    outputs=review_outputs,
+                )
+                threshold = int(settings.get("brand_consistency_threshold", 70))
+                if brand_consistency.get("score", 100) < threshold:
+                    _add_qa_flag(
+                        qa_flags,
+                        "brand_consistency_low",
+                        "Brand consistency score is below the review threshold.",
+                        "brand_consistency",
+                    )
+                    qa_flags[-1]["score"] = brand_consistency.get("score")
+                    qa_flags[-1]["reason"] = brand_consistency.get("reason", "")
+            except Exception:
+                brand_consistency = {}
 
     return {
         "url":                  url,
@@ -1058,6 +1165,8 @@ def _process_single_row(
         "keyword_assignment":   kw_assignment if gen_page_copy else {},
         "lsi_keywords":         lsi_map if gen_page_copy else {},
         "competitor_section_map": stored_competitor_section_map if gen_page_copy else {},
+        "content_gap_summary":  content_gap_summary if gen_page_copy else [],
+        "brand_consistency":    brand_consistency,
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
         "qa_flags":             qa_flags,

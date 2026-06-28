@@ -170,6 +170,7 @@ def _build_section_prompt(
     client_existing_content: str,
     ai_overview: str = "",
     forbidden_phrases: str = "",
+    reviewer_corrections: list[str] | None = None,
 ) -> str:
     kw_slot = section.get("keyword_slot", "none")
     wc_min, wc_max = section.get("word_count", [150, 250])
@@ -226,6 +227,16 @@ def _build_section_prompt(
     if forbidden_phrases and forbidden_phrases.strip():
         forbidden_block = f"- Never use these phrases: {forbidden_phrases.strip()}\n"
 
+    correction_block = ""
+    cleaned_corrections = [str(note).strip() for note in (reviewer_corrections or []) if str(note).strip()]
+    if cleaned_corrections:
+        correction_lines = "\n".join(f"- {note[:300]}" for note in cleaned_corrections[-5:])
+        correction_block = (
+            "\nReviewer correction notes for this rerun:\n"
+            f"{correction_lines}\n"
+            "Treat the latest correction as highest priority while still following all hard rules."
+        )
+
     prompt = f"""You are writing the '{section['label']}' section of a {page_type} page.
 
 Page H1: {h1 or 'Not provided'}
@@ -248,7 +259,7 @@ Hard rules for all output:
 - No fluff. Every sentence must add information or move the argument forward
 - Brand name must appear exactly as: {brand_name}
 - Return only the section copy. No preamble, no notes, no explanations.
-{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{prev_block}"""
+{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
 
@@ -889,3 +900,59 @@ Rules:
         "description": sanitise(result.get("description", ""), brand_name),
         "h1_optimised": sanitise(result.get("h1_optimised", ""), brand_name),
     }
+
+
+def score_brand_consistency(
+    provider: str,
+    api_key: str,
+    model: str = None,
+    brand_profile: dict | None = None,
+    outputs: dict | None = None,
+) -> dict:
+    fn = PROVIDER_FN.get(provider)
+    if not fn:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    resolved_model = model or DEFAULT_MODELS.get(provider)
+    profile = brand_profile or {}
+    output_lines = []
+    for label, value in (outputs or {}).items():
+        text = str(value or "").strip()
+        if text:
+            output_lines.append(f"{label.upper()}:\n{text[:2500]}")
+
+    prompt = f"""Score how closely the generated copy matches the brand profile.
+
+BRAND PROFILE:
+- Voice: {profile.get("brand_voice") or profile.get("voice") or "Not specified"}
+- Tone: {profile.get("tone") or profile.get("tone_of_voice") or "Not specified"}
+- Target audience: {profile.get("target_audience") or "Not specified"}
+- USPs: {profile.get("usps") or "Not specified"}
+- Key messages: {profile.get("key_messages") or "Not specified"}
+- Words to avoid: {profile.get("words_to_avoid") or "Not specified"}
+- Guidelines: {profile.get("guidelines") or "Not specified"}
+- Example copy style: {profile.get("example_copy") or "Not specified"}
+
+GENERATED OUTPUTS:
+{chr(10).join(output_lines) or "No generated outputs provided."}
+
+Return strict JSON with:
+{{"score": 0-100, "reason": "one short sentence"}}
+
+Score based only on brand voice, tone, avoided words, and alignment with the profile. Do not judge SEO quality or factual completeness.
+"""
+
+    raw = fn(api_key, prompt, max_tokens=300, model=resolved_model)
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```\s*$", "", raw).strip()
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError("Brand consistency response must be a JSON object")
+
+    try:
+        score = int(result.get("score", 0))
+    except (TypeError, ValueError):
+        score = 0
+    score = max(0, min(100, score))
+    reason = sanitise(str(result.get("reason", "")).strip())[:240]
+    return {"score": score, "reason": reason}

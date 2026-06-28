@@ -803,6 +803,94 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["lsi_keywords"]["dosing system service"], ["metering pump maintenance"])
         self.assertEqual(result["competitor_section_map"]["benefits"], ["Competitor says onboarding is fast."])
 
+    def test_page_copy_result_includes_content_gap_diagnostics(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [
+            {"keyword": "industrial dosing systems", "volume": 100, "difficulty": 20, "score": 5.0, "branded": False},
+            {"keyword": "dosing system service", "volume": 90, "difficulty": 20, "score": 4.0, "branded": False},
+        ]
+        serp_data = {
+            "organic": [{"url": "https://competitor.example/service"}],
+            "paa_items": [],
+            "ai_overview_raw": "",
+        }
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": True, "body_text": "Competitor content"}), \
+             patch.object(all_in_one, "is_editorial_competitor", return_value=True), \
+             patch.object(all_in_one, "classify_competitor_relevance", return_value=1), \
+             patch.object(all_in_one, "map_competitor_sections", return_value={
+                 "benefits": ["Competitors explain warranty coverage and setup timeline for buyers."]
+             }), \
+             patch.object(all_in_one, "get_keyword_ideas", return_value=[]), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems help teams improve accuracy.",
+                 "benefits": "This section covers reliability and maintenance planning for daily operations.",
+                 "_word_count": 15,
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                serp_data=serp_data,
+            )
+
+        self.assertEqual(result["content_gap_summary"][0]["section"], "benefits")
+        self.assertIn("warranty coverage", result["content_gap_summary"][0]["missing_topics"])
+
+    def test_optional_brand_consistency_check_flags_low_score(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "brand_consistency_check": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems help operations teams manage chemical dosing more clearly.",
+                 "_word_count": 10,
+             }), \
+             patch.object(all_in_one, "_collect_qa_flags", return_value=[]), \
+             patch.object(all_in_one, "score_brand_consistency", return_value={
+                 "score": 62,
+                 "reason": "The copy is more casual than the brand profile.",
+             }) as score_brand_consistency:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                brand_profile={"tone_of_voice": "precise and technical", "words_to_avoid": "cheap"},
+            )
+
+        score_brand_consistency.assert_called_once()
+        self.assertEqual(result["brand_consistency"]["score"], 62)
+        self.assertEqual(result["status"], "review")
+        self.assertIn("brand_consistency_low", [flag["code"] for flag in result["qa_flags"]])
+
     def test_page_copy_scrapes_use_saved_jina_key(self):
         settings = {
             **_settings(),
