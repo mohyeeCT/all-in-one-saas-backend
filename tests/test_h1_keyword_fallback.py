@@ -1053,6 +1053,49 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(results[1]["status"], "ok")
         self.assertEqual(results[1]["qa_flags"], [])
 
+    def test_process_job_adds_internal_link_suggestions_after_all_rows_complete(self):
+        source_result = {
+            "url": "https://example.com/blog/dosing-maintenance",
+            "status": "ok",
+            "qa_flags": [],
+            "primary_keyword": "chemical dosing maintenance",
+            "h1": "Chemical Dosing Maintenance",
+            "section_results": {
+                "intro": "Teams comparing industrial dosing systems often need maintenance planning before choosing a service partner.",
+                "details": "Maintenance schedules and calibration checks reduce downtime.",
+            },
+        }
+        target_result = {
+            "url": "https://example.com/services/industrial-dosing-systems",
+            "status": "ok",
+            "qa_flags": [],
+            "primary_keyword": "industrial dosing systems",
+            "h1": "Industrial Dosing Systems",
+            "section_results": {
+                "hero": "Industrial dosing systems for facilities that need accurate chemical control.",
+            },
+        }
+        sb = _CapturingSupabase()
+
+        with patch.object(all_in_one, "get_supabase", return_value=sb), \
+             patch.object(all_in_one, "_is_cancelled", return_value=False), \
+             patch.object(all_in_one, "_process_single_row", side_effect=[source_result, target_result]):
+            all_in_one._process_job(
+                "job-1",
+                [{"url": source_result["url"]}, {"url": target_result["url"]}],
+                _settings(),
+                None,
+                user_id="user-1",
+            )
+
+        final_payload = next(payload for payload in reversed(sb.payloads) if payload.get("status") == "complete")
+        suggestions = final_payload["internal_link_suggestions"]
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0]["source_url"], source_result["url"])
+        self.assertEqual(suggestions[0]["target_url"], target_result["url"])
+        self.assertEqual(suggestions[0]["anchor_text"], "industrial dosing systems")
+        self.assertGreaterEqual(suggestions[0]["confidence"], 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

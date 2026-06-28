@@ -572,6 +572,76 @@ def _build_content_gap_summary(competitor_section_map: dict, section_results: di
     return diagnostics
 
 
+def _row_topic_text(row: dict) -> str:
+    parts = [
+        row.get("primary_keyword") or "",
+        row.get("h1") or "",
+        row.get("generated_title") or "",
+        row.get("generated_description") or "",
+        row.get("optimised_h1") or "",
+        _full_page_copy_text(row.get("section_results") or {}),
+    ]
+    for item in row.get("faq_items") or []:
+        if isinstance(item, dict):
+            parts.append(f"{item.get('question', '')} {item.get('answer', '')}")
+    return "\n".join(str(part) for part in parts if str(part or "").strip())
+
+
+def _build_internal_link_suggestions(results: list[dict], max_per_source: int = 3) -> list[dict]:
+    eligible = [
+        row for row in results
+        if (row.get("url") or "").startswith("http")
+        and row.get("status") not in {"error", "skipped: invalid URL", "skipped: no keywords found"}
+    ]
+    suggestions = []
+
+    for source in eligible:
+        source_url = source.get("url", "")
+        source_text = _row_topic_text(source)
+        if not source_text.strip():
+            continue
+
+        source_suggestions = []
+        source_primary = " ".join(_normalise_similarity_text(source.get("primary_keyword") or ""))
+        for target in eligible:
+            target_url = target.get("url", "")
+            if not target_url or target_url == source_url:
+                continue
+
+            anchor = (target.get("primary_keyword") or target.get("h1") or "").strip()
+            if not anchor:
+                continue
+            if source_primary and source_primary == " ".join(_normalise_similarity_text(anchor)):
+                continue
+
+            if _keyword_present(anchor, source_text):
+                confidence = 0.9
+                reason = "Target keyword appears naturally in the source page copy."
+            else:
+                target_tokens = _meaningful_keyword_tokens(anchor)
+                source_tokens = set(_normalise_similarity_text(source_text))
+                if not target_tokens:
+                    continue
+                matched = [token for token in target_tokens if token in source_tokens]
+                if len(matched) < max(2, len(target_tokens)):
+                    continue
+                confidence = min(0.85, 0.6 + (0.08 * len(matched)))
+                reason = "Source page topic overlaps with the target page keyword."
+
+            source_suggestions.append({
+                "source_url": source_url,
+                "target_url": target_url,
+                "anchor_text": anchor,
+                "confidence": round(confidence, 2),
+                "reason": reason,
+            })
+
+        source_suggestions.sort(key=lambda item: item["confidence"], reverse=True)
+        suggestions.extend(source_suggestions[:max_per_source])
+
+    return suggestions[:200]
+
+
 def _collect_qa_flags(
     *,
     gen_meta: bool,
@@ -1408,12 +1478,14 @@ def _process_job(
             })
             return
 
+    internal_link_suggestions = _build_internal_link_suggestions(results)
     _update_job(sb, job_id, user_id, {
         "status":        "complete",
         "current_step":  "Done.",
         "completed_rows": len(results),
         "failed_rows":   sum(1 for r in results if r.get("status") != "ok"),
         "results":       results,
+        "internal_link_suggestions": internal_link_suggestions,
     })
 
 
