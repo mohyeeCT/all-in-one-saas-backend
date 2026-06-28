@@ -363,6 +363,7 @@ def generate_page(
     client_existing_content: str,
     provider: str,
     api_key: str,
+    model: str = None,
     forbidden_phrases: str = "",
     progress_callback=None,
 ) -> dict:
@@ -374,6 +375,7 @@ def generate_page(
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
 
+    resolved_model = model or DEFAULT_MODELS.get(provider)
     delay = PROVIDER_DELAY.get(provider, 1.0)
     sections = template.get("sections", [])
     results = {}
@@ -410,7 +412,7 @@ def generate_page(
         )
 
         try:
-            raw = fn(api_key, prompt)
+            raw = fn(api_key, prompt, model=resolved_model)
             text = sanitise(raw, brand_name)
         except Exception as e:
             text = f"[ERROR generating section '{section['label']}': {e}]"
@@ -850,6 +852,7 @@ def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
 
+    resolved_model = kwargs.get("model") or DEFAULT_MODELS.get(provider)
     brand_context = kwargs.get("brand_context", "") or "BRAND CONTEXT:\nNone"
     prompt = f"""Write SEO metadata for this page.
 
@@ -873,7 +876,7 @@ Rules:
 - Never use forbidden phrases or em dashes.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
-    raw = fn(api_key, prompt, max_tokens=512, model=DEFAULT_MODELS.get(provider))
+    raw = fn(api_key, prompt, max_tokens=512, model=resolved_model)
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     raw = re.sub(r"\s*```\s*$", "", raw).strip()
     result = json.loads(raw)

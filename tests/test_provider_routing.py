@@ -120,6 +120,7 @@ class ProviderRoutingTests(unittest.TestCase):
 
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
             captured["prompt"] = prompt
+            captured["model"] = model
             return json.dumps({
                 "title": "Example Service",
                 "description": "Learn about the Example service.",
@@ -145,10 +146,12 @@ class ProviderRoutingTests(unittest.TestCase):
             ),
             business_type="service",
             h1="Example Service",
+            model="test-meta-model",
         )
 
         self.assertEqual(result["title"], "Example Service")
         self.assertEqual(result["h1_optimised"], "Example Service")
+        self.assertEqual(captured["model"], "test-meta-model")
         self.assertIn("Title should aim for up to 90 characters.", captured["prompt"])
         self.assertIn("Meta description should aim for up to 200 characters.", captured["prompt"])
         self.assertIn("H1 has no hard character limit but should aim for under 80 characters.", captured["prompt"])
@@ -163,7 +166,7 @@ class ProviderRoutingTests(unittest.TestCase):
         captured = []
 
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured.append(prompt)
+            captured.append({"prompt": prompt, "model": model})
             return "Generated section copy."
 
         copy_gen.PROVIDER_FN["Test"] = fake_provider
@@ -195,13 +198,15 @@ class ProviderRoutingTests(unittest.TestCase):
             client_existing_content="",
             provider="Test",
             api_key="key",
+            model="test-page-model",
             forbidden_phrases="cheap, free audit",
         )
 
         self.assertEqual(result["intro"], "Generated section copy.")
-        self.assertIn("Google AI Overview for this topic", captured[0])
-        self.assertIn("Google says accuracy and maintenance are important.", captured[0])
-        self.assertIn("Never use these phrases: cheap, free audit", captured[0])
+        self.assertEqual(captured[0]["model"], "test-page-model")
+        self.assertIn("Google AI Overview for this topic", captured[0]["prompt"])
+        self.assertIn("Google says accuracy and maintenance are important.", captured[0]["prompt"])
+        self.assertIn("Never use these phrases: cheap, free audit", captured[0]["prompt"])
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}

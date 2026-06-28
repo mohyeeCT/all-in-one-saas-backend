@@ -727,6 +727,7 @@ class RuntimePathTests(unittest.TestCase):
             "api_key": private_api_key,
             "dfs_login": "",
             "provider": "Claude",
+            "model": "claude-haiku-4-5-20251001",
             "brand_name": "CopyPilot",
         }
         provider = Mock(return_value="# Fresh technical SEO hero")
@@ -741,6 +742,7 @@ class RuntimePathTests(unittest.TestCase):
         hydrate.assert_called_once_with(sb, "user-1", _stored_job()["settings"])
         provider.assert_called_once()
         self.assertEqual(provider.call_args.args[0], private_api_key)
+        self.assertEqual(provider.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
         build_docx.assert_called_once()
         final = [
             query for query in sb.executed

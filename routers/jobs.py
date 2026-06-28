@@ -542,7 +542,7 @@ def _rerun_single_section(
     """
     import base64
     import traceback
-    from utils.copy_gen import _build_section_prompt, PROVIDER_FN, sanitise
+    from utils.copy_gen import _build_section_prompt, DEFAULT_MODELS, PROVIDER_FN, sanitise
     from utils.templates import get_template
     from utils.dfs import get_serp_data
     from routers.all_in_one import _build_combined_docx, _split_forbidden_phrases
@@ -576,6 +576,7 @@ def _rerun_single_section(
 
         dfs_login = settings.get("dfs_login", "")
         provider = settings.get("provider", "Claude")
+        model = row_result.get("model") or settings.get("model") or DEFAULT_MODELS.get(provider)
         brand_name = settings.get("brand_name", "")
         business_type = settings.get("business_type", "general")
         page_type = stored_row.get("page_type") or settings.get("page_type", "service")
@@ -685,7 +686,7 @@ def _rerun_single_section(
             forbidden_phrases=forbidden_phrase_text,
         )
 
-        raw = fn(api_key, prompt)
+        raw = fn(api_key, prompt, model=model)
         new_text = sanitise(raw, brand_name)
 
         # ── 7. Patch section, rebuild full_page + word_count ───────────────────

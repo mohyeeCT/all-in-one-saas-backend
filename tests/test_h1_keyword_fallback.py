@@ -165,6 +165,58 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["primary_keyword"], "ranked plumbing keyword")
         self.assertEqual(result["keyword_source"], "dfs")
 
+    def test_selected_model_reaches_all_generation_calls(self):
+        settings = {
+            **_settings(),
+            "model": "claude-haiku-4-5-20251001",
+            "gen_meta": True,
+            "gen_faqs": True,
+            "gen_page_copy": True,
+            "brand_name": "Example",
+            "business_type": "service",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "generate_copy", return_value={
+            "title": "Industrial Dosing Systems",
+            "description": "Industrial dosing systems for reliable service teams.",
+            "h1_optimised": "Industrial Dosing Systems",
+        }) as generate_copy, \
+             patch.object(all_in_one, "generate_faq", return_value=[
+                 {
+                     "question": "What are industrial dosing systems?",
+                     "answer": "Industrial dosing systems help teams dose materials consistently.",
+                     "source": "generated",
+                 }
+             ]) as generate_faq, \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems " + " ".join(["copy"] * 120),
+                 "_full_page": "Industrial dosing systems " + " ".join(["copy"] * 120),
+                 "_word_count": 121,
+             }) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(generate_copy.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(generate_faq.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(generate_page.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
+
     def test_skips_when_h1_unavailable_and_gsc_disabled(self):
         for h1 in ("", "none", "NoNe"):
             with self.subTest(h1=h1):

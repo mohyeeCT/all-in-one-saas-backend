@@ -619,6 +619,7 @@ def _process_single_row(
     dfs_login    = settings["dfs_login"]
     dfs_password = settings["dfs_password"]
     provider     = settings.get("provider", "Claude")
+    model        = settings.get("model") or None
     api_key      = settings.get("api_key", "")
     brand_name   = settings.get("brand_name", "")
     business_type = settings.get("business_type", "general")
@@ -844,6 +845,7 @@ def _process_single_row(
             meta_result = generate_copy(
                 provider=provider,
                 api_key=api_key,
+                model=model,
                 url=url,
                 keyword=primary_keyword,
                 page_type=page_type,
@@ -881,6 +883,7 @@ def _process_single_row(
             faq_items = generate_faq(
                 provider=provider,
                 api_key=api_key,
+                model=model,
                 keyword=primary_keyword,
                 page_type=page_type,
                 brand_name=brand_name if include_brand else "",
@@ -970,6 +973,7 @@ def _process_single_row(
                 client_existing_content=client_existing_content,
                 provider=provider,
                 api_key=api_key,
+                model=model,
                 forbidden_phrases=forbidden_phrase_text,
                 progress_callback=on_section,
             )
@@ -1037,6 +1041,7 @@ def _process_single_row(
         "h1":                   h1,
         "primary_keyword":      primary_keyword,
         "keyword_source":       keyword_source,
+        "model":                model or "",
         "gsc_auth_method":      gsc_auth_method,
         "kw_volume":            (ranked[0].get("volume") if ranked else None),
         "generated_title":      generated_title,
@@ -1320,6 +1325,7 @@ class AIORow(BaseModel):
 class AIOSettings(BaseModel):
     niche: str = ""
     provider: str = "Claude"
+    model: str = ""
     api_key: str = ""
     dfs_login: str = ""
     dfs_password: str = ""
