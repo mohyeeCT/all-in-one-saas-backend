@@ -45,6 +45,27 @@ _RATE_LIMITS = {
     "Groq (free tier)": 2.0,
 }
 
+_GENERIC_OPENERS = (
+    "Welcome to",
+    "Are you looking for",
+    "In today's world",
+    "Whether you are",
+    "Finding the right",
+    "When it comes to",
+    "Choosing the right",
+    "Looking for",
+    "There are many",
+    "It can be difficult to",
+    "If you are searching for",
+    "Whether you need",
+    "In the world of",
+)
+
+_KEYWORD_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into",
+    "near", "of", "on", "or", "the", "to", "with", "your",
+}
+
 
 def _safe_gsc_auth_method(settings: dict, gsc_credentials: dict | None, gsc_client=None) -> str:
     if not settings.get("use_gsc"):
@@ -164,6 +185,10 @@ def _contains_forbidden_phrase(text: str, phrase: str) -> bool:
     return re.search(left + escaped + right, text, flags=re.IGNORECASE) is not None
 
 
+def _normalise_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
 def _add_qa_flag(flags: list[dict], code: str, message: str, output: str = "", phrase: str = ""):
     flag = {"code": code, "message": message}
     if output:
@@ -171,6 +196,311 @@ def _add_qa_flag(flags: list[dict], code: str, message: str, output: str = "", p
     if phrase:
         flag["phrase"] = phrase
     flags.append(flag)
+
+
+def _normalise_similarity_text(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _shingle_similarity(left: str, right: str, shingle_size: int = 3) -> float:
+    left_tokens = _normalise_similarity_text(left)
+    right_tokens = _normalise_similarity_text(right)
+    if len(left_tokens) < 4 or len(right_tokens) < 4:
+        return 0.0
+
+    size = shingle_size if len(left_tokens) >= shingle_size and len(right_tokens) >= shingle_size else 1
+    left_units = {" ".join(left_tokens[i:i + size]) for i in range(len(left_tokens) - size + 1)}
+    right_units = {" ".join(right_tokens[i:i + size]) for i in range(len(right_tokens) - size + 1)}
+    if not left_units or not right_units:
+        return 0.0
+
+    shingle_score = len(left_units & right_units) / len(left_units | right_units)
+    token_left = set(left_tokens)
+    token_right = set(right_tokens)
+    token_score = len(token_left & token_right) / len(token_left | token_right) if token_left and token_right else 0.0
+    return max(shingle_score, token_score)
+
+
+def _first_page_copy_section(section_results: dict) -> str:
+    for key, value in (section_results or {}).items():
+        if not str(key).startswith("_") and str(value or "").strip():
+            return str(value)
+    return ""
+
+
+def _full_page_copy_text(section_results: dict) -> str:
+    return "\n\n".join(str(v) for k, v in (section_results or {}).items() if not str(k).startswith("_"))
+
+
+def _first_sentence_for_qa(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    return re.split(r"[.!?]\s+", text, maxsplit=1)[0]
+
+
+def _strip_leading_markdown_headings(text: str) -> str:
+    lines = str(text or "").splitlines()
+    while lines and (not lines[0].strip() or re.match(r"^#{1,6}\s+", lines[0].strip())):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _find_generic_opener(text: str) -> str:
+    first_sentence = _normalise_phrase(_first_sentence_for_qa(text))
+    if not first_sentence:
+        return ""
+    for opener in _GENERIC_OPENERS:
+        if first_sentence.startswith(_normalise_phrase(opener)):
+            return opener
+    return ""
+
+
+def _add_generic_opener_flags(flags: list[dict], generated_description: str, section_results: dict):
+    opener = _find_generic_opener(generated_description)
+    if opener:
+        flags.append({
+            "code": "generic_opener",
+            "message": f'Generic opener found: "{opener}".',
+            "output": "meta_description",
+            "phrase": opener,
+        })
+
+    for section_name, text in (section_results or {}).items():
+        if str(section_name).startswith("_"):
+            continue
+        opener = _find_generic_opener(_strip_leading_markdown_headings(str(text or "")))
+        if opener:
+            flags.append({
+                "code": "generic_opener",
+                "message": f'Generic opener found in section "{section_name}": "{opener}".',
+                "output": "page_copy",
+                "section": section_name,
+                "phrase": opener,
+            })
+
+
+def _extract_first_page_h1(section_results: dict) -> str:
+    for text in (section_results or {}).values():
+        for line in str(text or "").splitlines():
+            match = re.match(r"^#\s+(.+?)\s*$", line.strip())
+            if match:
+                return match.group(1).strip()
+    return ""
+
+
+def _add_h1_alignment_flag(flags: list[dict], optimised_h1: str, section_results: dict):
+    page_h1 = _extract_first_page_h1(section_results)
+    if not page_h1 or not (optimised_h1 or "").strip():
+        return
+    if _normalise_phrase(page_h1) == _normalise_phrase(optimised_h1):
+        return
+    flags.append({
+        "code": "page_h1_differs_from_meta_h1",
+        "message": "Page-copy H1 differs from the optimised meta H1.",
+        "output": "page_copy",
+        "meta_h1": optimised_h1,
+        "page_h1": page_h1,
+    })
+
+
+def _word_count_for_qa(text: str) -> int:
+    return len(_normalise_similarity_text(text))
+
+
+def _meaningful_keyword_tokens(keyword: str) -> list[str]:
+    return [
+        token for token in _normalise_similarity_text(keyword)
+        if len(token) > 2 and token not in _KEYWORD_STOPWORDS
+    ]
+
+
+def _keyword_present(keyword: str, text: str) -> bool:
+    keyword_tokens = _normalise_similarity_text(keyword)
+    text_tokens = _normalise_similarity_text(text)
+    if not keyword_tokens or not text_tokens:
+        return False
+
+    keyword_phrase = " ".join(keyword_tokens)
+    text_phrase = " ".join(text_tokens)
+    if f" {keyword_phrase} " in f" {text_phrase} ":
+        return True
+
+    meaningful_tokens = _meaningful_keyword_tokens(keyword)
+    if not meaningful_tokens:
+        return False
+    if len(meaningful_tokens) == 1:
+        return meaningful_tokens[0] in set(text_tokens)
+
+    matched = sum(1 for token in meaningful_tokens if token in set(text_tokens))
+    required = len(meaningful_tokens) if len(meaningful_tokens) <= 3 else int(len(meaningful_tokens) * 0.75 + 0.999)
+    return matched >= required
+
+
+def _add_keyword_presence_flags(
+    flags: list[dict],
+    primary_keyword: str,
+    gen_meta: bool,
+    gen_page_copy: bool,
+    meta_text: str,
+    page_copy_text: str,
+):
+    keyword = (primary_keyword or "").strip()
+    if not keyword:
+        return
+
+    if gen_meta and meta_text.strip() and not _keyword_present(keyword, meta_text):
+        flags.append({
+            "code": "target_keyword_missing_from_meta",
+            "message": "Target keyword was not found in the generated meta output.",
+            "output": "meta",
+            "keyword": keyword,
+        })
+
+    if gen_page_copy and page_copy_text.strip() and not _keyword_present(keyword, page_copy_text):
+        flags.append({
+            "code": "target_keyword_missing_from_page_copy",
+            "message": "Target keyword was not found in the generated page copy.",
+            "output": "page_copy",
+            "keyword": keyword,
+        })
+
+
+def _add_section_word_count_flags(flags: list[dict], section_results: dict, template: dict | None):
+    if not section_results or not template:
+        return
+
+    for section in template.get("sections", []):
+        section_name = section.get("name", "")
+        text = section_results.get(section_name, "")
+        if not str(text or "").strip():
+            continue
+
+        target = section.get("word_count") or []
+        if len(target) != 2:
+            continue
+        target_min, target_max = target
+        actual_words = _word_count_for_qa(str(text))
+        tolerated_min = int(target_min * 0.8)
+        tolerated_max = int(target_max * 1.2)
+
+        if actual_words < tolerated_min:
+            flags.append({
+                "code": "section_word_count_below_target",
+                "message": f"Section '{section.get('label', section_name)}' is shorter than the target range.",
+                "output": "page_copy",
+                "section": section_name,
+                "section_label": section.get("label", section_name),
+                "actual_words": actual_words,
+                "target_min": target_min,
+                "target_max": target_max,
+            })
+        elif actual_words > tolerated_max:
+            flags.append({
+                "code": "section_word_count_above_target",
+                "message": f"Section '{section.get('label', section_name)}' is longer than the target range.",
+                "output": "page_copy",
+                "section": section_name,
+                "section_label": section.get("label", section_name),
+                "actual_words": actual_words,
+                "target_min": target_min,
+                "target_max": target_max,
+            })
+
+
+def _add_similarity_flag(result: dict, code: str, message: str, output: str, previous_row: int, similarity: float):
+    flags = result.setdefault("qa_flags", [])
+    if any(flag.get("code") == code and flag.get("output") == output for flag in flags):
+        return
+    flags.append({
+        "code": code,
+        "message": message,
+        "output": output,
+        "similar_to_row": previous_row,
+        "similarity": round(similarity, 3),
+    })
+    if result.get("status") == "ok":
+        result["status"] = "review"
+
+
+def _apply_cross_row_uniqueness_flags(result: dict, previous_results: list[dict]) -> dict:
+    if not result or result.get("status") in {"error", "skipped: no keywords found"}:
+        return result
+
+    checks = [
+        {
+            "field": "generated_title",
+            "output": "meta_title",
+            "code": "meta_title_similar_to_row",
+            "message": "Meta title is very similar to a previous row.",
+            "threshold": 0.90,
+            "min_tokens": 4,
+        },
+        {
+            "field": "generated_description",
+            "output": "meta_description",
+            "code": "meta_description_similar_to_row",
+            "message": "Meta description is very similar to a previous row.",
+            "threshold": 0.82,
+            "min_tokens": 8,
+        },
+        {
+            "field": "page_intro",
+            "output": "page_intro",
+            "code": "page_intro_similar_to_row",
+            "message": "The first page-copy section is very similar to a previous row.",
+            "threshold": 0.78,
+            "min_tokens": 8,
+        },
+        {
+            "field": "page_copy",
+            "output": "page_copy",
+            "code": "page_copy_similar_to_row",
+            "message": "Full page copy is very similar to a previous row.",
+            "threshold": 0.85,
+            "min_tokens": 80,
+        },
+    ]
+
+    current_texts = {
+        "generated_title": result.get("generated_title") or "",
+        "generated_description": result.get("generated_description") or "",
+        "page_intro": _first_page_copy_section(result.get("section_results") or {}),
+        "page_copy": _full_page_copy_text(result.get("section_results") or {}),
+    }
+
+    for check in checks:
+        current_text = current_texts[check["field"]]
+        if len(_normalise_similarity_text(current_text)) < check["min_tokens"]:
+            continue
+
+        best_match = None
+        for previous_index, previous in enumerate(previous_results, start=1):
+            previous_texts = {
+                "generated_title": previous.get("generated_title") or "",
+                "generated_description": previous.get("generated_description") or "",
+                "page_intro": _first_page_copy_section(previous.get("section_results") or {}),
+                "page_copy": _full_page_copy_text(previous.get("section_results") or {}),
+            }
+            previous_text = previous_texts[check["field"]]
+            if len(_normalise_similarity_text(previous_text)) < check["min_tokens"]:
+                continue
+
+            similarity = _shingle_similarity(current_text, previous_text)
+            if similarity >= check["threshold"] and (best_match is None or similarity > best_match[1]):
+                best_match = (previous_index, similarity)
+
+        if best_match:
+            _add_similarity_flag(
+                result,
+                check["code"],
+                check["message"],
+                check["output"],
+                best_match[0],
+                best_match[1],
+            )
+
+    return result
 
 
 def _collect_qa_flags(
@@ -182,9 +512,11 @@ def _collect_qa_flags(
     generated_description: str,
     optimised_h1: str,
     input_h1: str,
+    primary_keyword: str,
     faq_items: list,
     section_results: dict,
     forbidden_phrases: list[str],
+    template: dict | None = None,
 ) -> list[dict]:
     flags = []
 
@@ -204,6 +536,26 @@ def _collect_qa_flags(
     page_copy_text = "\n\n".join(str(v) for k, v in (section_results or {}).items() if not str(k).startswith("_"))
     if gen_page_copy and not page_copy_text.strip():
         _add_qa_flag(flags, "page_copy_missing", "Page copy was requested but no page sections were generated.", "page_copy")
+    elif gen_page_copy:
+        _add_section_word_count_flags(flags, section_results, template)
+
+    if gen_meta:
+        _add_generic_opener_flags(flags, generated_description or "", section_results if gen_page_copy else {})
+    elif gen_page_copy:
+        _add_generic_opener_flags(flags, "", section_results)
+
+    if gen_meta and gen_page_copy:
+        _add_h1_alignment_flag(flags, optimised_h1 or "", section_results)
+
+    meta_text = "\n".join([generated_title or "", generated_description or "", optimised_h1 or ""])
+    _add_keyword_presence_flags(
+        flags,
+        primary_keyword=primary_keyword,
+        gen_meta=gen_meta,
+        gen_page_copy=gen_page_copy,
+        meta_text=meta_text,
+        page_copy_text=page_copy_text,
+    )
 
     outputs = [
         ("meta_title", generated_title or ""),
@@ -673,9 +1025,11 @@ def _process_single_row(
         generated_description=generated_description or "",
         optimised_h1=optimised_h1 or "",
         input_h1=input_h1_for_qa,
+        primary_keyword=primary_keyword,
         faq_items=faq_items,
         section_results=section_results,
         forbidden_phrases=forbidden_phrase_list,
+        template=template,
     )
 
     return {
@@ -928,6 +1282,7 @@ def _process_job(
                 "gsc_auth_method": gsc_auth_method,
             }
 
+        result = _apply_cross_row_uniqueness_flags(result, results)
         results.append(result)
         _update_job(sb, job_id, user_id, {"completed_rows": idx + 1, "results": results})
 

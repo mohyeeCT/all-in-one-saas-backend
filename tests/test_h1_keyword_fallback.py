@@ -51,6 +51,32 @@ class _FakeSupabase:
         return _FakeQuery()
 
 
+class _CapturingQuery:
+    def __init__(self, payloads):
+        self.payloads = payloads
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def update(self, payload):
+        self.payloads.append(payload)
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        return type("Resp", (), {"data": []})()
+
+
+class _CapturingSupabase:
+    def __init__(self):
+        self.payloads = []
+
+    def table(self, *_args, **_kwargs):
+        return _CapturingQuery(self.payloads)
+
+
 def _settings():
     return {
         "provider": "Claude",
@@ -444,6 +470,241 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["status"], "review")
         self.assertIn("meta_title_matches_h1", [flag["code"] for flag in result["qa_flags"]])
 
+    def test_page_copy_sections_outside_word_count_target_are_flagged(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Too short.",
+                 "benefits": " ".join(["benefit"] * 310),
+                 "_word_count": 312,
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        flags = result["qa_flags"]
+        by_section = {flag.get("section"): flag for flag in flags}
+        self.assertEqual(by_section["hero"]["code"], "section_word_count_below_target")
+        self.assertEqual(by_section["hero"]["actual_words"], 2)
+        self.assertEqual(by_section["hero"]["target_min"], 80)
+        self.assertEqual(by_section["hero"]["target_max"], 150)
+        self.assertEqual(by_section["benefits"]["code"], "section_word_count_above_target")
+        self.assertEqual(by_section["benefits"]["actual_words"], 310)
+        self.assertEqual(by_section["benefits"]["target_min"], 150)
+        self.assertEqual(by_section["benefits"]["target_max"], 250)
+
+    def test_generic_openers_in_meta_and_page_copy_are_flagged(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Reliable Industrial Dosing Systems",
+                "description": "Looking for industrial dosing systems that simplify daily operations and reduce maintenance delays.",
+                "h1_optimised": "Industrial Dosing Systems",
+            },
+        ), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Looking for " + " ".join(["service"] * 90),
+                 "_word_count": 92,
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        generic_flags = [flag for flag in result["qa_flags"] if flag["code"] == "generic_opener"]
+        self.assertEqual(len(generic_flags), 2)
+        self.assertIn("meta_description", {flag["output"] for flag in generic_flags})
+        self.assertIn("hero", {flag.get("section") for flag in generic_flags})
+        self.assertTrue(all(flag["phrase"] == "Looking for" for flag in generic_flags))
+
+    def test_page_copy_h1_different_from_meta_h1_is_flagged(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Reliable Industrial Dosing Systems",
+                "description": "Improve industrial dosing systems with practical support for maintenance teams.",
+                "h1_optimised": "Reliable Industrial Dosing Systems",
+            },
+        ), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "# Industrial Dosing System Services\n" + " ".join(["service"] * 90),
+                 "_word_count": 94,
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        h1_flag = next(flag for flag in result["qa_flags"] if flag["code"] == "page_h1_differs_from_meta_h1")
+        self.assertEqual(h1_flag["meta_h1"], "Reliable Industrial Dosing Systems")
+        self.assertEqual(h1_flag["page_h1"], "Industrial Dosing System Services")
+
+    def test_missing_target_keyword_in_meta_and_page_copy_is_flagged(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Reliable Equipment Support",
+                "description": "Improve daily operations with practical support for maintenance teams.",
+                "h1_optimised": "Reliable Equipment Support",
+            },
+        ), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": " ".join(["service"] * 90),
+                 "_word_count": 90,
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        codes = [flag["code"] for flag in result["qa_flags"]]
+        self.assertIn("target_keyword_missing_from_meta", codes)
+        self.assertIn("target_keyword_missing_from_page_copy", codes)
+
+    def test_reordered_target_keyword_tokens_count_as_present(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        page_copy = "Industrial teams improve dosing accuracy with modular systems. " + " ".join(["service"] * 82)
+
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Systems for Industrial Dosing",
+                "description": "Improve dosing accuracy with systems built for industrial maintenance teams.",
+                "h1_optimised": "Industrial Dosing Systems",
+            },
+        ), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": page_copy,
+                 "_word_count": len(page_copy.split()),
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("target_keyword_missing_from_meta", [flag["code"] for flag in result["qa_flags"]])
+        self.assertNotIn("target_keyword_missing_from_page_copy", [flag["code"] for flag in result["qa_flags"]])
+
     def test_page_copy_result_stores_context_for_section_reruns(self):
         settings = {
             **_settings(),
@@ -467,7 +728,11 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              patch.object(all_in_one, "classify_competitor_relevance", return_value=1), \
              patch.object(all_in_one, "map_competitor_sections", return_value={"benefits": ["Competitor says onboarding is fast."]}), \
              patch.object(all_in_one, "get_keyword_ideas", return_value=[{"keyword": "metering pump maintenance"}]), \
-             patch.object(all_in_one, "generate_page", return_value={"hero": "Hero copy", "benefits": "Benefit copy", "_word_count": 4}):
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems " + " ".join(["hero"] * 87),
+                 "benefits": " ".join(["benefit"] * 160),
+                 "_word_count": 250,
+             }):
             result = self._process(
                 {
                     "url": "https://example.com/industrial-dosing",
@@ -559,6 +824,94 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         build_docx.assert_called_once()
         self.assertEqual(result["docx_b64"], "cmljaC1kb2N4")
+
+    def test_process_job_flags_cross_row_duplicate_meta_and_intro(self):
+        first_result = {
+            "url": "https://example.com/products/blue-widget",
+            "status": "ok",
+            "qa_flags": [],
+            "generated_title": "Blue Widget for Industrial Teams",
+            "generated_description": "Shop durable blue widgets for industrial teams that need reliable performance, easy maintenance, and fast setup.",
+            "section_results": {
+                "product_intro": "Blue widgets give industrial teams reliable performance, easy maintenance, and fast setup for daily operations.",
+                "details": "More unique details for the first product.",
+            },
+        }
+        second_result = {
+            "url": "https://example.com/products/red-widget",
+            "status": "ok",
+            "qa_flags": [],
+            "generated_title": "Red Widget for Industrial Teams",
+            "generated_description": "Shop durable red widgets for industrial teams that need reliable performance, easy maintenance, and fast setup.",
+            "section_results": {
+                "product_intro": "Red widgets give industrial teams reliable performance, easy maintenance, and fast setup for daily operations.",
+                "details": "More unique details for the second product.",
+            },
+        }
+        sb = _CapturingSupabase()
+
+        with patch.object(all_in_one, "get_supabase", return_value=sb), \
+             patch.object(all_in_one, "_is_cancelled", return_value=False), \
+             patch.object(all_in_one, "_process_single_row", side_effect=[first_result, second_result]):
+            all_in_one._process_job(
+                "job-1",
+                [{"url": first_result["url"]}, {"url": second_result["url"]}],
+                _settings(),
+                None,
+                user_id="user-1",
+            )
+
+        final_payload = next(payload for payload in reversed(sb.payloads) if payload.get("status") == "complete")
+        results = final_payload["results"]
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertEqual(results[1]["status"], "review")
+        self.assertEqual(final_payload["failed_rows"], 1)
+
+        flags = results[1]["qa_flags"]
+        codes = [flag["code"] for flag in flags]
+        self.assertIn("meta_description_similar_to_row", codes)
+        self.assertIn("page_intro_similar_to_row", codes)
+        self.assertTrue(all(flag["similar_to_row"] == 1 for flag in flags))
+
+    def test_process_job_does_not_flag_distinct_cross_row_copy(self):
+        first_result = {
+            "url": "https://example.com/products/blue-widget",
+            "status": "ok",
+            "qa_flags": [],
+            "generated_title": "Blue Widget for Industrial Teams",
+            "generated_description": "Shop durable blue widgets for industrial teams that need reliable performance, easy maintenance, and fast setup.",
+            "section_results": {
+                "product_intro": "Blue widgets give industrial teams reliable performance, easy maintenance, and fast setup for daily operations.",
+            },
+        }
+        second_result = {
+            "url": "https://example.com/products/red-widget",
+            "status": "ok",
+            "qa_flags": [],
+            "generated_title": "Red Widget for Field Technicians",
+            "generated_description": "Compare compact red widgets built for mobile crews, tight storage spaces, field repairs, and fast replacement work.",
+            "section_results": {
+                "product_intro": "Red widgets help mobile technicians complete field repairs in tight spaces with compact storage and quick replacement parts.",
+            },
+        }
+        sb = _CapturingSupabase()
+
+        with patch.object(all_in_one, "get_supabase", return_value=sb), \
+             patch.object(all_in_one, "_is_cancelled", return_value=False), \
+             patch.object(all_in_one, "_process_single_row", side_effect=[first_result, second_result]):
+            all_in_one._process_job(
+                "job-1",
+                [{"url": first_result["url"]}, {"url": second_result["url"]}],
+                _settings(),
+                None,
+                user_id="user-1",
+            )
+
+        final_payload = next(payload for payload in reversed(sb.payloads) if payload.get("status") == "complete")
+        results = final_payload["results"]
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertEqual(results[1]["status"], "ok")
+        self.assertEqual(results[1]["qa_flags"], [])
 
 
 if __name__ == "__main__":
