@@ -292,12 +292,19 @@ def _extract_anthropic_text(content) -> str:
     return text
 
 
+def _anthropic_request_options(model: str, max_tokens: int) -> dict:
+    options = {"model": model, "max_tokens": max_tokens}
+    if (model or "").startswith("claude-sonnet-5"):
+        options["thinking"] = {"type": "disabled"}
+    return options
+
+
 def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
+    resolved_model = model or DEFAULT_MODELS["Claude"]
     msg = client.messages.create(
-        model=model or "claude-sonnet-5",
-        max_tokens=max_tokens,
+        **_anthropic_request_options(resolved_model, max_tokens),
         messages=[{"role": "user", "content": prompt}],
     )
     return _extract_anthropic_text(msg.content)
@@ -374,6 +381,11 @@ DEFAULT_MODELS = {
     "Groq (free tier)": "llama-3.3-70b-versatile",
 }
 
+PAGE_SECTION_MAX_TOKENS = 49152
+FAQ_MAX_TOKENS = 16384
+META_MAX_TOKENS = 8192
+DIAGNOSTIC_MAX_TOKENS = 3000
+
 PROVIDER_DELAY = {
     "Claude": 0.5,
     "OpenAI": 0.5,
@@ -449,7 +461,7 @@ def generate_page(
         )
 
         try:
-            raw = fn(api_key, prompt, model=resolved_model)
+            raw = fn(api_key, prompt, max_tokens=PAGE_SECTION_MAX_TOKENS, model=resolved_model)
             text = sanitise(raw, brand_name)
         except Exception as e:
             text = f"[ERROR generating section '{section['label']}': {e}]"
@@ -612,7 +624,7 @@ def generate_faq(
         brand_profile=brand_profile,
     )
 
-    raw = fn(api_key, prompt, model=resolved_model)
+    raw = fn(api_key, prompt, max_tokens=FAQ_MAX_TOKENS, model=resolved_model)
     items = _parse_faq_json(raw)
 
     sanitised = []
@@ -913,7 +925,7 @@ Rules:
 - Never use forbidden phrases or em dashes.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
-    raw = fn(api_key, prompt, max_tokens=512, model=resolved_model)
+    raw = fn(api_key, prompt, max_tokens=META_MAX_TOKENS, model=resolved_model)
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     raw = re.sub(r"\s*```\s*$", "", raw).strip()
     result = json.loads(raw)
@@ -968,7 +980,7 @@ Return strict JSON with:
 Score based only on brand voice, tone, avoided words, and alignment with the profile. Do not judge SEO quality or factual completeness.
 """
 
-    raw = fn(api_key, prompt, max_tokens=300, model=resolved_model)
+    raw = fn(api_key, prompt, max_tokens=DIAGNOSTIC_MAX_TOKENS, model=resolved_model)
     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     raw = re.sub(r"\s*```\s*$", "", raw).strip()
     result = json.loads(raw)

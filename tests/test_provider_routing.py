@@ -23,6 +23,17 @@ class ProviderRoutingTests(unittest.TestCase):
     def test_claude_default_uses_sonnet(self):
         self.assertEqual(copy_gen.DEFAULT_MODELS["Claude"], "claude-sonnet-5")
 
+    def test_sonnet_5_request_disables_thinking(self):
+        options = copy_gen._anthropic_request_options("claude-sonnet-5", 1500)
+
+        self.assertEqual(options["thinking"], {"type": "disabled"})
+        self.assertEqual(options["max_tokens"], 1500)
+
+    def test_non_sonnet_5_request_leaves_thinking_unset(self):
+        options = copy_gen._anthropic_request_options("claude-sonnet-4-6", 1500)
+
+        self.assertNotIn("thinking", options)
+
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}
 
@@ -60,6 +71,8 @@ class ProviderRoutingTests(unittest.TestCase):
 
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
             captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
+            captured["model"] = model
             return json.dumps([
                 {
                     "question": "What does the service include?",
@@ -88,6 +101,7 @@ class ProviderRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual(result[0]["question"], "What does the service include?")
+        self.assertEqual(captured["max_tokens"], copy_gen.FAQ_MAX_TOKENS)
         self.assertIn("UNSUPPORTED CLAIM RULES:", captured["prompt"])
         self.assertIn("Do not use neutral fallback wording", captured["prompt"])
         self.assertIn("Treat AI Overview and PAA as research signals, not proof", captured["prompt"])
@@ -131,6 +145,7 @@ class ProviderRoutingTests(unittest.TestCase):
 
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
             captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
             captured["model"] = model
             return json.dumps({
                 "title": "Example Service",
@@ -163,6 +178,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result["title"], "Example Service")
         self.assertEqual(result["h1_optimised"], "Example Service")
         self.assertEqual(captured["model"], "test-meta-model")
+        self.assertEqual(captured["max_tokens"], copy_gen.META_MAX_TOKENS)
         self.assertIn("Title should aim for up to 90 characters.", captured["prompt"])
         self.assertIn("Meta description should aim for up to 200 characters.", captured["prompt"])
         self.assertIn("H1 has no hard character limit but should aim for under 80 characters.", captured["prompt"])
@@ -177,7 +193,7 @@ class ProviderRoutingTests(unittest.TestCase):
         captured = []
 
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured.append({"prompt": prompt, "model": model})
+            captured.append({"prompt": prompt, "max_tokens": max_tokens, "model": model})
             return "Generated section copy."
 
         copy_gen.PROVIDER_FN["Test"] = fake_provider
@@ -215,6 +231,7 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertEqual(result["intro"], "Generated section copy.")
         self.assertEqual(captured[0]["model"], "test-page-model")
+        self.assertEqual(captured[0]["max_tokens"], copy_gen.PAGE_SECTION_MAX_TOKENS)
         self.assertIn("Google AI Overview for this topic", captured[0]["prompt"])
         self.assertIn("Google says accuracy and maintenance are important.", captured[0]["prompt"])
         self.assertIn("Never use these phrases: cheap, free audit", captured[0]["prompt"])
@@ -259,6 +276,7 @@ class ProviderRoutingTests(unittest.TestCase):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
             captured["api_key"] = api_key
             captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
             captured["model"] = model
             return json.dumps({
                 "score": 64,
@@ -281,6 +299,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result["score"], 64)
         self.assertEqual(captured["api_key"], "key")
         self.assertEqual(captured["model"], "brand-review-model")
+        self.assertEqual(captured["max_tokens"], copy_gen.DIAGNOSTIC_MAX_TOKENS)
         self.assertIn("Return strict JSON", captured["prompt"])
         self.assertIn("precise and technical", captured["prompt"])
         self.assertIn("cheap", captured["prompt"])
