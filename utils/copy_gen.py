@@ -284,7 +284,7 @@ def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str =
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
-        model=model or "claude-sonnet-4-6",
+        model=model or "claude-sonnet-5",
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -352,7 +352,7 @@ PROVIDER_FN = {
 }
 
 DEFAULT_MODELS = {
-    "Claude": "claude-sonnet-4-6",
+    "Claude": "claude-sonnet-5",
     "OpenAI": "gpt-5.5",
     "Gemini": "gemini-2.0-flash",
     "Gemini (free)": "gemini-2.0-flash",

@@ -21,7 +21,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotEqual(copy_gen.DEFAULT_MODELS["OpenAI"], "gpt-4o-mini")
 
     def test_claude_default_uses_sonnet(self):
-        self.assertEqual(copy_gen.DEFAULT_MODELS["Claude"], "claude-sonnet-4-6")
+        self.assertEqual(copy_gen.DEFAULT_MODELS["Claude"], "claude-sonnet-5")
 
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}
