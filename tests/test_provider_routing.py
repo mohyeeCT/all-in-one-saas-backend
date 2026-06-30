@@ -34,6 +34,51 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertNotIn("thinking", options)
 
+    def test_claude_high_token_request_uses_streaming(self):
+        captured = {}
+
+        class FakeStream:
+            text_stream = ["Generated ", "copy"]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        class FakeMessages:
+            def create(self, **kwargs):
+                raise AssertionError("High-token Claude calls should stream")
+
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return FakeStream()
+
+        class FakeAnthropic:
+            def __init__(self, api_key):
+                self.messages = FakeMessages()
+
+        anthropic_stub = types.ModuleType("anthropic")
+        anthropic_stub.Anthropic = FakeAnthropic
+        original_anthropic = sys.modules.get("anthropic")
+        sys.modules["anthropic"] = anthropic_stub
+        try:
+            text = copy_gen._call_claude(
+                "key",
+                "prompt",
+                max_tokens=copy_gen.CLAUDE_STREAMING_TOKEN_THRESHOLD + 1,
+                model="claude-sonnet-5",
+            )
+        finally:
+            if original_anthropic is None:
+                sys.modules.pop("anthropic", None)
+            else:
+                sys.modules["anthropic"] = original_anthropic
+
+        self.assertEqual(text, "Generated copy")
+        self.assertEqual(captured["max_tokens"], copy_gen.CLAUDE_STREAMING_TOKEN_THRESHOLD + 1)
+        self.assertEqual(captured["thinking"], {"type": "disabled"})
+
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}
 

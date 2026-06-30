@@ -299,14 +299,43 @@ def _anthropic_request_options(model: str, max_tokens: int) -> dict:
     return options
 
 
+CLAUDE_STREAMING_TOKEN_THRESHOLD = 21000
+
+
+def _extract_anthropic_stream_text(stream) -> str:
+    chunks = []
+    text_stream = getattr(stream, "text_stream", None)
+    if text_stream is not None:
+        for chunk in text_stream:
+            chunks.append(str(chunk))
+        return "".join(chunks).strip()
+
+    for event in stream:
+        if getattr(event, "type", "") != "content_block_delta":
+            continue
+        delta = getattr(event, "delta", None)
+        if getattr(delta, "type", "") == "text_delta" and getattr(delta, "text", None):
+            chunks.append(str(delta.text))
+
+    text = "".join(chunks).strip()
+    if not text:
+        raise RuntimeError("AI provider returned an empty text response")
+    return text
+
+
 def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     resolved_model = model or DEFAULT_MODELS["Claude"]
-    msg = client.messages.create(
+    request = {
         **_anthropic_request_options(resolved_model, max_tokens),
-        messages=[{"role": "user", "content": prompt}],
-    )
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if max_tokens > CLAUDE_STREAMING_TOKEN_THRESHOLD:
+        with client.messages.stream(**request) as stream:
+            return _extract_anthropic_stream_text(stream)
+
+    msg = client.messages.create(**request)
     return _extract_anthropic_text(msg.content)
 
 
