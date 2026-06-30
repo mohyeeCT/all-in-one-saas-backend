@@ -293,10 +293,7 @@ def _extract_anthropic_text(content) -> str:
 
 
 def _anthropic_request_options(model: str, max_tokens: int) -> dict:
-    options = {"model": model, "max_tokens": max_tokens}
-    if (model or "").startswith("claude-sonnet-5"):
-        options["thinking"] = {"type": "disabled"}
-    return options
+    return {"model": model, "max_tokens": max_tokens}
 
 
 CLAUDE_STREAMING_TOKEN_THRESHOLD = 21000
@@ -925,6 +922,22 @@ def generate_faq_batch(
 # ── Meta copy generation (ported from meta-saas-backend) ─────────────────
 
 
+def _parse_json_object(raw: str, error_message: str) -> dict:
+    raw = re.sub(r"^```(?:json)?\s*", "", (raw or "").strip())
+    raw = re.sub(r"\s*```\s*$", "", raw).strip()
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        result = json.loads(raw[start:end + 1])
+    if not isinstance(result, dict):
+        raise ValueError(error_message)
+    return result
+
+
 def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
     fn = PROVIDER_FN.get(provider)
     if not fn:
@@ -955,11 +968,7 @@ Rules:
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
     raw = fn(api_key, prompt, max_tokens=META_MAX_TOKENS, model=resolved_model)
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    raw = re.sub(r"\s*```\s*$", "", raw).strip()
-    result = json.loads(raw)
-    if not isinstance(result, dict):
-        raise ValueError("Meta response must be a JSON object")
+    result = _parse_json_object(raw, "Meta response must be a JSON object")
 
     brand_name = kwargs.get("brand_name", "")
     return {
@@ -1010,11 +1019,7 @@ Score based only on brand voice, tone, avoided words, and alignment with the pro
 """
 
     raw = fn(api_key, prompt, max_tokens=DIAGNOSTIC_MAX_TOKENS, model=resolved_model)
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    raw = re.sub(r"\s*```\s*$", "", raw).strip()
-    result = json.loads(raw)
-    if not isinstance(result, dict):
-        raise ValueError("Brand consistency response must be a JSON object")
+    result = _parse_json_object(raw, "Brand consistency response must be a JSON object")
 
     try:
         score = int(result.get("score", 0))

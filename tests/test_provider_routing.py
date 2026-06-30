@@ -23,11 +23,11 @@ class ProviderRoutingTests(unittest.TestCase):
     def test_claude_default_uses_sonnet(self):
         self.assertEqual(copy_gen.DEFAULT_MODELS["Claude"], "claude-sonnet-5")
 
-    def test_sonnet_5_request_disables_thinking(self):
+    def test_sonnet_5_request_leaves_thinking_unset(self):
         options = copy_gen._anthropic_request_options("claude-sonnet-5", 1500)
 
-        self.assertEqual(options["thinking"], {"type": "disabled"})
         self.assertEqual(options["max_tokens"], 1500)
+        self.assertNotIn("thinking", options)
 
     def test_non_sonnet_5_request_leaves_thinking_unset(self):
         options = copy_gen._anthropic_request_options("claude-sonnet-4-6", 1500)
@@ -77,7 +77,7 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertEqual(text, "Generated copy")
         self.assertEqual(captured["max_tokens"], copy_gen.CLAUDE_STREAMING_TOKEN_THRESHOLD + 1)
-        self.assertEqual(captured["thinking"], {"type": "disabled"})
+        self.assertNotIn("thinking", captured)
 
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}
@@ -233,6 +233,32 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("- Target audience: Facilities managers", captured["prompt"])
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
+
+    def test_generate_copy_extracts_json_from_wrapped_response(self):
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            return (
+                'Here is the metadata:\n'
+                '{"title":"Example Service","description":"Learn about the Example service.",'
+                '"h1_optimised":"Example Service"}'
+            )
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+
+        result = copy_gen.generate_copy(
+            provider="Test",
+            api_key="key",
+            url="https://example.com/service",
+            keyword="example service",
+            page_type="service",
+            brand_name="Example",
+            forbidden_phrases="",
+            context="",
+            business_type="service",
+            h1="Example Service",
+        )
+
+        self.assertEqual(result["title"], "Example Service")
+        self.assertEqual(result["description"], "Learn about the Example service.")
 
     def test_generate_page_passes_aio_and_forbidden_phrases_to_sections(self):
         captured = []
