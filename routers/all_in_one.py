@@ -26,6 +26,7 @@ from utils.scraper import (
 )
 from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
+from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
     generate_page, generate_faq, generate_copy, sanitise, score_brand_consistency
 )
@@ -797,8 +798,10 @@ def _process_single_row(
     manual_kws   = [k.strip() for k in (row.get("keyword") or "").split(",") if k.strip()]
     h1_raw       = (row.get("h1") or "").strip()
     h1           = "" if h1_raw.lower() == "none" else h1_raw
-    page_type    = (row.get("page_type") or settings.get("page_type", "service")).strip().lower()
-    template_key = row.get("template_key") or settings.get("template_key", "service_page")
+    page_type    = normalize_page_type(row.get("page_type") or settings.get("page_type", "service"), default="service")
+    template_key = row.get("template_key") or settings.get("template_key") or default_template_key_for_page_type(page_type)
+    if page_type == "landing_page" and template_key == "service_page":
+        template_key = default_template_key_for_page_type(page_type)
 
     # What to generate — from row overrides or job-level settings
     gen_page_copy = row.get("gen_page_copy", settings.get("gen_page_copy", True))
@@ -1060,7 +1063,7 @@ def _process_single_row(
             try:
                 template = get_template(template_key)
             except ValueError:
-                template = get_template("service_page")
+                template = get_template(default_template_key_for_page_type(page_type))
         template = _template_for_page_copy(template, bool(gen_faqs))
 
         kw_assignment = assign_keywords_to_sections(ranked, template["sections"])

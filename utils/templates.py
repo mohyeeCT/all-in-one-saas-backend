@@ -696,7 +696,102 @@ TEMPLATES = {
         ],
     },
 
-    # ── SERVICE PAGE ──────────────────────────────────────────────────────────
+    # Landing page
+    "landing_page": {
+        "name": "Landing Page",
+        "page_type": "landing_page",
+        "description": "Generic conversion-focused landing page. Keeps the page flexible for homepages, campaigns, lead-capture pages, offers, or mixed-use landing pages without assuming a service page.",
+        "sections": [
+            {
+                "name": "hero",
+                "label": "Landing Page Hero",
+                "purpose": "State what the page is about, who it helps, and why the visitor should keep reading. Primary keyword in H1 if natural.",
+                "word_count": [55, 95],
+                "keyword_slot": "primary",
+                "heading_level": "h1",
+                "prompt_rules": (
+                    "Write the H1 and a short supporting paragraph. "
+                    "Do not warm up. The first sentence must communicate the core topic, offer, benefit, or value of the page. "
+                    "Do not assume this is a service, homepage, or ecommerce page unless the context clearly says so. "
+                    "Include the primary keyword naturally in the H1 or first sentence if it fits. "
+                    "No generic openers. No em dashes. No exclamation marks."
+                ),
+            },
+            {
+                "name": "value_context",
+                "label": "Why It Matters",
+                "purpose": "Explain the main value, outcome, or reason the page exists without over-selling.",
+                "word_count": [90, 145],
+                "keyword_slot": "supporting",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write one H2 and 1 to 2 concise paragraphs. "
+                    "Explain the concrete value or decision support the visitor gets from this page. "
+                    "Use only details supported by the brief, scraped page content, SERP signals, or competitor context. "
+                    "If the context is thin, stay broad and useful rather than inventing features, offers, metrics, or guarantees. "
+                    "Include the supporting keyword only if it reads naturally. No em dashes."
+                ),
+            },
+            {
+                "name": "decision_support",
+                "label": "What to Know Before You Decide",
+                "purpose": "Answer the practical considerations a visitor needs before taking the next step.",
+                "word_count": [110, 175],
+                "keyword_slot": "supporting",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write one compact section that helps the visitor decide what to do next. "
+                    "Cover fit, next steps, comparison criteria, or practical considerations only when the context supports them. "
+                    "Do not invent pricing, discounts, availability, timelines, guarantees, reviews, or results. "
+                    "Avoid headings like 'Why Choose Us' unless the page context clearly supports that framing. "
+                    "No em dashes."
+                ),
+            },
+            {
+                "name": "proof_or_context",
+                "label": "Useful Context",
+                "purpose": "Add proof, context, or clarification based only on confirmed details.",
+                "word_count": [70, 120],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write a short credibility or context section. "
+                    "Use confirmed proof only: specific services, audience, process, certifications, quotes, client types, or stable page facts. "
+                    "If no proof is available, write a neutral clarification based on the page topic and audience. "
+                    "Do not fabricate numbers, names, quotes, awards, claims, or outcomes. No em dashes."
+                ),
+            },
+            {
+                "name": "faq",
+                "label": "Frequently Asked Questions",
+                "purpose": "Answer common questions when a separate FAQ output is not enabled.",
+                "word_count": [150, 230],
+                "keyword_slot": "lsi",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write 3 to 4 FAQ items using PAA questions and page-specific decision barriers. "
+                    "Each answer: 2 to 3 direct sentences. No padding. "
+                    "Avoid generic category education unless the page is genuinely informational. "
+                    "Do not invent claims or specifics. Format: Question as H3, then answer paragraph. No em dashes."
+                ),
+            },
+            {
+                "name": "cta",
+                "label": "Next Step",
+                "purpose": "Close with a clear but low-pressure next step.",
+                "word_count": [40, 70],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write a short closing section with an H2 and 1 to 2 sentences. "
+                    "Match the next step to the available context: contact, explore, compare, read more, request a quote, book, or shop only when supported. "
+                    "No high-pressure language. No em dashes. No exclamation marks."
+                ),
+            },
+        ],
+    },
+
+    # Service page
     "service_page": {
         "name": "Service Page",
         "page_type": "service",
