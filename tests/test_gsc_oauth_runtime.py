@@ -573,6 +573,17 @@ class RuntimePathTests(unittest.TestCase):
             if isinstance(failure, RefreshError):
                 mark.assert_called_once_with(ANY, "user-1", OAUTH["refresh_token_ciphertext"])
 
+    def test_cancel_request_marks_job_as_cancelling_until_worker_stops(self):
+        job = {**_stored_job(), "status": "running"}
+        sb = _Supabase({"jobs": [job]})
+
+        with patch.object(jobs, "get_supabase", return_value=sb):
+            response = jobs.cancel_job("job-1", user=SimpleNamespace(id="user-1"))
+
+        self.assertEqual(response, {"cancelled": True})
+        self.assertEqual(job["status"], "cancelling")
+        self.assertIn("stopping after current row", job["current_step"])
+
     def test_rerun_client_handles_missing_refresh_generic_and_exact_error_clear(self):
         cases = [
             ({"use_gsc": True}, None, UNAVAILABLE_ERROR),

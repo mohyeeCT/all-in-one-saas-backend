@@ -99,8 +99,8 @@ def cancel_job(job_id: str, user=Depends(get_current_user)):
     if job["status"] != "running":
         raise HTTPException(status_code=400, detail=f"Job is not running (status: {job['status']})")
     sb.table("jobs").update({
-        "status": "cancelled",
-        "current_step": "Cancelled — stopping after current row...",
+        "status": "cancelling",
+        "current_step": "Cancelling - stopping after current row...",
     }).eq("id", job_id).eq("user_id", user.id).execute()
     return {"cancelled": True}
 

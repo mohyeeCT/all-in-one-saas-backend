@@ -4,6 +4,7 @@ import types
 import unittest
 
 from utils import copy_gen
+from utils.templates import get_template
 
 
 class ProviderRoutingTests(unittest.TestCase):
@@ -306,6 +307,52 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Google AI Overview for this topic", captured[0]["prompt"])
         self.assertIn("Google says accuracy and maintenance are important.", captured[0]["prompt"])
         self.assertIn("Never use these phrases: cheap, free audit", captured[0]["prompt"])
+
+    def test_collection_template_uses_shorter_intro_and_single_guidance_section(self):
+        template = get_template("collection_page")
+        section_names = [section["name"] for section in template["sections"]]
+        section_labels = [section["label"] for section in template["sections"]]
+        intro = template["sections"][0]
+
+        self.assertEqual(intro["name"], "category_intro")
+        self.assertLessEqual(intro["word_count"][1], 120)
+        self.assertIn("collection_guidance", section_names)
+        self.assertNotIn("buying_guide", section_names)
+        self.assertNotIn("subcategory_overview", section_names)
+        self.assertNotIn("brand_value", section_names)
+        self.assertNotIn("How to Choose", section_labels)
+        self.assertNotIn("What's in This Collection", section_labels)
+        self.assertNotIn("Why Shop With Us", section_labels)
+
+    def test_section_prompt_blocks_generic_collection_language_and_unsupported_facts(self):
+        prompt = copy_gen._build_section_prompt(
+            section={
+                "name": "category_intro",
+                "label": "Category Introduction",
+                "purpose": "Introduce the category.",
+                "word_count": [60, 110],
+                "keyword_slot": "primary",
+                "heading_level": "h1",
+                "prompt_rules": "Write directly.",
+            },
+            primary_keyword="chicken party appetizers",
+            supporting_keyword="",
+            lsi_keywords=[],
+            business_type="ecommerce",
+            brand_name="Perdue",
+            h1="Chicken Party Appetizers",
+            page_type="collection",
+            paa_questions=[],
+            competitor_excerpts=[],
+            client_brief="",
+            previous_section_text="",
+            client_existing_content="",
+        )
+
+        self.assertIn("Do not write phrases like 'this page', 'this collection', 'this category'", prompt)
+        self.assertIn("Do not invent product groupings, package sizes, event scales", prompt)
+        self.assertIn("Competitor context is topic inspiration, not proof of client facts", prompt)
+        self.assertIn("Finding the right", prompt)
 
     def test_build_section_prompt_includes_reviewer_corrections(self):
         prompt = copy_gen._build_section_prompt(

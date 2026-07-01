@@ -165,6 +165,29 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["primary_keyword"], "ranked plumbing keyword")
         self.assertEqual(result["keyword_source"], "dfs")
 
+    def test_manual_keyword_overrides_ranked_pool(self):
+        ranked = [{
+            "keyword": "dfs winner keyword",
+            "volume": 500,
+            "difficulty": 15,
+            "score": 50.0,
+            "branded": False,
+        }]
+
+        result = self._process(
+            {
+                "url": "https://example.com/category",
+                "keyword": "manual party appetizers",
+                "page_type": "collection",
+                "h1": "Party Appetizers",
+                "template_key": "collection_page",
+            },
+            ranked=ranked,
+        )
+
+        self.assertEqual(result["primary_keyword"], "manual party appetizers")
+        self.assertEqual(result["keyword_source"], "manual")
+
     def test_selected_model_reaches_all_generation_calls(self):
         settings = {
             **_settings(),

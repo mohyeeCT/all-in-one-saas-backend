@@ -71,6 +71,32 @@ class DataForSeoErrorVisibilityTests(unittest.TestCase):
         self.assertEqual(result["paa_questions"], ["What are beyond burgers?"])
         self.assertEqual(result["paa_items"][0]["answer"], "Plant-based burger patties.")
 
+    @patch("utils.dfs._post")
+    def test_keyword_ideas_retries_alternate_payload_shape_on_invalid_field(self, post):
+        post.side_effect = [
+            RuntimeError("DFS error 40501: Invalid Field: 'keyword'"),
+            {
+                "tasks": [{
+                    "result": [{
+                        "items": [{
+                            "keyword": "related widgets",
+                            "keyword_info": {"search_volume": 90},
+                            "keyword_difficulty": 12,
+                        }]
+                    }]
+                }]
+            },
+        ]
+
+        result = dfs.get_keyword_ideas("widgets", "login", "password", limit=5)
+
+        self.assertEqual(result[0]["keyword"], "related widgets")
+        self.assertEqual(post.call_count, 2)
+        first_payload = post.call_args_list[0].args[1][0]
+        second_payload = post.call_args_list[1].args[1][0]
+        self.assertEqual(first_payload["keyword"], "widgets")
+        self.assertEqual(second_payload["keywords"], ["widgets"])
+
 
 if __name__ == "__main__":
     unittest.main()

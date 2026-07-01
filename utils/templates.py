@@ -1230,70 +1230,37 @@ TEMPLATES = {
     "collection_page": {
         "name": "Collection / Category Page",
         "page_type": "collection",
-        "description": "Ecommerce category page copy. SEO-rich intro, buying guide, subcategory navigation copy, brand value in this category, and FAQ. Balances search intent with purchase guidance. Optimised for CollectionPage schema.",
+        "description": "Ecommerce category page copy. Short SEO intro, compact purchase guidance, and FAQ. Balances search intent with practical buyer support. Optimised for CollectionPage schema.",
         "sections": [
             {
                 "name": "category_intro",
                 "label": "Category Introduction",
-                "purpose": "SEO-rich category description. Keyword in H1 and opening paragraph. Sets the category context and signals topical authority to search engines.",
-                "word_count": [120, 200],
+                "purpose": "Concise category description. Keyword in H1 and opening paragraph. Quickly tells shoppers what the category offers and why it matters.",
+                "word_count": [60, 110],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
-                    "Write the category H1 and an intro paragraph (3 to 4 sentences). "
+                    "Write the category H1 and one concise intro paragraph of 2 to 3 sentences. "
                     "H1: clear, keyword-rich category name. Example: 'Women's Linen Blazers' or 'Industrial Safety Equipment'. "
-                    "Intro paragraph: describe the category, who it is for, and the primary purchase intent. Include the primary keyword in the first sentence. "
-                    "Do not write generic category filler. Show category expertise: reference what makes a good product in this category, who it is for, or what problem it solves. "
+                    "Intro paragraph: describe the category and the main shopper need. Include the primary keyword naturally in the first sentence when it fits. "
+                    "Do not warm up. Do not write generic category filler. "
                     "Avoid promotional tone. This is editorial, not advertising. "
                     "No em dashes."
                 ),
             },
             {
-                "name": "buying_guide",
-                "label": "How to Choose",
-                "purpose": "Short buying guide that helps shoppers make a better decision. Demonstrates category expertise and builds topical authority. Reduces bounce and increases time on page.",
-                "word_count": [200, 320],
+                "name": "collection_guidance",
+                "label": "Helpful Buying Notes",
+                "purpose": "One compact paragraph that combines useful selection guidance, available product angles, and brand value only when supported by the page or brief.",
+                "word_count": [120, 190],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write a practical buying guide for this product category. "
-                    "Cover 3 to 4 decision criteria that matter most when choosing from this category. "
-                    "Each criterion: a short bold label and 2 to 3 sentences of practical guidance. "
-                    "Examples: 'Size and Fit', 'Material and Durability', 'Budget Range', 'Use Case', 'Compatibility'. "
-                    "H2 should be a question or directive: 'How to Choose the Right [Category]' or 'What to Look For'. "
-                    "Include supporting keyword naturally. "
-                    "Tone: helpful and authoritative, like a knowledgeable colleague. No em dashes."
-                ),
-            },
-            {
-                "name": "subcategory_overview",
-                "label": "What's in This Collection",
-                "purpose": "Brief overview of key subcategories or product types within this collection. Helps navigation and signals category depth to search engines.",
-                "word_count": [150, 250],
-                "keyword_slot": "supporting",
-                "heading_level": "h2",
-                "prompt_rules": (
-                    "Write a short overview of 3 to 5 key product types or subcategories within this collection. "
-                    "Each type: a bold label and 1 to 2 sentences describing it and who it is for. "
-                    "This signals category breadth and helps shoppers navigate to the right product group. "
-                    "Use natural internal link anchor language where appropriate. "
-                    "Include supporting keyword naturally. "
-                    "No em dashes."
-                ),
-            },
-            {
-                "name": "brand_value",
-                "label": "Why Shop With Us",
-                "purpose": "Brand value proposition in the context of this category. 3 specific differentiators: quality, curation, service, or expertise.",
-                "word_count": [150, 240],
-                "keyword_slot": "none",
-                "heading_level": "h2",
-                "prompt_rules": (
-                    "Write 3 short differentiator blocks relevant to this specific category. "
-                    "Each block: a bold label (3 to 5 words), then 2 sentences. "
-                    "Good differentiators for ecommerce: curated selection, quality standards, free returns, fast delivery, expert sourcing, or category-specific guarantees. "
-                    "Avoid generic differentiators that could apply to any ecommerce store. "
-                    "Tie each differentiator to what it means for the buyer of this specific category. "
+                    "Write one useful paragraph, not separate blocks. "
+                    "Mention selection guidance, product variety, or brand value only when the available context supports it. "
+                    "Do not invent sizes, materials, product groups, shipping, returns, guarantees, pricing, availability, or use cases. "
+                    "Do not use headings like 'How to Choose', 'What's in This Collection', or 'Why Shop With Us'. "
+                    "Include the supporting keyword only if it reads naturally. "
                     "No em dashes."
                 ),
             },

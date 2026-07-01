@@ -895,13 +895,37 @@ def _process_single_row(
     pool   = [k for k in pool if k.get("volume", 0) >= min_volume]
     ranked = rank_keywords(pool, branded_terms, h1=h1, exclude_position_one=True)
     ranked = [k for k in ranked if not k.get("branded")]
+    manual_primary = manual_kws[0] if manual_kws else ""
+
+    if manual_primary:
+        manual_key = manual_primary.lower()
+        existing_manual = next(
+            (k for k in pool if str(k.get("keyword", "")).strip().lower() == manual_key),
+            {},
+        )
+        manual_entry = {
+            **existing_manual,
+            "keyword": manual_primary,
+            "volume": existing_manual.get("volume", vol_map.get(manual_primary, 0)),
+            "difficulty": existing_manual.get("difficulty", diff_map.get(manual_primary, 1)),
+            "score": existing_manual.get("score", 1.0),
+            "branded": False,
+        }
+        ranked = [manual_entry] + [
+            k for k in ranked
+            if str(k.get("keyword", "")).strip().lower() != manual_key
+        ]
+        keyword_source = "manual"
+    else:
+        keyword_source = "dfs+gsc" if gsc_queries else "dfs"
+
     run_diagnostics["input_signal_counts"]["ranked_keywords"] = len(ranked)
 
     if not ranked and manual_kws:
         ranked = [{"keyword": k, "volume": 10, "difficulty": 1, "score": 1.0} for k in manual_kws]
         run_diagnostics["input_signal_counts"]["ranked_keywords"] = len(ranked)
+        keyword_source = "manual"
 
-    keyword_source = "dfs+gsc" if gsc_queries else "dfs"
     if not ranked and not use_gsc and h1:
         ranked = [{"keyword": h1, "volume": 0, "difficulty": 50, "score": 0.0}]
         run_diagnostics["input_signal_counts"]["ranked_keywords"] = len(ranked)
@@ -912,7 +936,7 @@ def _process_single_row(
         return _empty("skipped: no keywords found")
 
     primary_keyword = ranked[0]["keyword"]
-    if primary_keyword.lower() in used_keywords:
+    if not manual_primary and primary_keyword.lower() in used_keywords:
         for r in ranked[1:]:
             if r["keyword"].lower() not in used_keywords:
                 primary_keyword = r["keyword"]
@@ -1132,9 +1156,9 @@ def _process_single_row(
             try:
                 ideas = get_keyword_ideas(sk, dfs_login, dfs_password, location_code, limit=10)
                 lsi_map[sk] = [i["keyword"] for i in ideas[:3]]
-            except Exception as e:
+            except Exception:
                 lsi_map[sk] = []
-                step("DataForSEO keyword ideas failed: " + str(e)[:120])
+                step("Related keyword ideas unavailable; continuing without them.")
 
         # Client existing content
         client_existing_content = ""

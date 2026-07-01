@@ -268,8 +268,11 @@ Section-specific rules:
 Hard rules for all output:
 - Never use em dashes (use a comma or rewrite the sentence)
 - No exclamation marks
-- No generic AI openings like 'In today's world' or 'Great question'
+- No generic AI openings like 'In today's world', 'Great question', 'Finding the right', 'When it comes to', 'Choosing the right', 'Looking for', 'There are many', 'It can be difficult to', 'If you are searching for', 'Whether you need', or 'In the world of'
 {forbidden_block}
+- Do not write phrases like 'this page', 'this collection', 'this category', 'this range', or 'on this page'. Name the product, category, service, topic, brand, or location directly.
+- Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims unless they are supported by client existing content, client brief, or brand context.
+- Competitor context is topic inspiration, not proof of client facts.
 - No fluff. Every sentence must add information or move the argument forward
 - Brand name must appear exactly as: {brand_name}
 - Return only the section copy. No preamble, no notes, no explanations.

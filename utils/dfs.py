@@ -106,7 +106,18 @@ def get_keyword_ideas(seed_keyword: str, login: str, password: str, location_cod
         "language_code": "en",
         "limit": limit,
     }]
-    data = _post("dataforseo_labs/google/keyword_ideas/live", payload, login, password)
+    try:
+        data = _post("dataforseo_labs/google/keyword_ideas/live", payload, login, password)
+    except RuntimeError as exc:
+        if "Invalid Field" not in str(exc):
+            raise
+        fallback_payload = [{
+            "keywords": [seed_keyword],
+            "location_code": location_code,
+            "language_code": "en",
+            "limit": limit,
+        }]
+        data = _post("dataforseo_labs/google/keyword_ideas/live", fallback_payload, login, password)
 
     results = []
     for task in data.get("tasks", []):
