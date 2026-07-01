@@ -2,6 +2,7 @@ import time
 import uuid
 import base64
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
@@ -413,6 +414,54 @@ def _add_section_word_count_flags(flags: list[dict], section_results: dict, temp
                 "target_min": target_min,
                 "target_max": target_max,
             })
+
+
+def _template_for_page_copy(template: dict, separate_faq_output_enabled: bool) -> dict:
+    page_template = deepcopy(template)
+    if not separate_faq_output_enabled:
+        return page_template
+
+    sections = page_template.get("sections") or []
+    used_names = {section.get("name", "") for section in sections}
+    adjusted_sections = []
+
+    for section in sections:
+        name = str(section.get("name", "")).lower()
+        label = str(section.get("label", "")).lower()
+        is_faq_section = "faq" in name or label == "frequently asked questions"
+        if not is_faq_section:
+            adjusted_sections.append(section)
+            continue
+
+        support_name = "support_notes"
+        suffix = 2
+        while support_name in used_names:
+            support_name = f"support_notes_{suffix}"
+            suffix += 1
+        used_names.add(support_name)
+
+        adjusted_sections.append({
+            **section,
+            "name": support_name,
+            "label": "Final Decision Notes",
+            "purpose": (
+                "Short non-Q&A support section that summarises practical decision points, "
+                "expectations, or next-step considerations without duplicating the separate FAQ output."
+            ),
+            "word_count": [80, 130],
+            "keyword_slot": "lsi",
+            "prompt_rules": (
+                "Write one compact support section, not a FAQ. "
+                "Do not use question headings, Q&A formatting, or 'Frequently Asked Questions'. "
+                "Summarise practical considerations that help the reader decide what to do next, using only the available page context, brief, SERP, or competitor signals. "
+                "Do not repeat the separate FAQ output. "
+                "Do not invent pricing, policies, product details, ratings, guarantees, availability, or claims. "
+                "Use the LSI keyword only if it reads naturally. No em dashes."
+            ),
+        })
+
+    page_template["sections"] = adjusted_sections
+    return page_template
 
 
 def _add_similarity_flag(result: dict, code: str, message: str, output: str, previous_row: int, similarity: float):
@@ -1012,6 +1061,7 @@ def _process_single_row(
                 template = get_template(template_key)
             except ValueError:
                 template = get_template("service_page")
+        template = _template_for_page_copy(template, bool(gen_faqs))
 
         kw_assignment = assign_keywords_to_sections(ranked, template["sections"])
         competitor_section_map = {s["name"]: [] for s in template["sections"]}

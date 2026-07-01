@@ -240,6 +240,91 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(generate_faq.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
         self.assertEqual(generate_page.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
 
+    def test_page_copy_replaces_template_faq_when_separate_faq_output_is_enabled(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "generate_faq", return_value=[
+            {
+                "question": "What are industrial dosing systems?",
+                "answer": "Industrial dosing systems help teams dose materials consistently.",
+                "source": "generated",
+            }
+        ]), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems " + " ".join(["copy"] * 120),
+                 "_full_page": "Industrial dosing systems " + " ".join(["copy"] * 120),
+                 "_word_count": 121,
+             }) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        section_names = [section["name"] for section in generate_page.call_args.kwargs["template"]["sections"]]
+        section_labels = [section["label"] for section in generate_page.call_args.kwargs["template"]["sections"]]
+        self.assertNotIn("faq", section_names)
+        self.assertIn("support_notes", section_names)
+        self.assertIn("Final Decision Notes", section_labels)
+        self.assertIn("support_notes", result["keyword_assignment"])
+        self.assertNotIn("faq", result["keyword_assignment"])
+
+    def test_page_copy_keeps_template_faq_when_separate_faq_output_is_disabled(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": False,
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "generate_page", return_value={
+            "hero": "Industrial dosing systems " + " ".join(["copy"] * 120),
+            "_full_page": "Industrial dosing systems " + " ".join(["copy"] * 120),
+            "_word_count": 121,
+        }) as generate_page:
+            self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        section_names = [section["name"] for section in generate_page.call_args.kwargs["template"]["sections"]]
+        self.assertIn("faq", section_names)
+        self.assertNotIn("support_notes", section_names)
+
     def test_skips_when_h1_unavailable_and_gsc_disabled(self):
         for h1 in ("", "none", "NoNe"):
             with self.subTest(h1=h1):
@@ -583,12 +668,12 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         by_section = {flag.get("section"): flag for flag in flags}
         self.assertEqual(by_section["hero"]["code"], "section_word_count_below_target")
         self.assertEqual(by_section["hero"]["actual_words"], 2)
-        self.assertEqual(by_section["hero"]["target_min"], 80)
-        self.assertEqual(by_section["hero"]["target_max"], 150)
+        self.assertEqual(by_section["hero"]["target_min"], 70)
+        self.assertEqual(by_section["hero"]["target_max"], 120)
         self.assertEqual(by_section["benefits"]["code"], "section_word_count_above_target")
         self.assertEqual(by_section["benefits"]["actual_words"], 310)
-        self.assertEqual(by_section["benefits"]["target_min"], 150)
-        self.assertEqual(by_section["benefits"]["target_max"], 250)
+        self.assertEqual(by_section["benefits"]["target_min"], 120)
+        self.assertEqual(by_section["benefits"]["target_max"], 190)
 
     def test_generic_openers_in_meta_and_page_copy_are_flagged(self):
         settings = {

@@ -49,14 +49,14 @@ TEMPLATES = {
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Explain why this topic matters to the reader's situation. "
-                    "Use data, trends, or a concrete scenario to ground it. "
+                    "Use available data or trends when provided; otherwise use a concrete reader scenario to ground it. "
                     "Do not repeat the intro. Move the argument forward. "
                     "H2 must be a question or a statement readers would recognise as their own concern."
                 ),
             },
             {
                 "name": "body_1",
-                "label": "Core Section 1",
+                "label": "What Readers Need to Know",
                 "purpose": "Answer the first major sub-question the reader has about this topic.",
                 "word_count": [200, 300],
                 "keyword_slot": "supporting",
@@ -70,7 +70,7 @@ TEMPLATES = {
             },
             {
                 "name": "body_2",
-                "label": "Core Section 2",
+                "label": "How It Works",
                 "purpose": "Answer the second major sub-question. Build on body_1 without repeating it.",
                 "word_count": [200, 300],
                 "keyword_slot": "supporting",
@@ -84,7 +84,7 @@ TEMPLATES = {
             },
             {
                 "name": "body_3",
-                "label": "Core Section 3",
+                "label": "Common Mistakes and Practical Considerations",
                 "purpose": "Address a third angle, common mistake, or practical consideration.",
                 "word_count": [200, 300],
                 "keyword_slot": "lsi",
@@ -171,7 +171,8 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write 5 to 10 numbered list items. "
                     "Each item: H3 with the item name, then 2 to 4 sentences of explanation. "
-                    "Every item must include at least one concrete, specific detail. No vague generalisations. "
+                    "Every item must include at least one concrete, specific detail supported by the available context or by a safe practical example. No vague generalisations. "
+                    "Do not invent product facts, rankings, statistics, or named examples. "
                     "Distribute supporting and LSI keywords naturally across the items. "
                     "No em dashes."
                 ),
@@ -230,7 +231,8 @@ TEMPLATES = {
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Short list of prerequisites or things the reader should have ready. "
-                    "Be specific. Avoid vague items like 'a computer' unless context demands it."
+                    "Only name tools, materials, accounts, or requirements when the context supports them or they are necessary to the process. "
+                    "Avoid vague items like 'a computer' unless context demands it."
                 ),
             },
             {
@@ -314,20 +316,21 @@ TEMPLATES = {
             },
             {
                 "name": "criteria_1",
-                "label": "Comparison Criteria 1",
+                "label": "Cost and Value",
                 "purpose": "Compare both options on the first key dimension.",
                 "word_count": [180, 260],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "H2 names the dimension being compared (e.g. 'Pricing', 'Ease of Use', 'Scalability'). "
-                    "Be specific. Use concrete numbers, features, or scenarios. "
+                    "Be specific. Use concrete numbers, features, or scenarios only when supported by the available context. "
+                    "If evidence is thin, compare decision factors instead of making unsupported claims. "
                     "Do not pad with vague statements like 'both have their pros and cons'."
                 ),
             },
             {
                 "name": "criteria_2",
-                "label": "Comparison Criteria 2",
+                "label": "Ease of Use",
                 "purpose": "Compare both options on the second key dimension.",
                 "word_count": [180, 260],
                 "keyword_slot": "supporting",
@@ -336,7 +339,7 @@ TEMPLATES = {
             },
             {
                 "name": "criteria_3",
-                "label": "Comparison Criteria 3",
+                "label": "Best Fit by Use Case",
                 "purpose": "Compare both options on the third key dimension.",
                 "word_count": [180, 260],
                 "keyword_slot": "lsi",
@@ -351,9 +354,10 @@ TEMPLATES = {
                 "keyword_slot": "primary",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Give a direct recommendation. State which option is better and for whom. "
+                    "Give a direct recommendation based on the available evidence. State which option is better and for whom only when the context supports it. "
                     "Use conditional framing: 'If you need X, go with A. If you need Y, go with B.' "
-                    "No vague both-sides conclusions. Readers came here to make a decision."
+                    "No vague both-sides conclusions. Readers came here to make a decision. "
+                    "Do not declare an unsupported winner."
                 ),
             },
             {
@@ -386,15 +390,15 @@ TEMPLATES = {
             {
                 "name": "headline_snapshot",
                 "label": "Headline and Client Snapshot",
-                "purpose": "Result-first headline. Client snapshot box: industry, size, challenge tag, KPI achieved.",
+                "purpose": "Evidence-first headline. Client snapshot box: industry, size, challenge tag, and confirmed outcome when provided.",
                 "word_count": [60, 100],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
-                    "Write a headline that leads with the single most impressive measurable result. "
-                    "Then write a 3 to 4 line snapshot: Client industry, company size, main challenge, key result. "
+                    "Write a headline that leads with the strongest confirmed outcome. Use a measurable result only when the brief provides one. "
+                    "Then write a 3 to 4 line snapshot: client industry, company size, main challenge, and key result if confirmed. "
                     "Primary keyword must appear in the headline naturally. "
-                    "No vague headlines like 'How We Helped Company X'. Lead with the number or outcome."
+                    "No vague headlines like 'How We Helped Company X'. Do not invent client names, metrics, company size, or KPIs."
                 ),
             },
             {
@@ -460,26 +464,25 @@ TEMPLATES = {
                 "keyword_slot": "primary",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Lead with the most impressive metric. Then add 2 to 3 supporting metrics. "
+                    "Lead with the most impressive confirmed metric. Then add supporting metrics only when they are provided. "
                     "Use before/after framing where data allows. "
-                    "Include time-to-value: how long until results were visible. "
-                    "If placeholder metrics are provided in the brief, use them exactly. "
-                    "If not, write placeholders in brackets like [X% improvement in Y]. "
-                    "Do not pad with vague outcome statements."
+                    "Include time-to-value only when it is provided. "
+                    "If metrics are not provided, describe the confirmed qualitative outcome and what changed for the client. "
+                    "Do not invent percentages, timeframes, revenue, savings, or other performance claims."
                 ),
             },
             {
                 "name": "quote",
-                "label": "Client Quote",
-                "purpose": "Single attributed quote that names the result or removes a key objection.",
+                "label": "Client Takeaway",
+                "purpose": "Exact client quote when provided, otherwise a concise unquoted takeaway based only on confirmed details.",
                 "word_count": [30, 60],
                 "keyword_slot": "none",
                 "heading_level": "none",
                 "prompt_rules": (
                     "If a quote is provided in the brief, use it exactly and add attribution. "
-                    "If not, write a realistic placeholder in quotation marks with [Name, Title, Company] attribution. "
-                    "The quote should name a result or a before/after contrast. "
-                    "No generic praise quotes like 'They were great to work with'."
+                    "If no quote is provided, write a brief unquoted takeaway based only on confirmed details. "
+                    "Do not fabricate quotation marks, names, titles, companies, results, or before/after claims. "
+                    "No generic praise like 'They were great to work with'."
                 ),
             },
             {
@@ -598,7 +601,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Hero",
                 "purpose": "State immediately what the business does, who it serves, and what result they can expect. Primary keyword in H1. Single primary CTA.",
-                "word_count": [80, 140],
+                "word_count": [70, 120],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -615,14 +618,14 @@ TEMPLATES = {
                 "name": "trust_bar",
                 "label": "Social Proof Bar",
                 "purpose": "One short trust signal that immediately follows the hero. Shifts reader mindset from 'is this legit?' to 'this feels solid'.",
-                "word_count": [40, 80],
+                "word_count": [25, 50],
                 "keyword_slot": "none",
                 "heading_level": "none",
                 "prompt_rules": (
-                    "Write a single short social proof statement — one sentence or a short list of three trust signals. "
-                    "Choose from: a specific number of clients or projects, a named outcome, a meaningful quote from a client (use placeholder if none provided), or a 'trusted by' statement with industry or audience type. "
-                    "Examples: 'Trusted by 200+ B2B manufacturers across the US and EU.' or 'Rated 4.9 stars across 180 Google reviews.' "
-                    "Be specific. Never write vague statements like 'quality you can trust'. "
+                    "Write a single short social proof statement: one sentence or a short list of three trust signals. "
+                    "Use confirmed proof only: client count, project count, named outcome, exact quote, certification, partnership, or audience type. "
+                    "If no proof is provided, write a neutral audience or specialisation statement without numbers, ratings, quotes, or named clients. "
+                    "Be specific without inventing claims. Never write vague statements like 'quality you can trust'. "
                     "No heading needed. No em dashes."
                 ),
             },
@@ -630,7 +633,7 @@ TEMPLATES = {
                 "name": "services_overview",
                 "label": "What We Do",
                 "purpose": "Introduce core services briefly so visitors self-identify and move to the right place. Not a full services list. Opens the right doors.",
-                "word_count": [120, 200],
+                "word_count": [100, 160],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -646,13 +649,14 @@ TEMPLATES = {
                 "name": "differentiators",
                 "label": "Why Choose Us",
                 "purpose": "Three specific differentiators that separate this business from the obvious alternatives. Benefit-focused, not feature-focused.",
-                "word_count": [150, 250],
+                "word_count": [120, 190],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write an H2 and exactly 3 differentiator blocks. Each block: a bold label (3 to 5 words), then 2 to 3 sentences of explanation. "
-                    "Each differentiator must be specific and provable — not 'quality service' or 'experienced team'. "
-                    "Good differentiators reference: a specific process, a time-to-value promise, a guarantee, a specialisation that competitors lack, or a result metric. "
+                    "Each differentiator must be specific and provable, not 'quality service' or 'experienced team'. "
+                    "Good differentiators can reference a confirmed process, time-to-value promise, guarantee, specialisation, or result metric. "
+                    "Do not invent guarantees, timelines, certifications, competitors, or result metrics. "
                     "Benefit-focused copy converts significantly better than feature-focused copy. Lead with what the client gains, not what the business has. "
                     "No em dashes. No exclamation marks."
                 ),
@@ -661,15 +665,14 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "Client Results",
                 "purpose": "One or two specific social proof items. A testimonial or a result stat. Makes the differentiators credible.",
-                "word_count": [80, 150],
+                "word_count": [60, 100],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write one short testimonial block and/or one result stat. "
-                    "If a client quote is provided in the brief, use it exactly with attribution. "
-                    "If not, write a realistic placeholder in quotation marks with [Name, Title, Company] attribution. "
-                    "The quote or stat should name a specific result or before/after contrast, not generic praise. "
-                    "Example: 'We reduced onboarding time from 6 weeks to 8 days.' "
+                    "Write one short credibility block using confirmed social proof only. "
+                    "If a client quote or result stat is provided in the brief, use it exactly with attribution. "
+                    "If no quote or result stat is provided, write a neutral credibility sentence based on confirmed services, audience, specialisation, or process. "
+                    "Do not fabricate quotation marks, names, titles, companies, metrics, ratings, or before/after claims. "
                     "No vague statements like 'they were amazing to work with'. "
                     "No em dashes."
                 ),
@@ -678,7 +681,7 @@ TEMPLATES = {
                 "name": "cta_close",
                 "label": "Get Started",
                 "purpose": "Closing CTA section. Clear and low-friction. Guides the reader to the next step without pressure.",
-                "word_count": [60, 100],
+                "word_count": [45, 80],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -703,7 +706,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Service Hero",
                 "purpose": "Immediately communicate what the service is, who it is for, and the outcome. Keyword in H1. Primary CTA.",
-                "word_count": [80, 150],
+                "word_count": [70, 120],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -718,8 +721,8 @@ TEMPLATES = {
             {
                 "name": "benefits",
                 "label": "Key Benefits",
-                "purpose": "Three key benefits that increase desire for the service by showing what the client walks away with. Benefit-focused converts 20 to 40 percent better than feature-focused.",
-                "word_count": [150, 250],
+                "purpose": "Three key benefits that increase desire for the service by showing what the client walks away with.",
+                "word_count": [120, 190],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -735,7 +738,7 @@ TEMPLATES = {
                 "name": "pain_points",
                 "label": "The Problem",
                 "purpose": "Show you understand the reader's frustration before presenting the solution. The section readers identify with most.",
-                "word_count": [120, 200],
+                "word_count": [100, 160],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -752,7 +755,7 @@ TEMPLATES = {
                 "name": "solution",
                 "label": "How We Help",
                 "purpose": "Present the service as the direct solution to the pain points above. Specific about what is done, for whom, and how.",
-                "word_count": [180, 280],
+                "word_count": [140, 220],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -769,14 +772,13 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "Client Results",
                 "purpose": "Social proof immediately after the solution to validate the claims. Testimonials and/or case study excerpts.",
-                "word_count": [100, 180],
+                "word_count": [70, 120],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write 1 to 2 social proof items: a testimonial, a result metric, or a short case study excerpt. "
-                    "If a quote is provided in the brief, use it exactly. "
-                    "If not, write a realistic placeholder: a quoted statement in quotation marks with [Name, Title, Company] and a before/after result reference. "
-                    "Quote should name a specific result, not generic praise. "
+                    "Write 1 to 2 social proof items only when confirmed proof is available: an exact testimonial, a result metric, or a short case study excerpt. "
+                    "If no confirmed proof is available, write one neutral credibility sentence based on the service, audience, or process. "
+                    "Do not fabricate quotation marks, names, titles, companies, metrics, locations, or before/after claims. "
                     "Slot this near the Why Choose Us content to lend credibility to the differentiators. "
                     "Avoid manufactured superlatives. No em dashes."
                 ),
@@ -785,7 +787,7 @@ TEMPLATES = {
                 "name": "process",
                 "label": "How It Works",
                 "purpose": "Walk the reader through what happens when they engage. Sets expectations, reduces hesitation, builds trust.",
-                "word_count": [150, 250],
+                "word_count": [120, 180],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -801,13 +803,14 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Anticipate and address objections and lingering questions. Keyword-enriched FAQ section.",
-                "word_count": [200, 320],
+                "word_count": [180, 260],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 4 to 6 FAQ items using PAA questions provided and common service-page objections. "
                     "Each answer: 2 to 4 direct sentences. No padding. "
-                    "Address objections like: cost, timeframe, suitability, what makes you different, and how to get started. "
+                    "Address objections like: cost, timeframe, suitability, what makes you different, and how to get started only when enough context exists. "
+                    "If exact cost or timeframe details are missing, explain how to get an accurate answer instead of inventing numbers. "
                     "Include LSI keywords naturally across answers. "
                     "Format: Question as H3 or bold line, then answer paragraph. "
                     "No em dashes."
@@ -817,7 +820,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Get in Touch",
                 "purpose": "Final conversion section. Clear and frictionless. Business-type-aware CTA.",
-                "word_count": [60, 100],
+                "word_count": [45, 80],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -841,7 +844,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Local Hero",
                 "purpose": "Service and location in H1. Immediate clarity on what is offered, where, and to whom.",
-                "word_count": [80, 150],
+                "word_count": [70, 120],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -857,13 +860,13 @@ TEMPLATES = {
                 "name": "local_intro",
                 "label": "Serving [Location]",
                 "purpose": "Establish local presence and relevance. References the area, who is served, and what the service covers in this specific market.",
-                "word_count": [150, 240],
+                "word_count": [110, 170],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
                     "Write 2 paragraphs that establish genuine local relevance. "
                     "Paragraph 1: describe the service and who it serves in this location. Include the primary keyword in the first two sentences. "
-                    "Paragraph 2: reference the local context — the area's industries, common local needs, or service-area coverage (cities, suburbs, neighborhoods served). "
+                    "Paragraph 2: reference confirmed local context such as industries, common local needs, or service-area coverage when provided. "
                     "This is not generic service description. It is location-specific. "
                     "Do not use city name padding (e.g. 'Denver businesses in Denver'). Reference the location as a reader from that area would expect. "
                     "No em dashes."
@@ -873,7 +876,7 @@ TEMPLATES = {
                 "name": "services_in_location",
                 "label": "Our Services in [Location]",
                 "purpose": "List the specific services offered in this location. Keyword-enriched service descriptions.",
-                "word_count": [200, 300],
+                "word_count": [150, 230],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -888,12 +891,13 @@ TEMPLATES = {
                 "name": "why_local",
                 "label": "Why Choose Us in [Location]",
                 "purpose": "Differentiators that are specifically relevant to serving this location. Local knowledge, coverage, response time, or area-specific experience.",
-                "word_count": [150, 240],
+                "word_count": [120, 180],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 3 differentiator blocks that are specific to serving this location. "
-                    "Examples: local team, same-day coverage, years of local experience, knowledge of local regulations, or area-specific case studies. "
+                    "Use only confirmed local proof, such as team location, coverage model, response model, local experience, regulations, or area-specific case studies. "
+                    "Do not invent same-day service, years of experience, local offices, local regulations, or case studies. "
                     "Each block: bold label (3 to 5 words), then 2 to 3 sentences. "
                     "Avoid generic differentiators like 'quality service' or 'experienced team'. "
                     "Reference the location in at least one block. "
@@ -904,14 +908,14 @@ TEMPLATES = {
                 "name": "service_area",
                 "label": "Areas We Serve",
                 "purpose": "Define the service area coverage. Signals to Google which geographic queries this page is relevant for.",
-                "word_count": [100, 180],
+                "word_count": [80, 130],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write a short paragraph describing the service area coverage. "
-                    "Name the primary city/region and surrounding areas, suburbs, or towns served. "
-                    "If specific coverage areas are provided in the brief, list them. "
-                    "If not, write a realistic placeholder: 'We serve [Primary City] and the surrounding areas including [suburb 1], [suburb 2], and [suburb 3]. Contact us to confirm coverage in your area.' "
+                    "Name the primary city/region and surrounding areas, suburbs, or towns served only when they are provided in the brief or scraped page content. "
+                    "If specific coverage areas are not provided, reference only the confirmed primary location and invite readers to confirm coverage. "
+                    "Do not invent suburbs, towns, service radius, response time, or office locations. "
                     "Keep the tone helpful, not promotional. This section is informational. "
                     "Include LSI keywords naturally. No em dashes."
                 ),
@@ -920,15 +924,13 @@ TEMPLATES = {
                 "name": "local_social_proof",
                 "label": "What Local Clients Say",
                 "purpose": "Testimonials or results from clients in or near this location. Local social proof carries more weight for local purchase decisions.",
-                "word_count": [100, 180],
+                "word_count": [70, 120],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write 1 to 2 testimonials or result statements from local clients. "
-                    "If quotes are provided in the brief, use them exactly with name and location attribution. "
-                    "If not, write realistic placeholders with [Name], [Company or suburb], and a specific before/after result. "
-                    "Reference the location in the attribution where natural. "
-                    "Quote should name a tangible result, not generic praise. "
+                    "Write 1 to 2 local testimonials or result statements only when confirmed quotes or results are available. "
+                    "If no confirmed proof is available, write one neutral local credibility sentence based on confirmed service area, audience, or process. "
+                    "Do not fabricate quotation marks, names, companies, suburbs, locations, or before/after results. "
                     "No em dashes."
                 ),
             },
@@ -936,12 +938,13 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer common local questions including service area, availability, pricing, and local-specific concerns.",
-                "word_count": [200, 300],
+                "word_count": [180, 260],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 4 to 5 FAQ items using PAA questions and common local service queries. "
-                    "Include location-specific questions: coverage area, response time, local licensing, or area-specific process differences. "
+                    "Include location-specific questions such as coverage area, response time, local licensing, or area-specific process differences only when the context supports them. "
+                    "If exact availability, pricing, license, or response details are missing, explain how to confirm them instead of inventing specifics. "
                     "Each answer: 2 to 3 direct sentences. "
                     "Format: Question on its own line, then answer paragraph. "
                     "Include LSI keywords naturally. No em dashes."
@@ -951,7 +954,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Contact Us in [Location]",
                 "purpose": "Location-aware CTA. Makes contacting the local team feel easy and natural.",
-                "word_count": [60, 100],
+                "word_count": [45, 80],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -996,7 +999,8 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write the company story focused on the things clients care about, not a full history. "
                     "Cover: why the business was founded or why the team does this work, what the business specialises in, and how the approach has been shaped by real client experience. "
-                    "If a founding story or background is provided in the brief, use it. If not, write a credible placeholder. "
+                    "If a founding story or background is provided in the brief, use it. If not, write a present-day purpose statement based only on confirmed services, audience, and approach. "
+                    "Do not invent founders, dates, origin stories, company history, or motivations. "
                     "Do not list every job the founders ever had. Focus on what is relevant to the client. "
                     "Tone: thoughtful, authentic, specific. "
                     "Include the supporting keyword naturally. No em dashes."
@@ -1028,7 +1032,9 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write a paragraph or short list of credibility signals. "
                     "Include where relevant and available: years in business, number of clients or projects, industries served, geographic coverage, key partnerships, or certifications. "
-                    "If specific numbers are provided in the brief, use them. If not, write placeholder-format: 'Over [X] years working with [industry] businesses across [region].' "
+                    "Use specific numbers, partnerships, certifications, awards, client counts, or geographic coverage only when provided in the brief or scraped page content. "
+                    "If no proof points are provided, describe confirmed specialisation, audience, or working approach without numbers or named credentials. "
+                    "Do not invent years in business, client counts, regions, partnerships, certifications, awards, or notable clients. "
                     "Weave this in naturally. Do not make it feel like a resume or a trophy wall. "
                     "Include supporting keyword. No em dashes."
                 ),
@@ -1043,9 +1049,9 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write a short paragraph introducing the team or the founders. "
                     "Focus on the combination of experience and approach that makes the team effective for clients. "
-                    "If specific team details are provided in the brief, use them. If not, write a credible placeholder. "
+                    "If specific team details are provided in the brief, use them. If not, keep this general and describe the confirmed capabilities behind the work. "
                     "Keep the tone human and specific. Avoid the corporate bio format. "
-                    "Example: 'Our team of [X] combines [background 1] and [background 2] — which means [what that combination delivers for clients].' "
+                    "Do not invent founder names, team size, credentials, biographies, or professional backgrounds. "
                     "No em dashes."
                 ),
             },
@@ -1098,7 +1104,8 @@ TEMPLATES = {
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write a short paragraph setting response expectations. "
-                    "Include: how quickly they can expect a response (e.g. within 1 business day), what the next step looks like (a call, a proposal, a discovery session), and any helpful context about what to include in their message. "
+                    "Include response timing, next steps, or booking options only when provided in the brief or scraped page content. "
+                    "If timing is not provided, set a helpful expectation without promising a specific response window. "
                     "If a Calendly or booking link is mentioned in the brief, reference it as an option. "
                     "Tone: helpful and professional, not corporate. "
                     "No em dashes."
@@ -1113,10 +1120,10 @@ TEMPLATES = {
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write a short block listing available contact methods and office information. "
-                    "Include placeholders for: phone number, email address, office address (if applicable), and business hours. "
+                    "Include phone number, email address, office address, and business hours only when provided in the brief or scraped page content. "
                     "Format as short readable lines, not a dense paragraph. "
-                    "If physical address is provided in the brief, use it. If not, use [Address] as placeholder. "
-                    "For local businesses, note: 'Our [City] office is open [hours].' "
+                    "If contact details are missing, refer to the visible contact form or confirmed primary contact method instead. "
+                    "Do not invent phone numbers, email addresses, office addresses, business hours, offices, or locations. "
                     "No em dashes."
                 ),
             },
@@ -1149,13 +1156,13 @@ TEMPLATES = {
                 "name": "product_intro",
                 "label": "Product Introduction",
                 "purpose": "Product name as H1 with key attribute. Short benefit-led description: what it does for the customer and why it matters. Primary keyword in first sentence.",
-                "word_count": [80, 150],
+                "word_count": [60, 110],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
                     "Write the product H1 and a short intro description (2 to 3 sentences). "
-                    "H1: product name plus one key attribute. Example: 'Blue Linen Blazer — Women's Summer Essential'. Include primary keyword. "
-                    "Intro description: lead with what the product does for the customer. Then support with 1 key quality signal. "
+                    "H1: product name plus one confirmed key attribute. Example: 'Blue Linen Blazer for Summer Outfits'. Include primary keyword. "
+                    "Intro description: lead with what the product does for the customer. Then support with 1 confirmed quality signal. "
                     "Focus on the customer outcome first, product details second. "
                     "Example: 'The [Product] takes [problem] off your plate with [benefit]. Made from [material], it [quality signal].' "
                     "No em dashes. No exclamation marks. No manufacturer-style copy."
@@ -1164,14 +1171,16 @@ TEMPLATES = {
             {
                 "name": "benefits_features",
                 "label": "Key Features and Benefits",
-                "purpose": "Benefit-led bullet list followed by technical specifications. Benefits first — what it does for the buyer. Specs second — the proof behind the benefits.",
-                "word_count": [200, 350],
+                "purpose": "Benefit-led bullet list followed by technical specifications when available. Benefits first, specs second.",
+                "word_count": [150, 240],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write two subsections: "
                     "1. Benefits (H3): 4 to 6 bullet points. Each bullet leads with a benefit, then supports it with a feature. Format: '[Benefit]: [Feature that delivers it].' Example: 'Stays cool all day: breathable 100% linen construction.' "
-                    "2. Specifications (H3): scannable list of technical details. Include relevant details from the brief: dimensions, materials, weight, compatibility, certifications, variants. If specs are not provided, write realistic placeholders. "
+                    "2. Specifications (H3): scannable list of technical details only when confirmed details are available in the brief or scraped page content: dimensions, materials, weight, compatibility, certifications, or variants. "
+                    "If specs are not provided, omit the specifications subsection or write one neutral sentence saying product details are available on the page or by request. "
+                    "Do not invent dimensions, materials, weights, compatibility, certifications, variants, pricing, shipping, availability, or guarantees. "
                     "Include supporting keyword naturally in the benefits section. "
                     "No em dashes. No exclamation marks."
                 ),
@@ -1180,13 +1189,13 @@ TEMPLATES = {
                 "name": "use_cases",
                 "label": "Who It's For",
                 "purpose": "Help the shopper see themselves using this product. Use cases and ideal customer scenarios.",
-                "word_count": [120, 200],
+                "word_count": [90, 150],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 2 to 3 paragraphs or a short structured block describing who this product is for and in what situations they would use it. "
-                    "Be specific about the customer profile and the use scenario. "
-                    "Examples: 'Ideal for B2B teams who need X without Y.' / 'Perfect for the daily commuter who wants X but not Y.' "
+                    "Be specific about the customer profile and the use scenario only when the context supports it. "
+                    "If context is thin, describe broad buyer needs without inventing personas, occasions, environments, or product groupings. "
                     "If PAA data includes questions about who should use this or what it is best for, incorporate those answers here. "
                     "No em dashes. Keep it focused on the buyer."
                 ),
@@ -1195,15 +1204,14 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "What Customers Say",
                 "purpose": "Customer review highlights. Social proof that validates product claims and builds purchase confidence.",
-                "word_count": [100, 180],
+                "word_count": [70, 110],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write 1 to 2 customer review highlights or a summary of review sentiment. "
+                    "Write 1 to 2 customer review highlights or a summary of review sentiment only when reviews or ratings are provided. "
                     "If reviews are provided in the brief, use them exactly with attribution. "
-                    "If not, write realistic placeholders: quoted review with [Customer Name, location or verified buyer] and a specific outcome or detail mentioned. "
-                    "Include a rating reference if available: 'Rated 4.8 stars across [X] reviews.' "
-                    "Reviews should mention specific product details, not generic praise. "
+                    "If no reviews or ratings are provided, write one neutral product confidence note based on confirmed product facts. "
+                    "Do not fabricate quotation marks, customer names, buyer locations, verified-buyer labels, ratings, review counts, outcomes, or review sentiment. "
                     "No em dashes."
                 ),
             },
@@ -1211,12 +1219,14 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer real pre-purchase questions from customers. Pulls from PAA data. Reduces hesitation and return rates.",
-                "word_count": [180, 300],
+                "word_count": [160, 260],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 3 to 5 FAQ items using PAA questions and common product purchase objections. "
-                    "Good topics: sizing/compatibility, shipping and returns, how to use the product, care instructions, warranty, differences between variants. "
+                    "Good topics can include sizing, compatibility, shipping, returns, use, care, warranty, or variant differences only when those details are available in the context. "
+                    "If context is thin, use safer product-level questions about what the product is for, how to compare visible attributes, and how to confirm details before buying. "
+                    "Do not invent size charts, compatibility lists, shipping policy, return policy, warranty terms, availability, price, or variant differences. "
                     "Each answer: 2 to 3 direct sentences. "
                     "Include LSI keywords naturally. "
                     "Format: Question as H3, then answer paragraph. "
@@ -1273,7 +1283,9 @@ TEMPLATES = {
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 4 to 5 FAQ items using PAA questions and common category-level purchase questions. "
-                    "Good topics: how to choose between product types in this category, size/compatibility/fit guidance, care and maintenance, delivery and returns policy, price range expectations. "
+                    "Use topics like choosing between product types, size, compatibility, fit, care, delivery, returns, or price range only when those details are available in the context. "
+                    "If context is thin, use safer category-level questions about what the category is for, how shoppers can compare visible product attributes, and how to confirm details before buying. "
+                    "Do not invent product counts, materials, sizes, compatibility, care instructions, delivery policy, returns policy, price ranges, availability, or guarantees. "
                     "Each answer: 2 to 3 direct sentences. "
                     "Include LSI keywords naturally. "
                     "Format: Question as H3, then answer paragraph. "
