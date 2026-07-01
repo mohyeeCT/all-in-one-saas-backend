@@ -112,6 +112,45 @@ _UNSUPPORTED_CLAIM_GUARDRAIL = (
 )
 
 
+_ECOMMERCE_COLLECTION_GUARDRAIL = (
+    "ECOMMERCE COLLECTION FAQ RULES:\n"
+    "- Do not mention exact prices, sale prices, price ranges, or currency amounts from scraped products.\n"
+    "- Do not mention exact product counts or imply a fixed number of products in the collection.\n"
+    "- Do not mention exact sizes, filter values, inventory levels, SKU details, or availability claims.\n"
+    "- Do not mention exact variant counts or imply a fixed number of variants.\n"
+    "- Do not quote exact product names from the scraped collection unless the target keyword or page H1 is that exact product name.\n"
+    "- Prefer stable category-level language such as selection, format, flavor, fit, use case, material, compatibility, or other supported category attributes.\n"
+    "- Treat product cards and filters as navigation signals, not proof for durable claims."
+)
+
+
+_PRODUCT_NAME_NATURALNESS_GUARDRAIL = (
+    "PRODUCT NAME NATURALNESS RULES:\n"
+    "- Use the product name 2 or 3 times max across all questions and answers. Across the full FAQ set for this page, count every mention in both questions and answers.\n"
+    "- This limit includes exact names, shortened product-name variations, reordered names, and partial names that still point to the same specific item.\n"
+    "- Do not replace the full product name with half-name variations, such as using only the flavor, model, collection phrase, or distinctive modifier, unless that phrase describes the general item category rather than this specific product.\n"
+    "- Prefer natural generic references such as 'this product', 'this item', 'it', 'this option', or a concise category phrase when the meaning is clear.\n"
+    "- Do not force any product-name wording into every FAQ. Keep the language conversational and natural."
+)
+
+
+_BRAND_NAME_NATURALNESS_GUARDRAIL = (
+    "BRAND NAME NATURALNESS RULES:\n"
+    "- Use the brand name 2 or 3 times max across all questions and answers. Across the full FAQ set for this page, count every mention in both questions and answers.\n"
+    "- Do not force the brand name into every FAQ, every answer, or repeated sentence openings.\n"
+    "- Prefer natural references such as 'the team', 'the service', 'this company', 'this provider', 'it', or a concise page-specific phrase when the meaning is clear.\n"
+    "- Use exact brand casing when the brand name appears, but do not add the brand name where it would sound repetitive or unnatural."
+)
+
+
+_MAIN_KEYWORD_NATURALNESS_GUARDRAIL = (
+    "MAIN KEYWORD NATURALNESS RULES:\n"
+    "- Use the main keyword 1 or 2 times across the full FAQ set for this page, counting both questions and answers.\n"
+    "- Do not force the keyword into every FAQ, every answer, or repeated sentence openings.\n"
+    "- Use close, natural phrasing only when it reads better for the user and still matches the page intent."
+)
+
+
 def _format_paa_answer_snippet(answer: str, max_chars: int = PAA_ANSWER_SNIPPET_CHARS) -> str:
     answer = " ".join((answer or "").split())
     if not answer or len(answer) <= max_chars:
@@ -163,6 +202,34 @@ def _structured_no_serp_fallback(ai_overview_sections: list, paa_items: list, ai
         "- Care, setup, compatibility, or maintenance only if supported by the provided context.\n"
         "Do not invent facts. Do not create generic category education unless the page is informational. Every FAQ should connect back to this specific page."
     )
+
+
+def _is_ecommerce_collection_context(business_type: str, page_type: str, page_context: str = "") -> bool:
+    business_type_norm = (business_type or "").strip().lower()
+    page_type_norm = (page_type or "").strip().lower()
+    if business_type_norm != "ecommerce":
+        return False
+    return (
+        "category" in page_type_norm
+        or "collection" in page_type_norm
+        or "COLLECTION CONTEXT" in (page_context or "")
+    )
+
+
+def _is_product_page(page_type: str) -> bool:
+    return "product" in (page_type or "").strip().lower()
+
+
+def _product_name_naturalness_guardrail(page_type: str) -> str:
+    return _PRODUCT_NAME_NATURALNESS_GUARDRAIL if _is_product_page(page_type) else ""
+
+
+def _brand_name_naturalness_guardrail(brand_name: str) -> str:
+    return _BRAND_NAME_NATURALNESS_GUARDRAIL if (brand_name or "").strip() else ""
+
+
+def _main_keyword_naturalness_guardrail(keyword: str) -> str:
+    return _MAIN_KEYWORD_NATURALNESS_GUARDRAIL if (keyword or "").strip() else ""
 
 
 def _build_section_prompt(
@@ -238,6 +305,12 @@ def _build_section_prompt(
     if forbidden_phrases and forbidden_phrases.strip():
         forbidden_block = f"- Never use these phrases: {forbidden_phrases.strip()}\n"
 
+    brand_rule = (
+        f"- If the brand name appears, use exact casing: {brand_name}. Do not force it into every section, paragraph, or sentence opening.\n"
+        if brand_name
+        else "- No brand name required.\n"
+    )
+
     correction_block = ""
     cleaned_corrections = [str(note).strip() for note in (reviewer_corrections or []) if str(note).strip()]
     if cleaned_corrections:
@@ -270,11 +343,15 @@ Hard rules for all output:
 - No exclamation marks
 - No generic AI openings like 'In today's world', 'Great question', 'Finding the right', 'When it comes to', 'Choosing the right', 'Looking for', 'There are many', 'It can be difficult to', 'If you are searching for', 'Whether you need', or 'In the world of'
 {forbidden_block}
+- You may adjust word order, add small connecting words, or use a close grammatical variation when the exact keyword phrase would sound awkward.
+- Do not force the keyword at the beginning of the first sentence.
+- A keyword used awkwardly is worse than not using it. Quality of integration matters more than quantity.
+- The first sentence must communicate the core topic, benefit, or value of the section. Do not warm up or establish generic context first.
 - Do not write phrases like 'this page', 'this collection', 'this category', 'this range', or 'on this page'. Name the product, category, service, topic, brand, or location directly.
 - Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims unless they are supported by client existing content, client brief, or brand context.
 - Competitor context is topic inspiration, not proof of client facts.
 - No fluff. Every sentence must add information or move the argument forward
-- Brand name must appear exactly as: {brand_name}
+{brand_rule.strip()}
 - Return only the section copy. No preamble, no notes, no explanations.
 {paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{prev_block}{correction_block}"""
 
@@ -531,7 +608,15 @@ def _build_faq_prompt(
     bp_avoid = bp.get("words_to_avoid", "")
     combined_forbidden = ", ".join(filter(None, [(forbidden_phrases or "").strip(), bp_avoid.strip()]))
     forbidden_line = f"Never use these phrases: {combined_forbidden}" if combined_forbidden else ""
+    collection_guardrail = (
+        _ECOMMERCE_COLLECTION_GUARDRAIL
+        if _is_ecommerce_collection_context(business_type, page_type, page_context)
+        else ""
+    )
     bottom_funnel_guardrail = _bottom_funnel_product_guardrail(business_type, page_type)
+    product_name_guardrail = _product_name_naturalness_guardrail(page_type)
+    brand_name_guardrail = _brand_name_naturalness_guardrail(brand_name)
+    main_keyword_guardrail = _main_keyword_naturalness_guardrail(keyword)
 
     bp_lines = []
     if bp:
@@ -572,7 +657,11 @@ Page H1 (context only, do not copy verbatim): {h1 or "Not provided"}
 {forbidden_line}
 {brand_profile_block}
 {_UNSUPPORTED_CLAIM_GUARDRAIL}
+{collection_guardrail}
 {bottom_funnel_guardrail}
+{product_name_guardrail}
+{brand_name_guardrail}
+{main_keyword_guardrail}
 Page context: {page_context or "Not available"}
 AI Overview: {overview or "Not available"}
 People Also Ask:
@@ -702,7 +791,15 @@ def _build_batch_prompt(pages: list, num_faqs: int) -> str:
         bp_avoid = bp.get("words_to_avoid", "")
         combined_forbidden = ", ".join(filter(None, [forbidden.strip(), bp_avoid.strip()]))
         forbidden_line = f"Never use: {combined_forbidden}" if combined_forbidden else ""
+        collection_guardrail = (
+            _ECOMMERCE_COLLECTION_GUARDRAIL
+            if _is_ecommerce_collection_context(business_type, page_type, page_context)
+            else ""
+        )
         bottom_funnel_guardrail = _bottom_funnel_product_guardrail(business_type, page_type)
+        product_name_guardrail = _product_name_naturalness_guardrail(page_type)
+        brand_name_guardrail = _brand_name_naturalness_guardrail(brand_name)
+        main_keyword_guardrail = _main_keyword_naturalness_guardrail(keyword)
 
         # Brand profile block for batch
         bp_lines = []
@@ -756,7 +853,11 @@ Business type: {biz_ctx}
 {forbidden_line}
 {brand_profile_block}
 {_UNSUPPORTED_CLAIM_GUARDRAIL}
+{collection_guardrail}
 {bottom_funnel_guardrail}
+{product_name_guardrail}
+{brand_name_guardrail}
+{main_keyword_guardrail}
 
 {ctx}
 

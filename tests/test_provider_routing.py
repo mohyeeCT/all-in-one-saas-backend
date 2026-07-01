@@ -157,7 +157,82 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Avoid using more than 2 questions with the same starter word", captured["prompt"])
         self.assertIn("No AI Overview or PAA data is available for this keyword.", captured["prompt"])
         self.assertIn("Never use these phrases: banned phrase, cheap", captured["prompt"])
+        self.assertIn("BRAND NAME NATURALNESS RULES:", captured["prompt"])
+        self.assertIn("MAIN KEYWORD NATURALNESS RULES:", captured["prompt"])
+        self.assertIn("Do not force the brand name into every FAQ", captured["prompt"])
+        self.assertIn("Do not force the keyword into every FAQ", captured["prompt"])
         self.assertNotIn("Keep answers 40 to 80 words", captured["prompt"])
+
+    def test_product_faq_prompt_limits_product_name_repetition(self):
+        captured = {}
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
+            return json.dumps([
+                {
+                    "question": "How should shoppers compare this item?",
+                    "answer": "They should compare fit, use case, and supported details from the page.",
+                    "source": "generated",
+                }
+            ])
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+
+        copy_gen.generate_faq(
+            provider="Test",
+            api_key="key",
+            keyword="fierce fruit raspberry puree",
+            page_type="product",
+            brand_name="Example",
+            business_type="ecommerce",
+            h1="Fierce Fruit Raspberry Puree",
+            ai_overview_sections=[],
+            ai_overview_raw="",
+            paa_items=[],
+            num_faqs=1,
+            forbidden_phrases="",
+            page_context="Product details about a raspberry puree.",
+        )
+
+        self.assertIn("PRODUCT NAME NATURALNESS RULES:", captured["prompt"])
+        self.assertIn("Use the product name 2 or 3 times max", captured["prompt"])
+        self.assertIn("Do not replace the full product name with half-name variations", captured["prompt"])
+
+    def test_collection_faq_prompt_blocks_inventory_specific_claims(self):
+        captured = {}
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
+            return json.dumps([
+                {
+                    "question": "How should shoppers compare options?",
+                    "answer": "They should compare stable category fit and supported product details.",
+                    "source": "generated",
+                }
+            ])
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+
+        copy_gen.generate_faq(
+            provider="Test",
+            api_key="key",
+            keyword="chicken party appetizers",
+            page_type="collection",
+            brand_name="Example",
+            business_type="ecommerce",
+            h1="Chicken Party Appetizers",
+            ai_overview_sections=[],
+            ai_overview_raw="",
+            paa_items=[],
+            num_faqs=1,
+            forbidden_phrases="",
+            page_context="COLLECTION CONTEXT: category grid with prices, filters, and product cards.",
+        )
+
+        self.assertIn("ECOMMERCE COLLECTION FAQ RULES:", captured["prompt"])
+        self.assertIn("Do not mention exact prices", captured["prompt"])
+        self.assertIn("Do not mention exact product counts", captured["prompt"])
+        self.assertIn("Do not quote exact product names", captured["prompt"])
 
     def test_paa_answer_snippets_are_sentence_aware(self):
         answer = (
@@ -307,6 +382,12 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Google AI Overview for this topic", captured[0]["prompt"])
         self.assertIn("Google says accuracy and maintenance are important.", captured[0]["prompt"])
         self.assertIn("Never use these phrases: cheap, free audit", captured[0]["prompt"])
+        self.assertIn("You may adjust word order, add small connecting words, or use a close grammatical variation", captured[0]["prompt"])
+        self.assertIn("Do not force the keyword at the beginning of the first sentence", captured[0]["prompt"])
+        self.assertIn("A keyword used awkwardly is worse than not using it", captured[0]["prompt"])
+        self.assertIn("The first sentence must communicate the core topic, benefit, or value", captured[0]["prompt"])
+        self.assertIn("If the brand name appears, use exact casing: Example", captured[0]["prompt"])
+        self.assertNotIn("Brand name must appear exactly as:", captured[0]["prompt"])
 
     def test_collection_template_uses_shorter_intro_and_single_guidance_section(self):
         template = get_template("collection_page")
@@ -465,6 +546,8 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Vary question starter types across the FAQ set", captured["prompt"])
         self.assertIn("No AI Overview or PAA data is available for this keyword.", captured["prompt"])
         self.assertIn("Never use: banned phrase, cheap", captured["prompt"])
+        self.assertIn("BRAND NAME NATURALNESS RULES:", captured["prompt"])
+        self.assertIn("MAIN KEYWORD NATURALNESS RULES:", captured["prompt"])
         self.assertNotIn("Keep answers 40 to 80 words", captured["prompt"])
 
 
