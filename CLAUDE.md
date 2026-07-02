@@ -6,7 +6,7 @@ See `../CLAUDE.md` for full platform context, conventions, and working rules.
 
 FastAPI backend for the All in One workflow. Runs Meta + FAQ + full Page Copy
 in a single shared pipeline per URL. Most complex backend.
-Deployed on Railway EU West. Default branch: `main`. Current HEAD: `8e89b93`.
+Deployed on Railway EU West. Default branch: `main`. Current HEAD: `1ba1b04`.
 Runtime: Python 3.12.
 
 Railway URL: `https://all-in-one-saas-backend-production.up.railway.app`
@@ -53,7 +53,7 @@ POST /api/jobs/{id}/rerun-section     — AiO-only
 ## AiO Pipeline (_process_single_row)
 
 Shared pipeline per URL — no redundant API calls:
-1. Select primary keyword (GSC → DFS → manual → H1 fallback)
+1. Select primary keyword (manual row keyword first, then GSC/DFS, then H1 fallback)
 2. Fetch SERP: PAA + AI Overview
 3. Scrape competitor pages (if enabled)
 4. Build competitor section map
@@ -63,6 +63,14 @@ Shared pipeline per URL — no redundant API calls:
 8. If gen_page_copy: generate all sections via generate_page
 9. Build combined .docx: _build_combined_docx
 10. Write result to Supabase
+
+Manual keyword rule: row-level manual keywords are explicit user input and must
+be the primary keyword choice when present. The implementation prepends the
+manual keyword to the ranked pool and marks `keyword_source` as `manual`.
+
+Landing page rule: `landing_page` is distinct from service pages. Service
+landing page aliases normalize to `service`; plain landing-page aliases
+normalize to `landing_page` and use the dedicated landing page template.
 
 ## Provider Routing
 
@@ -117,6 +125,11 @@ gen_page_copy: bool = True # per-row toggleable
 
 ## Known Gotchas
 
+- AIO is the most coupled backend. Be very careful with every step: trace the
+  impact across Meta, FAQ, Page Copy, DOCX, reruns, cancellation, diagnostics,
+  and frontend result rendering before changing behavior.
+- Do not port standalone FAQ/Meta/Page Copy changes into AIO automatically.
+  Re-check AIO's local implementation and tests first.
 - Section reruns live in jobs.py, not all_in_one.py, because they need to
   import _build_combined_docx from all_in_one. Circular import risk: always
   import _build_combined_docx inside the background function, not at module top.
