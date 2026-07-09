@@ -1269,6 +1269,34 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(suggestions[0]["anchor_text"], "industrial dosing systems")
         self.assertGreaterEqual(suggestions[0]["confidence"], 0.75)
 
+    def test_process_job_completes_when_internal_link_suggestions_fail(self):
+        result = {
+            "url": "https://example.com/services/industrial-dosing-systems",
+            "status": "ok",
+            "qa_flags": [],
+            "primary_keyword": "industrial dosing systems",
+            "section_results": {
+                "hero": "Industrial dosing systems for facilities that need reliable chemical control.",
+            },
+        }
+        sb = _CapturingSupabase()
+
+        with patch.object(all_in_one, "get_supabase", return_value=sb), \
+             patch.object(all_in_one, "_is_cancelled", return_value=False), \
+             patch.object(all_in_one, "_process_single_row", return_value=result), \
+             patch.object(all_in_one, "_build_internal_link_suggestions", side_effect=RuntimeError("link failure")):
+            all_in_one._process_job(
+                "job-1",
+                [{"url": result["url"]}],
+                _settings(),
+                None,
+                user_id="user-1",
+            )
+
+        final_payload = next(payload for payload in reversed(sb.payloads) if payload.get("status") == "complete")
+        self.assertEqual(final_payload["current_step"], "Done. Internal link suggestions unavailable.")
+        self.assertEqual(final_payload["internal_link_suggestions"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

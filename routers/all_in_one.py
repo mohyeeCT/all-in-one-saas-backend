@@ -1617,10 +1617,15 @@ def _process_job(
             })
             return
 
-    internal_link_suggestions = _build_internal_link_suggestions(results)
+    try:
+        internal_link_suggestions = _build_internal_link_suggestions(results)
+        final_step = "Done."
+    except Exception:
+        internal_link_suggestions = []
+        final_step = "Done. Internal link suggestions unavailable."
     _update_job(sb, job_id, user_id, {
         "status":        "complete",
-        "current_step":  "Done.",
+        "current_step":  final_step,
         "completed_rows": len(results),
         "failed_rows":   sum(1 for r in results if r.get("status") != "ok"),
         "results":       results,

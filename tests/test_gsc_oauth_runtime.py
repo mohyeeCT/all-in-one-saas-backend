@@ -1,6 +1,7 @@
 import os
 import inspect
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
@@ -29,6 +30,7 @@ RECONNECT_ERROR = "Google Search Console reconnect required."
 UNAVAILABLE_ERROR = "Selected Google Search Console connection unavailable."
 CREDENTIALS_ERROR = "Saved credentials are temporarily unavailable."
 SECRETS = ("runtime-api-secret", "runtime-dfs-secret", "v1:runtime-ciphertext", "runtime-private-key")
+NOW = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
 
 
 class _Response:
@@ -583,6 +585,44 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(response, {"cancelled": True})
         self.assertEqual(job["status"], "cancelling")
         self.assertIn("stopping after current row", job["current_step"])
+
+    def test_get_job_finalizes_stale_cancelling_job(self):
+        job = {
+            **_stored_job(),
+            "status": "cancelling",
+            "current_step": "Cancelling - stopping after current row...",
+            "updated_at": (NOW - timedelta(minutes=45)).isoformat(),
+            "completed_rows": 0,
+            "total_rows": 1,
+        }
+        sb = _Supabase({"jobs": [job]})
+
+        with patch.object(jobs, "get_supabase", return_value=sb), patch.object(jobs, "_utc_now", return_value=NOW):
+            result = jobs.get_job("job-1", user=SimpleNamespace(id="user-1"))
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(job["status"], "cancelled")
+        self.assertIn("worker stopped responding", result["current_step"])
+
+    def test_get_job_finalizes_stale_running_job_after_all_rows_finished(self):
+        job = {
+            **_stored_job(),
+            "status": "running",
+            "current_step": "Row 1/1 complete.",
+            "updated_at": (NOW - timedelta(minutes=5)).isoformat(),
+            "completed_rows": 1,
+            "total_rows": 1,
+            "failed_rows": 0,
+            "results": [{"status": "ok", "url": "https://example.com/page"}],
+        }
+        sb = _Supabase({"jobs": [job]})
+
+        with patch.object(jobs, "get_supabase", return_value=sb), patch.object(jobs, "_utc_now", return_value=NOW):
+            result = jobs.get_job("job-1", user=SimpleNamespace(id="user-1"))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(result["current_step"], "Done.")
 
     def test_rerun_client_handles_missing_refresh_generic_and_exact_error_clear(self):
         cases = [

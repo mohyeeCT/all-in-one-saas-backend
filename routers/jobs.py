@@ -1,5 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from google.auth.exceptions import RefreshError
+from datetime import datetime, timedelta, timezone
 from auth import get_current_user, get_supabase
 from credentials import hydrate_job_settings, mark_gsc_reconnect_required, strip_secret_fields
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
@@ -10,12 +11,90 @@ _GSC_RECONNECT_ERROR = "Google Search Console reconnect required."
 _GSC_UNAVAILABLE_ERROR = "Selected Google Search Console connection unavailable."
 _GSC_CONFIG_ERROR = "Google Search Console OAuth configuration missing."
 _CREDENTIALS_UNAVAILABLE_ERROR = "Saved credentials are temporarily unavailable."
+_STALE_CANCELLING_AFTER = timedelta(minutes=30)
+_STALE_FINISHED_RUNNING_AFTER = timedelta(minutes=2)
 
 
 from pydantic import BaseModel
 
 class RenameRequest(BaseModel):
     name: str
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_updated_at(value) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_stale(job: dict, threshold: timedelta) -> bool:
+    updated_at = _parse_updated_at(job.get("updated_at"))
+    return bool(updated_at and _utc_now() - updated_at >= threshold)
+
+
+def _failed_row_count(results: list | None, fallback: int = 0) -> int:
+    if not isinstance(results, list):
+        return fallback
+    return sum(1 for row in results if isinstance(row, dict) and row.get("status") != "ok")
+
+
+def _has_finished_rows(job: dict) -> bool:
+    total = int(job.get("total_rows") or 0)
+    completed = int(job.get("completed_rows") or 0)
+    if total <= 0 or completed < total:
+        return False
+    results = job.get("results")
+    return not isinstance(results, list) or len(results) >= total
+
+
+def _persist_terminal_status(sb, job: dict, user_id: str, payload: dict) -> dict:
+    update = {**payload, "updated_at": "now()"}
+    (
+        sb.table("jobs")
+        .update(update)
+        .eq("id", job["id"])
+        .eq("user_id", user_id)
+        .execute()
+    )
+    job.update(update)
+    return job
+
+
+def _finalize_stale_active_job(sb, job: dict, user_id: str) -> dict:
+    status = job.get("status")
+    if status == "cancelling" and _is_stale(job, _STALE_CANCELLING_AFTER):
+        return _persist_terminal_status(sb, job, user_id, {
+            "status": "cancelled",
+            "current_step": "Cancelled after worker stopped responding.",
+            "failed_rows": _failed_row_count(job.get("results"), int(job.get("failed_rows") or 0)),
+        })
+    if (
+        status == "running"
+        and _has_finished_rows(job)
+        and _is_stale(job, _STALE_FINISHED_RUNNING_AFTER)
+    ):
+        payload = {
+            "status": "complete",
+            "current_step": "Done.",
+            "failed_rows": _failed_row_count(job.get("results"), int(job.get("failed_rows") or 0)),
+        }
+        if "internal_link_suggestions" not in job:
+            payload["internal_link_suggestions"] = []
+        return _persist_terminal_status(sb, job, user_id, payload)
+    return job
 
 
 @router.patch("/{job_id}/rename")
@@ -46,7 +125,7 @@ def list_jobs(user=Depends(get_current_user)):
         .limit(50)
         .execute()
     )
-    return res.data or []
+    return [_finalize_stale_active_job(sb, job, user.id) for job in (res.data or [])]
 
 
 @router.get("/{job_id}")
@@ -62,7 +141,7 @@ def get_job(job_id: str, user=Depends(get_current_user)):
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = res.data[0]
+    job = _finalize_stale_active_job(sb, res.data[0], user.id)
     return {**job, "settings": strip_secret_fields(job.get("settings"))}
 
 
@@ -96,6 +175,8 @@ def cancel_job(job_id: str, user=Depends(get_current_user)):
     if not res.data:
         raise HTTPException(status_code=404, detail="Job not found")
     job = res.data[0]
+    if job["status"] in {"cancelling", "cancelled"}:
+        return {"cancelled": True}
     if job["status"] != "running":
         raise HTTPException(status_code=400, detail=f"Job is not running (status: {job['status']})")
     sb.table("jobs").update({
