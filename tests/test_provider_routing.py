@@ -404,6 +404,8 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", meta_capture["prompt"])
         self.assertIn("Mention compliance and implementation support.", meta_capture["prompt"])
+        self.assertIn("Strategy brief priorities outrank exact keyword phrasing.", meta_capture["prompt"])
+        self.assertIn("Do not turn search-query wording into an awkward H1", meta_capture["prompt"])
 
         faq_capture = {}
 
@@ -434,6 +436,7 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", faq_capture["prompt"])
         self.assertIn("Answer fit, process, and proof questions.", faq_capture["prompt"])
+        self.assertIn("Do not turn search-query wording into FAQ questions", faq_capture["prompt"])
 
         page_capture = {}
 
@@ -474,6 +477,8 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", page_capture["prompt"])
         self.assertIn("Lead with the compliance problem.", page_capture["prompt"])
+        self.assertIn("Strategy brief priorities outrank exact keyword phrasing.", page_capture["prompt"])
+        self.assertIn("Do not turn search-query wording into headings", page_capture["prompt"])
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

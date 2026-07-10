@@ -21,6 +21,7 @@ create table if not exists public.jobs (
   rows           jsonb default '[]',
   results        jsonb default '[]',
   logs           jsonb default '[]',
+  internal_link_suggestions jsonb default '[]',
   total_rows     integer default 0,
   completed_rows integer default 0,
   failed_rows    integer default 0,

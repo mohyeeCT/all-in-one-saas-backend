@@ -108,6 +108,30 @@ class _DatabaseError(Exception):
         self.code = code
 
 
+class _MissingInternalLinksColumnError(Exception):
+    code = "42703"
+
+
+class _MissingInternalLinksQuery(_Query):
+    def execute(self):
+        if self.operation == "update":
+            self.sb.update_payloads.append(self.payload)
+            if "internal_link_suggestions" in self.payload:
+                raise _MissingInternalLinksColumnError(
+                    "column jobs.internal_link_suggestions does not exist"
+                )
+        return super().execute()
+
+
+class _MissingInternalLinksSupabase(_Supabase):
+    def __init__(self, tables=None):
+        super().__init__(tables)
+        self.update_payloads = []
+
+    def table(self, name):
+        return _MissingInternalLinksQuery(self, name)
+
+
 def _tables(method="service_account", oauth_status="connected"):
     return {
         "user_settings": [{
@@ -623,6 +647,28 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertEqual(job["status"], "complete")
         self.assertEqual(result["current_step"], "Done.")
+
+    def test_get_job_finalizes_stale_running_job_when_internal_links_column_is_missing(self):
+        job = {
+            **_stored_job(),
+            "status": "running",
+            "current_step": "Row 1/1 complete.",
+            "updated_at": (NOW - timedelta(minutes=5)).isoformat(),
+            "completed_rows": 1,
+            "total_rows": 1,
+            "failed_rows": 0,
+            "results": [{"status": "ok", "url": "https://example.com/page"}],
+        }
+        sb = _MissingInternalLinksSupabase({"jobs": [job]})
+
+        with patch.object(jobs, "get_supabase", return_value=sb), patch.object(jobs, "_utc_now", return_value=NOW):
+            result = jobs.get_job("job-1", user=SimpleNamespace(id="user-1"))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["current_step"], "Done.")
+        self.assertEqual(len(sb.update_payloads), 2)
+        self.assertIn("internal_link_suggestions", sb.update_payloads[0])
+        self.assertNotIn("internal_link_suggestions", sb.update_payloads[1])
 
     def test_rerun_client_handles_missing_refresh_generic_and_exact_error_clear(self):
         cases = [

@@ -467,6 +467,8 @@ Hard rules for all output:
 - No generic AI openings like 'In today's world', 'Great question', 'Finding the right', 'When it comes to', 'Choosing the right', 'Looking for', 'There are many', 'It can be difficult to', 'If you are searching for', 'Whether you need', or 'In the world of'
 {forbidden_block}
 - You may adjust word order, add small connecting words, or use a close grammatical variation when the exact keyword phrase would sound awkward.
+- Strategy brief priorities outrank exact keyword phrasing.
+- Do not turn search-query wording into headings or sentence openings; rewrite it into natural language when needed.
 - Do not force the keyword at the beginning of the first sentence.
 - A keyword used awkwardly is worse than not using it. Quality of integration matters more than quantity.
 - The first sentence must communicate the core topic, benefit, or value of the section. Do not warm up or establish generic context first.
@@ -811,6 +813,8 @@ Rules:
 - For a 5-question set, use a natural mix such as What, How, Which, Can, Does, Is, When, or Why where relevant.
 - Avoid using more than 2 questions with the same starter word in one page's FAQ set.
 - Do not force awkward starters. Choose starters that match the page, search intent, and answer type.
+- Strategy brief priorities outrank exact keyword phrasing.
+- Do not turn search-query wording into FAQ questions; rewrite awkward exact keywords into natural question language.
 - No filler openers (never: "Great question", "Certainly", "Of course", "Absolutely").
 - Return only a JSON array of objects with question, answer, and source keys.
 """
@@ -1318,6 +1322,8 @@ Rules:
 - Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
 - Include the target keyword naturally, ideally near the start where it fits.
 - Never use forbidden phrases or em dashes.
+- Strategy brief priorities outrank exact keyword phrasing.
+- Do not turn search-query wording into an awkward H1; rewrite exact keywords into natural headline language when needed.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
     raw = fn(api_key, prompt, max_tokens=META_MAX_TOKENS, model=resolved_model)

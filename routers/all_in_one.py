@@ -99,6 +99,26 @@ def _is_cancelled(sb, job_id: str, user_id: str) -> bool:
         return False
 
 
+def _is_missing_internal_link_suggestions_column(exc: Exception) -> bool:
+    message = str(exc).lower()
+    code = str(getattr(exc, "code", "") or "").upper()
+    return "internal_link_suggestions" in message and (
+        code in {"42703", "PGRST204", "PGRST205"}
+        or "column" in message
+        or "schema cache" in message
+    )
+
+
+def _execute_job_update(sb, job_id: str, user_id: str, update_data: dict):
+    return (
+        sb.table("jobs")
+        .update(update_data)
+        .eq("id", job_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
 def _update_job(sb, job_id: str, user_id: str, data: dict):
     try:
         update_data = {**data, "updated_at": "now()"}
@@ -120,13 +140,18 @@ def _update_job(sb, job_id: str, user_id: str, data: dict):
                 update_data["logs"] = current_logs
             except Exception:
                 pass
-        (
-            sb.table("jobs")
-            .update(update_data)
-            .eq("id", job_id)
-            .eq("user_id", user_id)
-            .execute()
-        )
+        try:
+            _execute_job_update(sb, job_id, user_id, update_data)
+        except Exception as exc:
+            if (
+                "internal_link_suggestions" in update_data
+                and _is_missing_internal_link_suggestions_column(exc)
+            ):
+                fallback_data = {**update_data}
+                fallback_data.pop("internal_link_suggestions", None)
+                _execute_job_update(sb, job_id, user_id, fallback_data)
+            else:
+                raise
     except Exception:
         pass
 

@@ -77,6 +77,42 @@ class _CapturingSupabase:
         return _CapturingQuery(self.payloads)
 
 
+class _MissingColumnError(Exception):
+    code = "42703"
+
+
+class _MissingInternalLinksQuery:
+    def __init__(self, payloads):
+        self.payloads = payloads
+        self._pending_payload = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def update(self, payload):
+        self._pending_payload = payload
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        if self._pending_payload is None:
+            return type("Resp", (), {"data": [{"logs": []}]})()
+        self.payloads.append(self._pending_payload)
+        if "internal_link_suggestions" in self._pending_payload:
+            raise _MissingColumnError("column jobs.internal_link_suggestions does not exist")
+        return type("Resp", (), {"data": []})()
+
+
+class _MissingInternalLinksSupabase:
+    def __init__(self):
+        self.payloads = []
+
+    def table(self, *_args, **_kwargs):
+        return _MissingInternalLinksQuery(self.payloads)
+
+
 def _settings():
     return {
         "provider": "Claude",
@@ -1296,6 +1332,26 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         final_payload = next(payload for payload in reversed(sb.payloads) if payload.get("status") == "complete")
         self.assertEqual(final_payload["current_step"], "Done. Internal link suggestions unavailable.")
         self.assertEqual(final_payload["internal_link_suggestions"], [])
+
+    def test_update_job_retries_without_internal_links_when_column_is_missing(self):
+        sb = _MissingInternalLinksSupabase()
+
+        all_in_one._update_job(
+            sb,
+            "job-1",
+            "user-1",
+            {
+                "status": "complete",
+                "current_step": "Done.",
+                "internal_link_suggestions": [],
+            },
+        )
+
+        self.assertEqual(len(sb.payloads), 2)
+        self.assertIn("internal_link_suggestions", sb.payloads[0])
+        self.assertEqual(sb.payloads[1]["status"], "complete")
+        self.assertEqual(sb.payloads[1]["current_step"], "Done.")
+        self.assertNotIn("internal_link_suggestions", sb.payloads[1])
 
 
 if __name__ == "__main__":

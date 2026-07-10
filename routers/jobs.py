@@ -60,15 +60,40 @@ def _has_finished_rows(job: dict) -> bool:
     return not isinstance(results, list) or len(results) >= total
 
 
-def _persist_terminal_status(sb, job: dict, user_id: str, payload: dict) -> dict:
-    update = {**payload, "updated_at": "now()"}
-    (
+def _is_missing_internal_link_suggestions_column(exc: Exception) -> bool:
+    message = str(exc).lower()
+    code = str(getattr(exc, "code", "") or "").upper()
+    return "internal_link_suggestions" in message and (
+        code in {"42703", "PGRST204", "PGRST205"}
+        or "column" in message
+        or "schema cache" in message
+    )
+
+
+def _execute_job_update(sb, job: dict, user_id: str, update: dict):
+    return (
         sb.table("jobs")
         .update(update)
         .eq("id", job["id"])
         .eq("user_id", user_id)
         .execute()
     )
+
+
+def _persist_terminal_status(sb, job: dict, user_id: str, payload: dict) -> dict:
+    update = {**payload, "updated_at": "now()"}
+    try:
+        _execute_job_update(sb, job, user_id, update)
+    except Exception as exc:
+        if (
+            "internal_link_suggestions" in update
+            and _is_missing_internal_link_suggestions_column(exc)
+        ):
+            update = {**update}
+            update.pop("internal_link_suggestions", None)
+            _execute_job_update(sb, job, user_id, update)
+        else:
+            raise
     job.update(update)
     return job
 
