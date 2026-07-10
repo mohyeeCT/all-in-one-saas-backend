@@ -310,6 +310,171 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
 
+    def test_generate_strategy_brief_routes_through_provider_function(self):
+        captured = {}
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
+            captured["model"] = model
+            return json.dumps({
+                "search_intent": "Commercial investigation",
+                "page_goal": "Help buyers understand the service and make contact.",
+                "audience_need": "Proof that the provider can handle regulated work.",
+                "recommended_angle": "Lead with practical compliance experience.",
+                "brand_positioning": "Authoritative but plainspoken.",
+                "proof_points_to_use": ["ISO 27001", "implementation process"],
+                "claims_to_avoid": ["guaranteed rankings"],
+                "competitor_gaps": ["Competitors do not explain the delivery process."],
+                "meta_direction": "Mention compliance and implementation support.",
+                "faq_direction": "Answer fit, process, and proof questions.",
+                "section_guidance": [
+                    {"section": "intro", "guidance": "Lead with the compliance problem."}
+                ],
+            })
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+
+        brief = copy_gen.generate_strategy_brief(
+            provider="Test",
+            api_key="key",
+            model="strategy-model",
+            url="https://example.com/service",
+            keyword="compliance consulting",
+            page_type="service",
+            business_type="b2b",
+            brand_name="Example",
+            h1="Compliance Consulting",
+            brand_context=(
+                "BRAND CONTEXT:\n"
+                "- Voice: Plainspoken expert\n"
+                "- Target audience: Operations leaders"
+            ),
+            client_brief="Avoid hype. Focus on ISO experience.",
+            page_context="The current page mentions audits and implementation support.",
+            ai_overview="Search results mention risk, process, and certifications.",
+            paa_questions=[{"question": "What does compliance consulting include?"}],
+            competitor_section_map={"intro": ["Competitor talks about audit preparation."]},
+            template_sections=[{"name": "intro", "label": "Introduction", "purpose": "Open the page."}],
+        )
+
+        self.assertEqual(brief["search_intent"], "Commercial investigation")
+        self.assertEqual(brief["proof_points_to_use"], ["ISO 27001", "implementation process"])
+        self.assertEqual(brief["section_guidance"][0]["section"], "intro")
+        self.assertEqual(captured["model"], "strategy-model")
+        self.assertEqual(captured["max_tokens"], copy_gen.STRATEGY_BRIEF_MAX_TOKENS)
+        self.assertIn("BRAND CONTEXT:", captured["prompt"])
+        self.assertIn("Plainspoken expert", captured["prompt"])
+        self.assertIn("Search results mention risk, process, and certifications.", captured["prompt"])
+        self.assertIn("Competitor talks about audit preparation.", captured["prompt"])
+
+    def test_strategy_brief_is_added_to_meta_faq_and_page_prompts(self):
+        strategy_brief = {
+            "search_intent": "Commercial investigation",
+            "recommended_angle": "Lead with practical compliance experience.",
+            "meta_direction": "Mention compliance and implementation support.",
+            "faq_direction": "Answer fit, process, and proof questions.",
+            "section_guidance": [{"section": "intro", "guidance": "Lead with the compliance problem."}],
+        }
+
+        meta_capture = {}
+
+        def fake_meta_provider(api_key, prompt, max_tokens=1500, model=None):
+            meta_capture["prompt"] = prompt
+            return json.dumps({
+                "title": "Compliance Consulting",
+                "description": "Practical compliance consulting for implementation teams.",
+                "h1_optimised": "Compliance Consulting",
+            })
+
+        copy_gen.PROVIDER_FN["Test"] = fake_meta_provider
+        copy_gen.generate_copy(
+            provider="Test",
+            api_key="key",
+            url="https://example.com/service",
+            keyword="compliance consulting",
+            page_type="service",
+            brand_name="Example",
+            forbidden_phrases="",
+            context="",
+            business_type="b2b",
+            h1="Compliance Consulting",
+            strategy_brief=strategy_brief,
+        )
+
+        self.assertIn("STRATEGY BRIEF:", meta_capture["prompt"])
+        self.assertIn("Mention compliance and implementation support.", meta_capture["prompt"])
+
+        faq_capture = {}
+
+        def fake_faq_provider(api_key, prompt, max_tokens=1500, model=None):
+            faq_capture["prompt"] = prompt
+            return json.dumps([{
+                "question": "What does the service include?",
+                "answer": "It includes practical planning and implementation support.",
+                "source": "generated",
+            }])
+
+        copy_gen.PROVIDER_FN["Test"] = fake_faq_provider
+        copy_gen.generate_faq(
+            provider="Test",
+            api_key="key",
+            keyword="compliance consulting",
+            page_type="service",
+            brand_name="Example",
+            business_type="b2b",
+            h1="Compliance Consulting",
+            ai_overview_sections=[],
+            ai_overview_raw="",
+            paa_items=[],
+            num_faqs=1,
+            page_context="",
+            strategy_brief=strategy_brief,
+        )
+
+        self.assertIn("STRATEGY BRIEF:", faq_capture["prompt"])
+        self.assertIn("Answer fit, process, and proof questions.", faq_capture["prompt"])
+
+        page_capture = {}
+
+        def fake_page_provider(api_key, prompt, max_tokens=1500, model=None):
+            page_capture["prompt"] = prompt
+            return "Generated section copy."
+
+        copy_gen.PROVIDER_FN["Test"] = fake_page_provider
+        copy_gen.generate_page(
+            template={
+                "sections": [
+                    {
+                        "name": "intro",
+                        "label": "Introduction",
+                        "purpose": "Introduce the service.",
+                        "word_count": [20, 40],
+                        "keyword_slot": "primary",
+                        "heading_level": "none",
+                        "prompt_rules": "Write directly.",
+                    }
+                ]
+            },
+            keyword_assignment={"intro": {"primary": "compliance consulting", "supporting": ""}},
+            lsi_keywords={},
+            business_type="b2b",
+            brand_name="Example",
+            h1="Compliance Consulting",
+            page_type="service",
+            paa_questions=[],
+            ai_overview="",
+            competitor_section_map={},
+            client_brief="",
+            client_existing_content="",
+            provider="Test",
+            api_key="key",
+            strategy_brief=strategy_brief,
+        )
+
+        self.assertIn("STRATEGY BRIEF:", page_capture["prompt"])
+        self.assertIn("Lead with the compliance problem.", page_capture["prompt"])
+
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
             return (

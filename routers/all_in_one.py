@@ -28,7 +28,7 @@ from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_copy, sanitise, score_brand_consistency
+    generate_page, generate_faq, generate_copy, generate_strategy_brief, sanitise, score_brand_consistency
 )
 from utils.docx_export import build_docx
 
@@ -1099,8 +1099,35 @@ def _process_single_row(
                 step("⚠ competitor scrape failed: " + str(e)[:60])
 
     # ─────────────────────────────────────────────────────────────────────
-    # STEP 5 — Generate meta copy
+    # STEP 5 — Generate strategy brief, then meta copy
     # ─────────────────────────────────────────────────────────────────────
+    strategy_brief = {}
+    if gen_meta or gen_faqs or gen_page_copy:
+        step("building strategy brief...")
+        try:
+            strategy_brief = generate_strategy_brief(
+                provider=provider,
+                api_key=api_key,
+                model=model,
+                url=url,
+                keyword=primary_keyword,
+                page_type=page_type,
+                business_type=business_type,
+                brand_name=brand_name,
+                h1=h1,
+                brand_context=brand_context,
+                client_brief=client_brief,
+                page_context=page_context or scraped_page_content,
+                ai_overview=ai_overview,
+                paa_questions=paa_questions,
+                competitor_section_map=competitor_section_map,
+                template_sections=(template or {}).get("sections", []),
+            )
+            step("strategy brief ready")
+        except Exception as e:
+            strategy_brief = {}
+            step("strategy brief unavailable: " + str(e)[:60])
+
     generated_title = None
     generated_description = None
     optimised_h1 = None
@@ -1127,6 +1154,7 @@ def _process_single_row(
                 brand_context=brand_context,
                 business_type=business_type,
                 h1=h1,
+                strategy_brief=strategy_brief,
             )
             generated_title       = meta_result.get("title", "")
             generated_description = meta_result.get("description", "")
@@ -1168,6 +1196,7 @@ def _process_single_row(
                 forbidden_phrases=forbidden_phrases,
                 page_context=page_context,
                 brand_profile=brand_profile,
+                strategy_brief=strategy_brief,
             )
             step("✓ FAQs: " + str(len(faq_items)) + " generated")
 
@@ -1251,6 +1280,7 @@ def _process_single_row(
                 model=model,
                 forbidden_phrases=forbidden_phrase_text,
                 progress_callback=on_section,
+                strategy_brief=strategy_brief,
             )
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
             full_page       = page_result.get("_full_page", "")
@@ -1374,6 +1404,7 @@ def _process_single_row(
         "lsi_keywords":         lsi_map if gen_page_copy else {},
         "competitor_section_map": stored_competitor_section_map if gen_page_copy else {},
         "content_gap_summary":  content_gap_summary if gen_page_copy else [],
+        "strategy_brief":       strategy_brief,
         "brand_consistency":    brand_consistency,
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,

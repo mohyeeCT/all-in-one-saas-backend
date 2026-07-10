@@ -714,6 +714,7 @@ def _rerun_single_section(
         h1 = row_result.get("h1") or overall_primary_keyword
         section_results = dict(row_result.get("section_results") or {})
         section_rerun_notes = dict(row_result.get("section_rerun_notes") or {})
+        strategy_brief = row_result.get("strategy_brief") or {}
         keyword_assignment = row_result.get("keyword_assignment") or {}
         section_assignment = keyword_assignment.get(section_name) or {}
         section_primary_keyword = section_assignment.get("primary") or overall_primary_keyword
@@ -777,6 +778,7 @@ def _rerun_single_section(
             ai_overview=ai_overview,
             forbidden_phrases=forbidden_phrase_text,
             reviewer_corrections=reviewer_corrections,
+            strategy_brief=strategy_brief,
         )
 
         raw = fn(api_key, prompt, model=model)

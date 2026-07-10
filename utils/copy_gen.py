@@ -12,6 +12,9 @@ SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT = 300
 SECTION_AI_OVERVIEW_CHAR_LIMIT = 600
 SECTION_REVIEWER_NOTE_LIMIT = 5
 SECTION_REVIEWER_NOTE_CHAR_LIMIT = 300
+SECTION_STRATEGY_BRIEF_CHAR_LIMIT = 1200
+STRATEGY_BRIEF_MAX_TOKENS = 8192
+STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT = 2500
 
 
 # ── Sanitiser ─────────────────────────────────────────────────────────────────
@@ -232,6 +235,120 @@ def _main_keyword_naturalness_guardrail(keyword: str) -> str:
     return _MAIN_KEYWORD_NATURALNESS_GUARDRAIL if (keyword or "").strip() else ""
 
 
+_STRATEGY_FIELD_LABELS = {
+    "search_intent": "Search intent",
+    "page_goal": "Page goal",
+    "audience_need": "Audience need",
+    "recommended_angle": "Recommended angle",
+    "brand_positioning": "Brand positioning",
+    "proof_points_to_use": "Proof points to use",
+    "claims_to_avoid": "Claims to avoid",
+    "competitor_gaps": "Competitor gaps",
+    "meta_direction": "Meta direction",
+    "faq_direction": "FAQ direction",
+    "section_guidance": "Section guidance",
+}
+
+
+def _clean_strategy_text(value, max_chars: int = 500) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    return sanitise(str(value))[:max_chars].strip()
+
+
+def _clean_strategy_list(value, max_items: int = 6) -> list[str]:
+    if not value:
+        return []
+    candidates = value if isinstance(value, list) else [value]
+    items = []
+    for item in candidates[:max_items]:
+        text = _clean_strategy_text(item, 300)
+        if text:
+            items.append(text)
+    return items
+
+
+def _normalise_strategy_brief(data: dict) -> dict:
+    brief = {}
+    for key in (
+        "search_intent",
+        "page_goal",
+        "audience_need",
+        "recommended_angle",
+        "brand_positioning",
+        "meta_direction",
+        "faq_direction",
+    ):
+        text = _clean_strategy_text(data.get(key), 700)
+        if text:
+            brief[key] = text
+
+    for key in ("proof_points_to_use", "claims_to_avoid", "competitor_gaps"):
+        items = _clean_strategy_list(data.get(key))
+        if items:
+            brief[key] = items
+
+    section_items = []
+    raw_sections = data.get("section_guidance") or []
+    if not isinstance(raw_sections, list):
+        raw_sections = [raw_sections]
+    for item in raw_sections[:10]:
+        if isinstance(item, dict):
+            section = _clean_strategy_text(item.get("section") or item.get("name") or item.get("label"), 80)
+            guidance = _clean_strategy_text(item.get("guidance") or item.get("direction") or item.get("notes"), 400)
+            if guidance:
+                section_items.append({"section": section, "guidance": guidance})
+        else:
+            text = _clean_strategy_text(item, 400)
+            if text:
+                section_items.append({"section": "", "guidance": text})
+    if section_items:
+        brief["section_guidance"] = section_items
+
+    return brief
+
+
+def format_strategy_brief_for_prompt(strategy_brief: dict | None) -> str:
+    if not strategy_brief:
+        return ""
+
+    lines = []
+    for key in _STRATEGY_FIELD_LABELS:
+        value = strategy_brief.get(key)
+        if not value:
+            continue
+        label = _STRATEGY_FIELD_LABELS[key]
+        if key == "section_guidance" and isinstance(value, list):
+            section_lines = []
+            for item in value[:10]:
+                if isinstance(item, dict):
+                    section = _clean_strategy_text(item.get("section"), 80)
+                    guidance = _clean_strategy_text(item.get("guidance"), 400)
+                    if guidance:
+                        prefix = f"{section}: " if section else ""
+                        section_lines.append(f"- {prefix}{guidance}")
+                else:
+                    text = _clean_strategy_text(item, 400)
+                    if text:
+                        section_lines.append(f"- {text}")
+            if section_lines:
+                lines.append(f"{label}:\n" + "\n".join(section_lines))
+        elif isinstance(value, list):
+            item_lines = [f"- {_clean_strategy_text(item, 300)}" for item in value[:6] if _clean_strategy_text(item, 300)]
+            if item_lines:
+                lines.append(f"{label}:\n" + "\n".join(item_lines))
+        else:
+            text = _clean_strategy_text(value, 700)
+            if text:
+                lines.append(f"{label}: {text}")
+
+    if not lines:
+        return ""
+    return "STRATEGY BRIEF:\n" + "\n".join(lines)[:SECTION_STRATEGY_BRIEF_CHAR_LIMIT]
+
+
 def _build_section_prompt(
     section: dict,
     primary_keyword: str,
@@ -249,6 +366,7 @@ def _build_section_prompt(
     ai_overview: str = "",
     forbidden_phrases: str = "",
     reviewer_corrections: list[str] | None = None,
+    strategy_brief: dict | None = None,
 ) -> str:
     kw_slot = section.get("keyword_slot", "none")
     wc_min, wc_max = section.get("word_count", [150, 250])
@@ -281,6 +399,11 @@ def _build_section_prompt(
     brief_block = ""
     if client_brief and client_brief.strip():
         brief_block = f"\nClient brief notes:\n{client_brief[:SECTION_CLIENT_BRIEF_CHAR_LIMIT]}"
+
+    strategy_block = ""
+    formatted_strategy = format_strategy_brief_for_prompt(strategy_brief)
+    if formatted_strategy:
+        strategy_block = f"\n{formatted_strategy}"
 
     prev_block = ""
     if previous_section_text and previous_section_text.strip():
@@ -353,7 +476,7 @@ Hard rules for all output:
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
 - Return only the section copy. No preamble, no notes, no explanations.
-{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{prev_block}{correction_block}"""
+{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{strategy_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
 
@@ -521,6 +644,7 @@ def generate_page(
     model: str = None,
     forbidden_phrases: str = "",
     progress_callback=None,
+    strategy_brief: dict | None = None,
 ) -> dict:
     """
     Runs the section-by-section generation loop.
@@ -564,6 +688,7 @@ def generate_page(
             client_existing_content=client_existing_content if i == 0 else "",
             ai_overview=ai_overview,
             forbidden_phrases=forbidden_phrases,
+            strategy_brief=strategy_brief,
         )
 
         try:
@@ -602,6 +727,7 @@ def _build_faq_prompt(
     forbidden_phrases: str,
     page_context: str,
     brand_profile: dict = None,
+    strategy_brief: dict | None = None,
 ) -> str:
     biz_ctx = _BIZ_CONTEXT_FAQ.get(business_type, _BIZ_CONTEXT_FAQ["general"])
     bp = brand_profile or {}
@@ -629,6 +755,7 @@ def _build_faq_prompt(
         if bp.get("products_services"):bp_lines.append(f"Products/services: {bp['products_services']}")
         if bp.get("example_copy"):     bp_lines.append(f"Example copy to emulate in style (not content):\n{bp['example_copy']}")
     brand_profile_block = ("BRAND CONTEXT:\n" + "\n".join(bp_lines)) if bp_lines else ""
+    strategy_block = format_strategy_brief_for_prompt(strategy_brief)
 
     paa_lines = []
     for item in paa_items[:num_faqs + 3]:
@@ -656,6 +783,7 @@ Brand name: {brand_name or "N/A"}. When used, use exact casing.
 Page H1 (context only, do not copy verbatim): {h1 or "Not provided"}
 {forbidden_line}
 {brand_profile_block}
+{strategy_block}
 {_UNSUPPORTED_CLAIM_GUARDRAIL}
 {collection_guardrail}
 {bottom_funnel_guardrail}
@@ -714,6 +842,7 @@ def generate_faq(
     used_question_patterns: list = None,
     model: str = None,
     brand_profile: dict = None,
+    strategy_brief: dict | None = None,
 ) -> list:
     """Generate FAQ Q&A pairs using the selected AI provider.
 
@@ -740,6 +869,7 @@ def generate_faq(
         forbidden_phrases=forbidden_phrases,
         page_context=page_context,
         brand_profile=brand_profile,
+        strategy_brief=strategy_brief,
     )
 
     raw = fn(api_key, prompt, max_tokens=FAQ_MAX_TOKENS, model=resolved_model)
@@ -1042,6 +1172,123 @@ def _parse_json_object(raw: str, error_message: str) -> dict:
     return result
 
 
+def _strategy_brief_paa_block(paa_questions: list) -> str:
+    lines = []
+    for item in (paa_questions or [])[:6]:
+        question = item.get("question", "") if isinstance(item, dict) else str(item)
+        if question:
+            lines.append(f"- {question}")
+    return "\n".join(lines) or "Not available"
+
+
+def _strategy_brief_competitor_block(competitor_section_map: dict) -> str:
+    lines = []
+    for section, excerpts in (competitor_section_map or {}).items():
+        for excerpt in (excerpts or [])[:2]:
+            text = _clean_strategy_text(excerpt, 350)
+            if text:
+                lines.append(f"- {section}: {text}")
+    return "\n".join(lines[:12]) or "Not available"
+
+
+def _strategy_brief_template_block(template_sections: list) -> str:
+    lines = []
+    for section in (template_sections or [])[:12]:
+        if not isinstance(section, dict):
+            continue
+        name = section.get("name") or ""
+        label = section.get("label") or name
+        purpose = section.get("purpose") or ""
+        lines.append(f"- {name}: {label}. {purpose}".strip())
+    return "\n".join(lines) or "Not available"
+
+
+def generate_strategy_brief(
+    provider: str,
+    api_key: str,
+    *,
+    url: str,
+    keyword: str,
+    page_type: str,
+    business_type: str,
+    brand_name: str,
+    h1: str = "",
+    brand_context: str = "",
+    client_brief: str = "",
+    page_context: str = "",
+    ai_overview: str = "",
+    paa_questions: list | None = None,
+    competitor_section_map: dict | None = None,
+    template_sections: list | None = None,
+    model: str = None,
+) -> dict:
+    fn = PROVIDER_FN.get(provider)
+    if not fn:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    resolved_model = model or DEFAULT_MODELS.get(provider)
+    brand_context_block = brand_context or "BRAND CONTEXT:\nNone"
+    prompt = f"""Create a page-level strategy brief before writing copy.
+
+This brief will be passed into meta, FAQ, and page-copy prompts. It must align all outputs around the same search intent, brand positioning, and page angle.
+
+URL: {url}
+Target keyword: {keyword}
+Page type: {page_type}
+Business type: {business_type}
+Brand name: {brand_name or "N/A"}
+Page H1: {h1 or "Not provided"}
+
+{brand_context_block}
+
+Client brief:
+{client_brief[:STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT] or "Not available"}
+
+Current page context:
+{page_context[:STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT] or "Not available"}
+
+Google AI Overview:
+{ai_overview[:STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT] or "Not available"}
+
+People Also Ask:
+{_strategy_brief_paa_block(paa_questions or [])}
+
+Competitor section signals:
+{_strategy_brief_competitor_block(competitor_section_map or {})}
+
+Template sections:
+{_strategy_brief_template_block(template_sections or [])}
+
+Rules:
+- Do not invent facts, policies, guarantees, pricing, certifications, availability, outcomes, or performance claims.
+- Use competitors as gap/context signals only, not as proof about this client.
+- If proof is missing, say what kind of proof is needed instead of inventing it.
+- Keep the brief tactical and usable by copywriters.
+- Return only strict JSON.
+
+JSON schema:
+{{
+  "search_intent": "one sentence",
+  "page_goal": "one sentence",
+  "audience_need": "one sentence",
+  "recommended_angle": "one sentence",
+  "brand_positioning": "one sentence",
+  "proof_points_to_use": ["supported proof point", "..."],
+  "claims_to_avoid": ["risky or unsupported claim", "..."],
+  "competitor_gaps": ["gap or opportunity", "..."],
+  "meta_direction": "one sentence",
+  "faq_direction": "one sentence",
+  "section_guidance": [
+    {{"section": "section_name", "guidance": "specific instruction for this section"}}
+  ]
+}}
+"""
+
+    raw = fn(api_key, prompt, max_tokens=STRATEGY_BRIEF_MAX_TOKENS, model=resolved_model)
+    result = _parse_json_object(raw, "Strategy brief response must be a JSON object")
+    return _normalise_strategy_brief(result)
+
+
 def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
     fn = PROVIDER_FN.get(provider)
     if not fn:
@@ -1049,6 +1296,7 @@ def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
 
     resolved_model = kwargs.get("model") or DEFAULT_MODELS.get(provider)
     brand_context = kwargs.get("brand_context", "") or "BRAND CONTEXT:\nNone"
+    strategy_block = format_strategy_brief_for_prompt(kwargs.get("strategy_brief"))
     prompt = f"""Write SEO metadata for this page.
 
 URL: {kwargs.get("url", "")}
@@ -1061,6 +1309,7 @@ Forbidden phrases: {kwargs.get("forbidden_phrases", "") or "None"}
 Additional context: {kwargs.get("context", "") or "None"}
 
 {brand_context}
+{strategy_block}
 
 Rules:
 - Title should aim for up to 90 characters.
