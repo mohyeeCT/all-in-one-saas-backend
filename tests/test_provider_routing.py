@@ -323,13 +323,22 @@ class ProviderRoutingTests(unittest.TestCase):
                 "audience_need": "Proof that the provider can handle regulated work.",
                 "recommended_angle": "Lead with practical compliance experience.",
                 "brand_positioning": "Authoritative but plainspoken.",
+                "verified_facts": [{
+                    "fact": "The Monroe location is coming soon.",
+                    "qualifier": "Not yet open",
+                    "source": "current_page",
+                }],
                 "proof_points_to_use": ["ISO 27001", "implementation process"],
                 "claims_to_avoid": ["guaranteed rankings"],
                 "competitor_gaps": ["Competitors do not explain the delivery process."],
                 "meta_direction": "Mention compliance and implementation support.",
                 "faq_direction": "Answer fit, process, and proof questions.",
                 "section_guidance": [
-                    {"section": "intro", "guidance": "Lead with the compliance problem."}
+                    {
+                        "section": "intro",
+                        "guidance": "Lead with the compliance problem.",
+                        "required_proof_points": ["ISO 27001"],
+                    }
                 ],
             })
 
@@ -360,13 +369,16 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertEqual(brief["search_intent"], "Commercial investigation")
         self.assertEqual(brief["proof_points_to_use"], ["ISO 27001", "implementation process"])
+        self.assertEqual(brief["verified_facts"][0]["qualifier"], "Not yet open")
         self.assertEqual(brief["section_guidance"][0]["section"], "intro")
+        self.assertEqual(brief["section_guidance"][0]["required_proof_points"], ["ISO 27001"])
         self.assertEqual(captured["model"], "strategy-model")
         self.assertEqual(captured["max_tokens"], copy_gen.STRATEGY_BRIEF_MAX_TOKENS)
         self.assertIn("BRAND CONTEXT:", captured["prompt"])
         self.assertIn("Plainspoken expert", captured["prompt"])
         self.assertIn("Search results mention risk, process, and certifications.", captured["prompt"])
         self.assertIn("Competitor talks about audit preparation.", captured["prompt"])
+        self.assertIn("Preserve status and scope qualifiers", captured["prompt"])
 
     def test_strategy_brief_is_added_to_meta_faq_and_page_prompts(self):
         strategy_brief = {
@@ -374,7 +386,11 @@ class ProviderRoutingTests(unittest.TestCase):
             "recommended_angle": "Lead with practical compliance experience.",
             "meta_direction": "Mention compliance and implementation support.",
             "faq_direction": "Answer fit, process, and proof questions.",
-            "section_guidance": [{"section": "intro", "guidance": "Lead with the compliance problem."}],
+            "section_guidance": [{
+                "section": "intro",
+                "guidance": "Lead with the compliance problem.",
+                "required_proof_points": ["ISO 27001"],
+            }],
         }
 
         meta_capture = {}
@@ -437,6 +453,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("STRATEGY BRIEF:", faq_capture["prompt"])
         self.assertIn("Answer fit, process, and proof questions.", faq_capture["prompt"])
         self.assertIn("Do not turn search-query wording into FAQ questions", faq_capture["prompt"])
+        self.assertIn("return exactly 1 FAQ objects", faq_capture["prompt"])
 
         page_capture = {}
 
@@ -477,9 +494,60 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", page_capture["prompt"])
         self.assertIn("Lead with the compliance problem.", page_capture["prompt"])
+        self.assertIn("Required supported proof: ISO 27001", page_capture["prompt"])
         self.assertIn("Strategy brief priorities outrank exact keyword phrasing.", page_capture["prompt"])
         self.assertIn("Do not turn search-query wording into headings", page_capture["prompt"])
         self.assertIn("Treat proof points as a page-wide budget.", page_capture["prompt"])
+
+    def test_final_editorial_review_repairs_all_outputs_with_source_qualifiers(self):
+        captured = {}
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
+            return json.dumps({
+                "meta": {
+                    "title": "Halal Burgers in Michigan | Taystee's Burgers",
+                    "description": "Try award-winning burgers rooted in Dearborn.",
+                    "h1_optimised": "Award-Winning Burgers in Michigan",
+                },
+                "faqs": [{
+                    "question": "Which location is coming soon?",
+                    "answer": "The Monroe location is listed as coming soon.",
+                    "source": "current_page",
+                }],
+                "sections": {
+                    "hero": "# Award-Winning Burgers in Michigan\nTaystee's Burgers serves local guests.",
+                },
+            })
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+        result = copy_gen.repair_aio_outputs(
+            generated_title="Looking for Halal Burgers",
+            generated_description="Looking for halal burgers in Michigan?",
+            optimised_h1="Halal Burgers Michigan",
+            faq_items=[{"question": "Where are you?", "answer": "Monroe is open.", "source": "generated"}],
+            section_results={"hero": "# Halal Burgers Michigan\nTry a tastees burger."},
+            qa_flags=[{"code": "generic_opener"}, {"code": "near_brand_name"}],
+            requested_faq_count=1,
+            template={"sections": [{"name": "hero", "purpose": "Introduce the brand.", "word_count": [20, 40]}]},
+            strategy_brief={
+                "verified_facts": [{
+                    "fact": "The Monroe location is coming soon.",
+                    "qualifier": "Not yet open",
+                    "source": "current_page",
+                }],
+            },
+            brand_context="BRAND CONTEXT:\nTaystee's Burgers",
+            page_context="Monroe (Coming Soon)",
+            brand_name="Taystee's Burgers",
+            provider="Test",
+            api_key="key",
+        )
+
+        self.assertEqual(result["faqs"][0]["answer"], "The Monroe location is listed as coming soon.")
+        self.assertIn("Taystee's Burgers", result["sections"]["hero"])
+        self.assertIn("Never turn coming soon", captured["prompt"])
+        self.assertIn("Never broaden a source claim", captured["prompt"])
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

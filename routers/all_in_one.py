@@ -1,9 +1,11 @@
 import time
 import uuid
 import base64
+import json
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from google.auth.exceptions import RefreshError
@@ -28,7 +30,7 @@ from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
+    generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_aio_outputs,
     sanitise, score_brand_consistency
 )
 from utils.docx_export import build_docx
@@ -81,6 +83,11 @@ _REPEATED_PHRASE_STOPWORDS = _CONTENT_GAP_STOPWORDS | {
     "help", "helps", "how", "its", "like", "make", "makes", "need", "needs",
     "our", "over", "than", "that", "these", "they", "through", "use", "used",
     "using", "was", "way", "will", "you",
+}
+
+_BRAND_DESCRIPTOR_TERMS = {
+    "and", "company", "group", "services", "service", "solutions", "studio",
+    "burgers", "burger", "restaurant", "restaurants", "shop", "store", "the",
 }
 
 
@@ -322,6 +329,39 @@ def _add_generic_opener_flags(flags: list[dict], generated_description: str, sec
             })
 
 
+def _add_near_brand_name_flags(flags: list[dict], brand_name: str, outputs: list[tuple[str, str]]):
+    expected_tokens = [
+        token for token in _normalise_similarity_text(brand_name)
+        if len(token) >= 6 and token not in _BRAND_DESCRIPTOR_TERMS
+    ]
+    if not expected_tokens:
+        return
+
+    seen = set()
+    for output_name, text in outputs:
+        for candidate in set(_normalise_similarity_text(text)):
+            if len(candidate) < 6:
+                continue
+            for expected in expected_tokens:
+                if candidate == expected or candidate in {expected + "s", expected + "es"}:
+                    continue
+                if abs(len(candidate) - len(expected)) > 2 or candidate[:2] != expected[:2]:
+                    continue
+                if SequenceMatcher(None, candidate, expected).ratio() < 0.84:
+                    continue
+                key = (output_name, candidate, expected)
+                if key in seen:
+                    continue
+                seen.add(key)
+                flags.append({
+                    "code": "near_brand_name",
+                    "message": "Possible misspelling or altered form of the brand name.",
+                    "output": output_name,
+                    "phrase": candidate,
+                    "expected": expected,
+                })
+
+
 def _extract_first_page_h1(section_results: dict) -> str:
     for text in (section_results or {}).values():
         for line in str(text or "").splitlines():
@@ -398,6 +438,20 @@ def _limit_faq_items(faq_items: list, requested_count: int) -> tuple[list, bool]
     return faq_items, False
 
 
+def _build_faq_schema_payload(items: list[dict]) -> tuple[str, str]:
+    entities = [
+        {
+            "@type": "Question",
+            "name": item["question"],
+            "acceptedAnswer": {"@type": "Answer", "text": item["answer"]},
+        }
+        for item in items
+    ]
+    schema = {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": entities}
+    raw_json = json.dumps(schema, ensure_ascii=False, indent=2)
+    return raw_json, f'<script type="application/ld+json">\n{raw_json}\n</script>'
+
+
 def _contains_ngram(container: tuple[str, ...], candidate: tuple[str, ...]) -> bool:
     if len(candidate) > len(container):
         return False
@@ -407,10 +461,16 @@ def _contains_ngram(container: tuple[str, ...], candidate: tuple[str, ...]) -> b
     )
 
 
-def _repeated_phrase_candidates(text: str, min_count: int = 3, max_flags: int = 3) -> list[dict]:
+def _repeated_phrase_candidates(
+    text: str,
+    min_count: int = 3,
+    max_flags: int = 3,
+    protected_phrases: list[str] | None = None,
+) -> list[dict]:
     tokens = _normalise_similarity_text(text)
     if len(tokens) < 8:
         return []
+    protected = [tuple(_normalise_similarity_text(item)) for item in (protected_phrases or []) if item]
 
     counts = {}
     for size in range(4, 1, -1):
@@ -420,6 +480,8 @@ def _repeated_phrase_candidates(text: str, min_count: int = 3, max_flags: int = 
                 continue
             meaningful = [token for token in phrase if token not in _REPEATED_PHRASE_STOPWORDS]
             if len(set(meaningful)) < 2:
+                continue
+            if any(_contains_ngram(protected_phrase, phrase) for protected_phrase in protected):
                 continue
             counts[phrase] = counts.get(phrase, 0) + 1
 
@@ -442,8 +504,8 @@ def _repeated_phrase_candidates(text: str, min_count: int = 3, max_flags: int = 
     return selected
 
 
-def _add_repeated_phrase_flags(flags: list[dict], page_copy_text: str):
-    for repeated in _repeated_phrase_candidates(page_copy_text):
+def _add_repeated_phrase_flags(flags: list[dict], page_copy_text: str, protected_phrases: list[str] | None = None):
+    for repeated in _repeated_phrase_candidates(page_copy_text, protected_phrases=protected_phrases):
         flags.append({
             "code": "repeated_phrase",
             "message": "Phrase is repeated too often in page copy.",
@@ -838,6 +900,7 @@ def _collect_qa_flags(
     optimised_h1: str,
     input_h1: str,
     primary_keyword: str,
+    brand_name: str,
     faq_items: list,
     section_results: dict,
     forbidden_phrases: list[str],
@@ -863,7 +926,7 @@ def _collect_qa_flags(
         _add_qa_flag(flags, "page_copy_missing", "Page copy was requested but no page sections were generated.", "page_copy")
     elif gen_page_copy:
         _add_section_word_count_flags(flags, section_results, template)
-        _add_repeated_phrase_flags(flags, page_copy_text)
+        _add_repeated_phrase_flags(flags, page_copy_text, protected_phrases=[brand_name])
 
     if gen_meta:
         _add_generic_opener_flags(flags, generated_description or "", section_results if gen_page_copy else {})
@@ -892,6 +955,7 @@ def _collect_qa_flags(
     for item in faq_items or []:
         if isinstance(item, dict):
             outputs.append(("faq", f"{item.get('question', '')}\n{item.get('answer', '')}"))
+    _add_near_brand_name_flags(flags, brand_name, outputs)
 
     seen_matches = set()
     for output, text in outputs:
@@ -1331,7 +1395,7 @@ def _process_single_row(
                 ai_overview_sections=ai_overview_sections,
                 ai_overview_raw=ai_ov_for_faq,
                 forbidden_phrases=forbidden_phrases,
-                page_context=page_context,
+                page_context=page_context or scraped_page_content,
                 brand_profile=brand_profile,
                 strategy_brief=strategy_brief,
             )
@@ -1340,23 +1404,7 @@ def _process_single_row(
                 step("FAQs trimmed to requested count: " + str(len(faq_items)))
             step("✓ FAQs: " + str(len(faq_items)) + " generated")
 
-            # Build schema
-            from utils.dfs import _extract_ai_overview_text
-            try:
-                from faq_saas_schema import build_faq_schema
-            except ImportError:
-                pass
-
-            # Inline FAQ schema builder
-            def _build_faq_schema(items):
-                entities = [{"@type": "Question", "name": i["question"], "acceptedAnswer": {"@type": "Answer", "text": i["answer"]}} for i in items]
-                schema = {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": entities}
-                import json
-                raw_json = json.dumps(schema, ensure_ascii=False, indent=2)
-                script = f"<script type=\"application/ld+json\">\n{raw_json}\n</script>"
-                return raw_json, script
-
-            faq_schema, faq_script = _build_faq_schema(faq_items)
+            faq_schema, faq_script = _build_faq_schema_payload(faq_items)
             run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
 
         except Exception as e:
@@ -1430,30 +1478,6 @@ def _process_single_row(
                 full_page = _assemble_full_page_copy(section_results, template)
                 word_count = len(full_page.split())
                 step("page copy H1 aligned to meta H1")
-            repeated_phrases = [
-                item["phrase"]
-                for item in _repeated_phrase_candidates(full_page or _full_page_copy_text(section_results))
-            ]
-            if repeated_phrases:
-                try:
-                    repaired_sections = repair_repeated_page_copy(
-                        section_results=section_results,
-                        repeated_phrases=repeated_phrases,
-                        template=template,
-                        strategy_brief=strategy_brief,
-                        brand_name=brand_name,
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                    )
-                    if repaired_sections != section_results:
-                        section_results = repaired_sections
-                        section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
-                        full_page = _assemble_full_page_copy(section_results, template)
-                        word_count = len(full_page.split())
-                        step("page copy repetition repaired")
-                except Exception as e:
-                    step("page copy repetition repair unavailable: " + str(e)[:60])
             run_diagnostics["output_counts"]["sections"] = len(section_results)
             run_diagnostics["output_counts"]["word_count"] = word_count
             step("✓ page copy: " + str(word_count) + " words")
@@ -1463,6 +1487,67 @@ def _process_single_row(
             step("⚠ page copy failed: " + str(e)[:80])
 
     # ─────────────────────────────────────────────────────────────────────
+    if settings.get("final_editorial_review", False) and any([
+        generated_title, generated_description, optimised_h1, faq_items, section_results,
+    ]):
+        step("running final editorial review...")
+        initial_qa_flags = _collect_qa_flags(
+            gen_meta=gen_meta,
+            gen_faqs=gen_faqs,
+            gen_page_copy=gen_page_copy,
+            generated_title=generated_title or "",
+            generated_description=generated_description or "",
+            optimised_h1=optimised_h1 or "",
+            input_h1=input_h1_for_qa,
+            primary_keyword=primary_keyword,
+            brand_name=brand_name,
+            faq_items=faq_items,
+            section_results=section_results,
+            forbidden_phrases=forbidden_phrase_list,
+            template=template,
+        )
+        try:
+            if _is_cancelled(sb, job_id, user_id):
+                raise InterruptedError("cancelled")
+            edited = repair_aio_outputs(
+                generated_title=generated_title or "",
+                generated_description=generated_description or "",
+                optimised_h1=optimised_h1 or "",
+                faq_items=faq_items,
+                section_results=section_results,
+                qa_flags=initial_qa_flags,
+                requested_faq_count=num_faqs if gen_faqs else 0,
+                template=template or {},
+                strategy_brief=strategy_brief,
+                brand_context=brand_context,
+                page_context=page_context or scraped_page_content,
+                brand_name=brand_name,
+                provider=provider,
+                api_key=api_key,
+                model=model,
+            )
+            edited_meta = edited.get("meta") or {}
+            if gen_meta:
+                generated_title = edited_meta.get("title") or generated_title
+                generated_description = edited_meta.get("description") or generated_description
+                optimised_h1 = edited_meta.get("h1_optimised") or optimised_h1
+            if gen_faqs:
+                faq_items, _ = _limit_faq_items(edited.get("faqs") or faq_items, num_faqs)
+                faq_schema, faq_script = _build_faq_schema_payload(faq_items)
+                run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
+            if gen_page_copy:
+                section_results = edited.get("sections") or section_results
+                section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+                full_page = _assemble_full_page_copy(section_results, template)
+                word_count = len(full_page.split())
+                run_diagnostics["output_counts"]["sections"] = len(section_results)
+                run_diagnostics["output_counts"]["word_count"] = word_count
+            step("final editorial review applied")
+        except InterruptedError:
+            raise
+        except Exception as e:
+            step("final editorial review unavailable: " + str(e)[:60])
+
     # STEP 8 — Build combined docx
     # ─────────────────────────────────────────────────────────────────────
     docx_b64 = None
@@ -1507,6 +1592,7 @@ def _process_single_row(
         optimised_h1=optimised_h1 or "",
         input_h1=input_h1_for_qa,
         primary_keyword=primary_keyword,
+        brand_name=brand_name,
         faq_items=faq_items,
         section_results=section_results,
         forbidden_phrases=forbidden_phrase_list,
@@ -1874,6 +1960,7 @@ class AIOSettings(BaseModel):
     gen_meta: bool = True
     gen_faqs: bool = True
     num_faqs: int = 5
+    final_editorial_review: bool = True
 
 
 class AIOJobRequest(BaseModel):

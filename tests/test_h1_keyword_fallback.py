@@ -180,6 +180,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["primary_keyword"], "Emergency Plumbing Services")
         self.assertEqual(result["keyword_source"], "h1 fallback")
 
+    def test_new_aio_jobs_enable_final_editorial_review_by_default(self):
+        self.assertTrue(all_in_one.AIOSettings().final_editorial_review)
+
     def test_existing_ranked_keyword_still_wins_over_h1(self):
         ranked = [{
             "keyword": "ranked plumbing keyword",
@@ -808,6 +811,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         settings = {
             **_settings(),
             "gen_page_copy": True,
+            "final_editorial_review": True,
             "business_type": "service",
             "brand_name": "Example",
         }
@@ -829,7 +833,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         )
 
         with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
-             patch.object(all_in_one, "repair_repeated_page_copy", side_effect=RuntimeError("repair unavailable")), \
+             patch.object(all_in_one, "repair_aio_outputs", side_effect=RuntimeError("editorial unavailable")), \
              patch.object(all_in_one, "generate_page", return_value={
                  "hero": page_copy,
                  "_word_count": len(page_copy.split()),
@@ -855,6 +859,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         settings = {
             **_settings(),
             "gen_page_copy": True,
+            "final_editorial_review": True,
             "business_type": "service",
             "brand_name": "Example",
         }
@@ -888,7 +893,11 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                  "_full_page": repeated_copy,
                  "_word_count": len(repeated_copy.split()),
              }), \
-             patch.object(all_in_one, "repair_repeated_page_copy", return_value={"hero": repaired_copy}) as repair:
+             patch.object(all_in_one, "repair_aio_outputs", return_value={
+                 "meta": {"title": "", "description": "", "h1_optimised": ""},
+                 "faqs": [],
+                 "sections": {"hero": repaired_copy},
+             }) as repair:
             result = self._process(
                 {
                     "url": "https://example.com/industrial-dosing",
@@ -904,6 +913,104 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         repair.assert_called_once()
         self.assertEqual(result["section_results"]["hero"], repaired_copy)
         self.assertFalse(any(flag["code"] == "repeated_phrase" for flag in result["qa_flags"]))
+
+    def test_exact_brand_name_is_protected_from_repetition_flags(self):
+        page_copy = " ".join([
+            "Taystee's Burgers serves local guests.",
+            "Families visit Taystee's Burgers for made-to-order meals.",
+            "Awards helped Taystee's Burgers earn local recognition.",
+            "The story behind Taystee's Burgers began in Dearborn.",
+            "Find Taystee's Burgers across Southeast Michigan.",
+        ])
+
+        repeated = all_in_one._repeated_phrase_candidates(
+            page_copy,
+            protected_phrases=["Taystee's Burgers"],
+        )
+
+        self.assertNotIn("taystee s burgers", [item["phrase"] for item in repeated])
+
+    def test_near_brand_name_typo_is_flagged(self):
+        flags = []
+
+        all_in_one._add_near_brand_name_flags(
+            flags,
+            "Taystee's Burgers",
+            [("page_copy", "A tastees burger can feel familiar to local guests.")],
+        )
+
+        self.assertEqual(flags[0]["code"], "near_brand_name")
+        self.assertEqual(flags[0]["phrase"], "tastees")
+        self.assertEqual(flags[0]["expected"], "taystee")
+
+    def test_final_editorial_outputs_reach_schema_export_and_saved_result(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_faqs": True,
+            "gen_page_copy": True,
+            "final_editorial_review": True,
+            "business_type": "local",
+            "brand_name": "Taystee's Burgers",
+        }
+        ranked = [{
+            "keyword": "halal burgers Michigan",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        edited_faq = {
+            "question": "Which location is coming soon?",
+            "answer": "The Monroe location is listed as coming soon.",
+            "source": "current_page",
+        }
+        edited_hero = "# Award-Winning Burgers in Michigan\nTaystee's Burgers serves local guests with specific supported proof."
+
+        with patch.object(all_in_one, "generate_strategy_brief", return_value={}), \
+             patch.object(all_in_one, "generate_copy", return_value={
+                 "title": "Looking for Halal Burgers",
+                 "description": "Looking for halal burgers in Michigan?",
+                 "h1_optimised": "Halal Burgers Michigan",
+             }), \
+             patch.object(all_in_one, "generate_faq", return_value=[
+                 {"question": "Where are you?", "answer": "Monroe is open.", "source": "generated"},
+             ]), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "# Halal Burgers Michigan\nTry a tastees burger.",
+                 "_word_count": 7,
+             }), \
+             patch.object(all_in_one, "repair_aio_outputs", return_value={
+                 "meta": {
+                     "title": "Award-Winning Burgers in Michigan",
+                     "description": "Try award-winning burgers rooted in Dearborn.",
+                     "h1_optimised": "Award-Winning Burgers in Michigan",
+                 },
+                 "faqs": [edited_faq],
+                 "sections": {"hero": edited_hero},
+             }), \
+             patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "_build_combined_docx", return_value=b"docx") as build_docx:
+            result = self._process(
+                {
+                    "url": "https://example.com/",
+                    "keyword": "",
+                    "page_type": "homepage",
+                    "h1": "",
+                    "template_key": "homepage",
+                    "num_faqs": 1,
+                },
+                settings=settings,
+                ranked=ranked,
+                patch_combined_docx=False,
+            )
+
+        self.assertEqual(result["generated_description"], "Try award-winning burgers rooted in Dearborn.")
+        self.assertEqual(result["faq_items"], [edited_faq])
+        self.assertEqual(result["section_results"]["hero"], edited_hero)
+        self.assertIn("coming soon", result["faq_schema"])
+        self.assertEqual(build_docx.call_args.kwargs["faq_items"], [edited_faq])
+        self.assertEqual(build_docx.call_args.kwargs["section_results"]["hero"], edited_hero)
 
     def test_page_copy_h1_is_replaced_with_meta_h1_before_qa(self):
         settings = {
