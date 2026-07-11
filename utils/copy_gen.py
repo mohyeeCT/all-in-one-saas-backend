@@ -12,8 +12,7 @@ SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT = 1200
 SECTION_AI_OVERVIEW_CHAR_LIMIT = 600
 SECTION_REVIEWER_NOTE_LIMIT = 5
 SECTION_REVIEWER_NOTE_CHAR_LIMIT = 300
-SECTION_STRATEGY_BRIEF_CHAR_LIMIT = 4000
-EDITORIAL_SOURCE_CONTEXT_CHAR_LIMIT = 8000
+SECTION_STRATEGY_BRIEF_CHAR_LIMIT = 1200
 STRATEGY_BRIEF_MAX_TOKENS = 8192
 STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT = 2500
 
@@ -242,7 +241,6 @@ _STRATEGY_FIELD_LABELS = {
     "audience_need": "Audience need",
     "recommended_angle": "Recommended angle",
     "brand_positioning": "Brand positioning",
-    "verified_facts": "Verified source facts",
     "proof_points_to_use": "Proof points to use",
     "claims_to_avoid": "Claims to avoid",
     "competitor_gaps": "Competitor gaps",
@@ -292,21 +290,6 @@ def _normalise_strategy_brief(data: dict) -> dict:
         if items:
             brief[key] = items
 
-    verified_facts = []
-    for item in (data.get("verified_facts") or [])[:12]:
-        if not isinstance(item, dict):
-            continue
-        fact = _clean_strategy_text(item.get("fact"), 400)
-        if not fact:
-            continue
-        verified_facts.append({
-            "fact": fact,
-            "qualifier": _clean_strategy_text(item.get("qualifier"), 180),
-            "source": _clean_strategy_text(item.get("source"), 80),
-        })
-    if verified_facts:
-        brief["verified_facts"] = verified_facts
-
     section_items = []
     raw_sections = data.get("section_guidance") or []
     if not isinstance(raw_sections, list):
@@ -316,11 +299,7 @@ def _normalise_strategy_brief(data: dict) -> dict:
             section = _clean_strategy_text(item.get("section") or item.get("name") or item.get("label"), 80)
             guidance = _clean_strategy_text(item.get("guidance") or item.get("direction") or item.get("notes"), 400)
             if guidance:
-                section_item = {"section": section, "guidance": guidance}
-                required_proof = _clean_strategy_list(item.get("required_proof_points"), max_items=3)
-                if required_proof:
-                    section_item["required_proof_points"] = required_proof
-                section_items.append(section_item)
+                section_items.append({"section": section, "guidance": guidance})
         else:
             text = _clean_strategy_text(item, 400)
             if text:
@@ -341,20 +320,7 @@ def format_strategy_brief_for_prompt(strategy_brief: dict | None) -> str:
         if not value:
             continue
         label = _STRATEGY_FIELD_LABELS[key]
-        if key == "verified_facts" and isinstance(value, list):
-            fact_lines = []
-            for item in value[:12]:
-                if not isinstance(item, dict):
-                    continue
-                fact = _clean_strategy_text(item.get("fact"), 400)
-                qualifier = _clean_strategy_text(item.get("qualifier"), 180)
-                source = _clean_strategy_text(item.get("source"), 80)
-                if fact:
-                    suffix = "; ".join(part for part in [qualifier, f"source: {source}" if source else ""] if part)
-                    fact_lines.append(f"- {fact}" + (f" ({suffix})" if suffix else ""))
-            if fact_lines:
-                lines.append(f"{label}:\n" + "\n".join(fact_lines))
-        elif key == "section_guidance" and isinstance(value, list):
+        if key == "section_guidance" and isinstance(value, list):
             section_lines = []
             for item in value[:10]:
                 if isinstance(item, dict):
@@ -362,9 +328,7 @@ def format_strategy_brief_for_prompt(strategy_brief: dict | None) -> str:
                     guidance = _clean_strategy_text(item.get("guidance"), 400)
                     if guidance:
                         prefix = f"{section}: " if section else ""
-                        required = _clean_strategy_list(item.get("required_proof_points"), max_items=3)
-                        proof_suffix = f" Required proof: {'; '.join(required)}" if required else ""
-                        section_lines.append(f"- {prefix}{guidance}{proof_suffix}")
+                        section_lines.append(f"- {prefix}{guidance}")
                 else:
                     text = _clean_strategy_text(item, 400)
                     if text:
@@ -383,21 +347,6 @@ def format_strategy_brief_for_prompt(strategy_brief: dict | None) -> str:
     if not lines:
         return ""
     return "STRATEGY BRIEF:\n" + "\n".join(lines)[:SECTION_STRATEGY_BRIEF_CHAR_LIMIT]
-
-
-def _format_current_section_strategy(strategy_brief: dict | None, section_name: str) -> str:
-    for item in (strategy_brief or {}).get("section_guidance", []):
-        if not isinstance(item, dict):
-            continue
-        if _clean_strategy_text(item.get("section"), 80).lower() != (section_name or "").lower():
-            continue
-        guidance = _clean_strategy_text(item.get("guidance"), 400)
-        required = _clean_strategy_list(item.get("required_proof_points"), max_items=3)
-        lines = ["CURRENT SECTION STRATEGY:", f"- Direction: {guidance}"] if guidance else ["CURRENT SECTION STRATEGY:"]
-        if required:
-            lines.append("- Required supported proof: " + "; ".join(required))
-        return "\n".join(lines)
-    return ""
 
 
 def _build_section_prompt(
@@ -455,9 +404,6 @@ def _build_section_prompt(
     formatted_strategy = format_strategy_brief_for_prompt(strategy_brief)
     if formatted_strategy:
         strategy_block = f"\n{formatted_strategy}"
-    current_section_strategy = _format_current_section_strategy(strategy_brief, section.get("name", ""))
-    if current_section_strategy:
-        strategy_block += f"\n{current_section_strategy}"
 
     prev_block = ""
     if previous_section_text and previous_section_text.strip():
@@ -528,7 +474,6 @@ Hard rules for all output:
 - The first sentence must communicate the core topic, benefit, or value of the section. Do not warm up or establish generic context first.
 - Give this section one distinct job: fulfil its stated purpose without re-summarising the page strategy or earlier sections.
 - Treat proof points as a page-wide budget. Use each proof point in one best-fit section unless repeating it is essential for accuracy or conversion.
-- If the current section strategy assigns required proof, include each supported item once in this section and do not replace it with generic credibility language.
 - Before using a brand claim, origin detail, award, location phrase, or differentiator, check the earlier page copy and avoid restating it in similar words.
 - Do not write phrases like 'this page', 'this collection', 'this category', 'this range', or 'on this page'. Name the product, category, service, topic, brand, or location directly.
 - Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims unless they are supported by client existing content, client brief, or brand context.
@@ -772,28 +717,29 @@ def generate_page(
     return results
 
 
-def repair_aio_outputs(
-    *,
-    generated_title: str,
-    generated_description: str,
-    optimised_h1: str,
-    faq_items: list,
+def repair_repeated_page_copy(
     section_results: dict,
-    qa_flags: list[dict],
-    requested_faq_count: int,
+    repeated_phrases: list[str],
     template: dict,
     strategy_brief: dict,
-    brand_context: str,
-    page_context: str,
     brand_name: str,
     provider: str,
     api_key: str,
     model: str = None,
 ) -> dict:
-    """Run one source-grounded editorial pass across all generated AIO outputs."""
+    """Rewrite only sections containing repeated phrases, in one bounded provider call."""
     fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
+
+    phrases = [str(phrase).strip() for phrase in repeated_phrases if str(phrase).strip()]
+    affected = {
+        name: text
+        for name, text in (section_results or {}).items()
+        if any(phrase.lower() in str(text).lower() for phrase in phrases)
+    }
+    if not affected:
+        return section_results
 
     section_rules = {
         section.get("name", ""): {
@@ -802,51 +748,27 @@ def repair_aio_outputs(
             "heading_level": section.get("heading_level", ""),
         }
         for section in (template or {}).get("sections", [])
+        if section.get("name") in affected
     }
-    outputs = {
-        "meta": {
-            "title": generated_title,
-            "description": generated_description,
-            "h1_optimised": optimised_h1,
-        },
-        "faqs": faq_items or [],
-        "sections": section_results or {},
-    }
-    prompt = f"""You are the final senior editor for one generated web page.
+    prompt = f"""You are performing one focused editorial repair on page copy.
 
-Review metadata, FAQs, and page sections together so they are coherent, factual, specific, natural, and publication-ready.
+Repeated phrases to reduce:
+{json.dumps(phrases, ensure_ascii=False)}
 
-Current outputs:
-{json.dumps(outputs, ensure_ascii=False)}
-
-Deterministic QA findings to fix:
-{json.dumps(qa_flags or [], ensure_ascii=False)}
-
-Exact brand name: {brand_name or "Not provided"}
+Affected sections:
+{json.dumps(affected, ensure_ascii=False)}
 
 Section responsibilities:
 {json.dumps(section_rules, ensure_ascii=False)}
 
 {format_strategy_brief_for_prompt(strategy_brief)}
 
-Brand profile context:
-{(brand_context or "Not available")[:EDITORIAL_SOURCE_CONTEXT_CHAR_LIMIT]}
-
-Current-page source context:
-{(page_context or "Not available")[:EDITORIAL_SOURCE_CONTEXT_CHAR_LIMIT]}
-
 Rules:
-- Return one JSON object with exactly three top-level keys: meta, faqs, and sections.
-- Meta must contain title, description, and h1_optimised. Remove generic openers and keep the H1 natural.
-- Return exactly {requested_faq_count} FAQs, ranked by practical visitor value and covering distinct intents. Keep question, answer, and source keys.
-- Sections must contain exactly the supplied section keys. Preserve Markdown heading levels and approximate section word ranges.
-- Use the exact brand spelling and casing every time. Correct near-spellings rather than inventing brand variations.
-- Treat source qualifiers as part of each fact. Never turn coming soon, planned, proposed, selected, available at some locations, or similar qualified language into a current universal claim.
-- Never broaden a source claim, for example from all meats are halal to all food is halal, or from one product being certified to the entire business being certified.
-- Keep supported strategy proof points in their assigned best-fit sections. Replace generic credibility language with specific supported proof where the strategy requires it.
-- Remove redundant audience lists, location phrases, keyword variants, and proof restatements. The exact brand name may appear naturally and is not itself an error.
-- Do not introduce new claims, facts, offers, locations, awards, ratings, policies, or availability details.
-- Remove generic AI openings, awkward exact-match wording, typos, and vague filler.
+- Return a JSON object with exactly the same affected section keys and rewritten Markdown values.
+- Preserve every heading level and the original meaning, supported facts, brand casing, and approximate section word count.
+- Keep each proof point in its single best-fit location. Remove redundant restatements rather than replacing them with synonyms.
+- Make transitions natural and vary sentence structure. Do not introduce new claims, facts, offers, or keyword variants.
+- Do not change sections that were not supplied.
 - Never use em dashes or exclamation marks.
 - Return JSON only.
 """
@@ -856,43 +778,15 @@ Rules:
         max_tokens=PAGE_SECTION_MAX_TOKENS,
         model=model or DEFAULT_MODELS.get(provider),
     )
-    repaired = _parse_json_object(raw, "AIO editorial response must be a JSON object")
-
-    repaired_meta = repaired.get("meta") if isinstance(repaired.get("meta"), dict) else {}
-    meta = {
-        "title": sanitise(repaired_meta.get("title") or generated_title, brand_name),
-        "description": sanitise(repaired_meta.get("description") or generated_description, brand_name),
-        "h1_optimised": sanitise(repaired_meta.get("h1_optimised") or optimised_h1, brand_name),
-    }
-
-    repaired_sections = repaired.get("sections") if isinstance(repaired.get("sections"), dict) else {}
-    sections = dict(section_results or {})
-    for name, original in sections.items():
-        replacement = repaired_sections.get(name)
+    repaired = _parse_json_object(raw, "Page copy repair response must be a JSON object")
+    updated = dict(section_results)
+    for name, original in affected.items():
+        replacement = repaired.get(name)
         if isinstance(replacement, str) and replacement.strip():
-            sections[name] = sanitise(replacement, brand_name)
+            updated[name] = sanitise(replacement, brand_name)
         else:
-            sections[name] = original
-
-    repaired_faqs = []
-    for item in repaired.get("faqs") if isinstance(repaired.get("faqs"), list) else []:
-        if not isinstance(item, dict):
-            continue
-        question = sanitise(item.get("question", ""), brand_name)
-        answer = sanitise(item.get("answer", ""), brand_name)
-        if question and answer:
-            repaired_faqs.append({
-                "question": question,
-                "answer": answer,
-                "source": item.get("source", "generated"),
-            })
-    try:
-        requested = max(0, int(requested_faq_count))
-    except (TypeError, ValueError):
-        requested = len(faq_items or [])
-    faqs = repaired_faqs[:requested] if len(repaired_faqs) >= requested else list(faq_items or [])[:requested]
-
-    return {"meta": meta, "faqs": faqs, "sections": sections}
+            updated[name] = original
+    return updated
 
 
 # ── FAQ generation (ported from faq-saas-backend) ──────────────────────────
@@ -980,7 +874,6 @@ People Also Ask:
 {serp_fallback_block_str}
 
 Rules:
-- Internally shortlist the strongest questions, then return exactly {num_faqs} FAQ objects, ordered by practical visitor value. Do not return extras.
 - Questions and answers must be specific to this page.
 - Use AI Overview and PAA data as research signals, but do not copy or rephrase questions verbatim.
 - Only use AIO/PAA questions if genuinely relevant to that specific page.
@@ -1447,8 +1340,6 @@ Template sections:
 
 Rules:
 - Do not invent facts, policies, guarantees, pricing, certifications, availability, outcomes, or performance claims.
-- Build verified_facts only from statements directly supported by the brand context, client brief, or current-page context. Preserve status and scope qualifiers such as coming soon, selected locations, all meats, or one certified product.
-- In section_guidance, assign up to three required_proof_points to the single best-fit section. Do not assign the same proof point to multiple sections.
 - Use competitors as gap/context signals only, not as proof about this client.
 - If proof is missing, say what kind of proof is needed instead of inventing it.
 - Keep the brief tactical and usable by copywriters.
@@ -1461,16 +1352,13 @@ JSON schema:
   "audience_need": "one sentence",
   "recommended_angle": "one sentence",
   "brand_positioning": "one sentence",
-  "verified_facts": [
-    {{"fact": "source-supported fact", "qualifier": "scope or status qualifier", "source": "brand_profile|client_brief|current_page"}}
-  ],
   "proof_points_to_use": ["supported proof point", "..."],
   "claims_to_avoid": ["risky or unsupported claim", "..."],
   "competitor_gaps": ["gap or opportunity", "..."],
   "meta_direction": "one sentence",
   "faq_direction": "one sentence",
   "section_guidance": [
-    {{"section": "section_name", "guidance": "specific instruction for this section", "required_proof_points": ["supported proof assigned only here"]}}
+    {{"section": "section_name", "guidance": "specific instruction for this section"}}
   ]
 }}
 """
