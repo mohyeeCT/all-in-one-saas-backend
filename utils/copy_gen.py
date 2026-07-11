@@ -8,7 +8,7 @@ SECTION_PAA_QUESTION_LIMIT = 5
 SECTION_COMPETITOR_EXCERPT_LIMIT = 3
 SECTION_EXISTING_CONTENT_CHAR_LIMIT = 400
 SECTION_CLIENT_BRIEF_CHAR_LIMIT = 300
-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT = 300
+SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT = 1200
 SECTION_AI_OVERVIEW_CHAR_LIMIT = 600
 SECTION_REVIEWER_NOTE_LIMIT = 5
 SECTION_REVIEWER_NOTE_CHAR_LIMIT = 300
@@ -407,7 +407,7 @@ def _build_section_prompt(
 
     prev_block = ""
     if previous_section_text and previous_section_text.strip():
-        prev_block = f"\nPrevious section (for context and coherence, do not repeat):\n{previous_section_text[-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT:]}"
+        prev_block = f"\nEarlier page copy (for context and coherence, do not repeat):\n{previous_section_text[-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT:]}"
 
     heading_instruction = ""
     heading_level = section.get("heading_level", "h2")
@@ -472,6 +472,9 @@ Hard rules for all output:
 - Do not force the keyword at the beginning of the first sentence.
 - A keyword used awkwardly is worse than not using it. Quality of integration matters more than quantity.
 - The first sentence must communicate the core topic, benefit, or value of the section. Do not warm up or establish generic context first.
+- Give this section one distinct job: fulfil its stated purpose without re-summarising the page strategy or earlier sections.
+- Treat proof points as a page-wide budget. Use each proof point in one best-fit section unless repeating it is essential for accuracy or conversion.
+- Before using a brand claim, origin detail, award, location phrase, or differentiator, check the earlier page copy and avoid restating it in similar words.
 - Do not write phrases like 'this page', 'this collection', 'this category', 'this range', or 'on this page'. Name the product, category, service, topic, brand, or location directly.
 - Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims unless they are supported by client existing content, client brief, or brand context.
 - Competitor context is topic inspiration, not proof of client facts.
@@ -660,7 +663,7 @@ def generate_page(
     delay = PROVIDER_DELAY.get(provider, 1.0)
     sections = template.get("sections", [])
     results = {}
-    previous_text = ""
+    previous_sections = []
 
     for i, section in enumerate(sections):
         if progress_callback:
@@ -686,7 +689,7 @@ def generate_page(
             paa_questions=paa_questions if sec_name == "faq" else [],
             competitor_excerpts=comp_excerpts,
             client_brief=client_brief,
-            previous_section_text=previous_text,
+            previous_section_text="\n\n".join(previous_sections),
             client_existing_content=client_existing_content if i == 0 else "",
             ai_overview=ai_overview,
             forbidden_phrases=forbidden_phrases,
@@ -700,7 +703,7 @@ def generate_page(
             text = f"[ERROR generating section '{section['label']}': {e}]"
 
         results[sec_name] = text
-        previous_text = text
+        previous_sections.append(text)
 
         if i < len(sections) - 1:
             time.sleep(delay)
@@ -712,6 +715,78 @@ def generate_page(
     results["_word_count"] = word_count
 
     return results
+
+
+def repair_repeated_page_copy(
+    section_results: dict,
+    repeated_phrases: list[str],
+    template: dict,
+    strategy_brief: dict,
+    brand_name: str,
+    provider: str,
+    api_key: str,
+    model: str = None,
+) -> dict:
+    """Rewrite only sections containing repeated phrases, in one bounded provider call."""
+    fn = PROVIDER_FN.get(provider)
+    if not fn:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    phrases = [str(phrase).strip() for phrase in repeated_phrases if str(phrase).strip()]
+    affected = {
+        name: text
+        for name, text in (section_results or {}).items()
+        if any(phrase.lower() in str(text).lower() for phrase in phrases)
+    }
+    if not affected:
+        return section_results
+
+    section_rules = {
+        section.get("name", ""): {
+            "purpose": section.get("purpose", ""),
+            "word_count": section.get("word_count", []),
+            "heading_level": section.get("heading_level", ""),
+        }
+        for section in (template or {}).get("sections", [])
+        if section.get("name") in affected
+    }
+    prompt = f"""You are performing one focused editorial repair on page copy.
+
+Repeated phrases to reduce:
+{json.dumps(phrases, ensure_ascii=False)}
+
+Affected sections:
+{json.dumps(affected, ensure_ascii=False)}
+
+Section responsibilities:
+{json.dumps(section_rules, ensure_ascii=False)}
+
+{format_strategy_brief_for_prompt(strategy_brief)}
+
+Rules:
+- Return a JSON object with exactly the same affected section keys and rewritten Markdown values.
+- Preserve every heading level and the original meaning, supported facts, brand casing, and approximate section word count.
+- Keep each proof point in its single best-fit location. Remove redundant restatements rather than replacing them with synonyms.
+- Make transitions natural and vary sentence structure. Do not introduce new claims, facts, offers, or keyword variants.
+- Do not change sections that were not supplied.
+- Never use em dashes or exclamation marks.
+- Return JSON only.
+"""
+    raw = fn(
+        api_key,
+        prompt,
+        max_tokens=PAGE_SECTION_MAX_TOKENS,
+        model=model or DEFAULT_MODELS.get(provider),
+    )
+    repaired = _parse_json_object(raw, "Page copy repair response must be a JSON object")
+    updated = dict(section_results)
+    for name, original in affected.items():
+        replacement = repaired.get(name)
+        if isinstance(replacement, str) and replacement.strip():
+            updated[name] = sanitise(replacement, brand_name)
+        else:
+            updated[name] = original
+    return updated
 
 
 # ── FAQ generation (ported from faq-saas-backend) ──────────────────────────

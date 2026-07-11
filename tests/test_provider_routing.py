@@ -256,7 +256,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(copy_gen.SECTION_COMPETITOR_EXCERPT_LIMIT, 3)
         self.assertEqual(copy_gen.SECTION_EXISTING_CONTENT_CHAR_LIMIT, 400)
         self.assertEqual(copy_gen.SECTION_CLIENT_BRIEF_CHAR_LIMIT, 300)
-        self.assertEqual(copy_gen.SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT, 300)
+        self.assertEqual(copy_gen.SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT, 1200)
         self.assertEqual(copy_gen.SECTION_AI_OVERVIEW_CHAR_LIMIT, 600)
         self.assertEqual(copy_gen.SECTION_REVIEWER_NOTE_LIMIT, 5)
         self.assertEqual(copy_gen.SECTION_REVIEWER_NOTE_CHAR_LIMIT, 300)
@@ -479,6 +479,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Lead with the compliance problem.", page_capture["prompt"])
         self.assertIn("Strategy brief priorities outrank exact keyword phrasing.", page_capture["prompt"])
         self.assertIn("Do not turn search-query wording into headings", page_capture["prompt"])
+        self.assertIn("Treat proof points as a page-wide budget.", page_capture["prompt"])
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

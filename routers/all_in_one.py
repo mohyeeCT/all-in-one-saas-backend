@@ -28,7 +28,8 @@ from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_copy, generate_strategy_brief, sanitise, score_brand_consistency
+    generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
+    sanitise, score_brand_consistency
 )
 from utils.docx_export import build_docx
 
@@ -1429,6 +1430,30 @@ def _process_single_row(
                 full_page = _assemble_full_page_copy(section_results, template)
                 word_count = len(full_page.split())
                 step("page copy H1 aligned to meta H1")
+            repeated_phrases = [
+                item["phrase"]
+                for item in _repeated_phrase_candidates(full_page or _full_page_copy_text(section_results))
+            ]
+            if repeated_phrases:
+                try:
+                    repaired_sections = repair_repeated_page_copy(
+                        section_results=section_results,
+                        repeated_phrases=repeated_phrases,
+                        template=template,
+                        strategy_brief=strategy_brief,
+                        brand_name=brand_name,
+                        provider=provider,
+                        api_key=api_key,
+                        model=model,
+                    )
+                    if repaired_sections != section_results:
+                        section_results = repaired_sections
+                        section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+                        full_page = _assemble_full_page_copy(section_results, template)
+                        word_count = len(full_page.split())
+                        step("page copy repetition repaired")
+                except Exception as e:
+                    step("page copy repetition repair unavailable: " + str(e)[:60])
             run_diagnostics["output_counts"]["sections"] = len(section_results)
             run_diagnostics["output_counts"]["word_count"] = word_count
             step("✓ page copy: " + str(word_count) + " words")

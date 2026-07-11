@@ -829,6 +829,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         )
 
         with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "repair_repeated_page_copy", side_effect=RuntimeError("repair unavailable")), \
              patch.object(all_in_one, "generate_page", return_value={
                  "hero": page_copy,
                  "_word_count": len(page_copy.split()),
@@ -849,6 +850,60 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         repeated_flag = next(flag for flag in result["qa_flags"] if flag["code"] == "repeated_phrase")
         self.assertEqual(repeated_flag["phrase"], "gas station locations")
         self.assertEqual(repeated_flag["count"], 3)
+
+    def test_repeated_page_copy_is_repaired_before_final_qa(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        repeated_copy = (
+            "# Industrial Dosing Systems\n"
+            "Gas station locations need reliable workflows. "
+            "The service helps gas station locations plan maintenance. "
+            "Clear records keep gas station locations coordinated."
+        )
+        repaired_copy = (
+            "# Industrial Dosing Systems\n"
+            "Reliable workflows help maintenance teams plan inspections and coordinate technicians. "
+            "Clear documentation records service needs before work begins. "
+            "Defined responsibilities reduce vague handoffs between site staff and specialists. "
+            "Routine schedules make urgent requests easier to prioritise without disrupting planned work. "
+            "Practical reporting also gives managers a consistent view of completed tasks, open actions, "
+            "parts requirements, and follow-up dates. This structured approach supports safer decisions, "
+            "more useful maintenance histories, and smoother daily operations across busy facilities."
+        )
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": repeated_copy,
+                 "_full_page": repeated_copy,
+                 "_word_count": len(repeated_copy.split()),
+             }), \
+             patch.object(all_in_one, "repair_repeated_page_copy", return_value={"hero": repaired_copy}) as repair:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        repair.assert_called_once()
+        self.assertEqual(result["section_results"]["hero"], repaired_copy)
+        self.assertFalse(any(flag["code"] == "repeated_phrase" for flag in result["qa_flags"]))
 
     def test_page_copy_h1_is_replaced_with_meta_h1_before_qa(self):
         settings = {
