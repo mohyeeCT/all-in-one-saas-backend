@@ -75,6 +75,13 @@ _CONTENT_GAP_STOPWORDS = _KEYWORD_STOPWORDS | {
     "what", "when", "where", "which", "while",
 }
 
+_REPEATED_PHRASE_STOPWORDS = _CONTENT_GAP_STOPWORDS | {
+    "after", "all", "because", "before", "can", "each", "every", "has",
+    "help", "helps", "how", "its", "like", "make", "makes", "need", "needs",
+    "our", "over", "than", "that", "these", "they", "through", "use", "used",
+    "using", "was", "way", "will", "you",
+}
+
 
 def _safe_gsc_auth_method(settings: dict, gsc_credentials: dict | None, gsc_client=None) -> str:
     if not settings.get("use_gsc"):
@@ -374,6 +381,75 @@ def _add_h1_alignment_flag(flags: list[dict], optimised_h1: str, section_results
 
 def _word_count_for_qa(text: str) -> int:
     return len(_normalise_similarity_text(text))
+
+
+def _limit_faq_items(faq_items: list, requested_count: int) -> tuple[list, bool]:
+    if not isinstance(faq_items, list):
+        return [], False
+    try:
+        requested = int(requested_count)
+    except (TypeError, ValueError):
+        return faq_items, False
+    if requested < 0:
+        return faq_items, False
+    if len(faq_items) > requested:
+        return faq_items[:requested], True
+    return faq_items, False
+
+
+def _contains_ngram(container: tuple[str, ...], candidate: tuple[str, ...]) -> bool:
+    if len(candidate) > len(container):
+        return False
+    return any(
+        container[idx:idx + len(candidate)] == candidate
+        for idx in range(len(container) - len(candidate) + 1)
+    )
+
+
+def _repeated_phrase_candidates(text: str, min_count: int = 3, max_flags: int = 3) -> list[dict]:
+    tokens = _normalise_similarity_text(text)
+    if len(tokens) < 8:
+        return []
+
+    counts = {}
+    for size in range(4, 1, -1):
+        for idx in range(len(tokens) - size + 1):
+            phrase = tuple(tokens[idx:idx + size])
+            if phrase[0] in _REPEATED_PHRASE_STOPWORDS or phrase[-1] in _REPEATED_PHRASE_STOPWORDS:
+                continue
+            meaningful = [token for token in phrase if token not in _REPEATED_PHRASE_STOPWORDS]
+            if len(set(meaningful)) < 2:
+                continue
+            counts[phrase] = counts.get(phrase, 0) + 1
+
+    repeated = [
+        (phrase, count)
+        for phrase, count in counts.items()
+        if count >= min_count
+    ]
+    repeated.sort(key=lambda item: (-len(item[0]), -item[1], " ".join(item[0])))
+
+    selected = []
+    selected_phrases = []
+    for phrase, count in repeated:
+        if any(_contains_ngram(existing, phrase) for existing in selected_phrases):
+            continue
+        selected_phrases.append(phrase)
+        selected.append({"phrase": " ".join(phrase), "count": count})
+        if len(selected) >= max_flags:
+            break
+    return selected
+
+
+def _add_repeated_phrase_flags(flags: list[dict], page_copy_text: str):
+    for repeated in _repeated_phrase_candidates(page_copy_text):
+        flags.append({
+            "code": "repeated_phrase",
+            "message": "Phrase is repeated too often in page copy.",
+            "output": "page_copy",
+            "phrase": repeated["phrase"],
+            "count": repeated["count"],
+        })
 
 
 def _meaningful_keyword_tokens(keyword: str) -> list[str]:
@@ -786,6 +862,7 @@ def _collect_qa_flags(
         _add_qa_flag(flags, "page_copy_missing", "Page copy was requested but no page sections were generated.", "page_copy")
     elif gen_page_copy:
         _add_section_word_count_flags(flags, section_results, template)
+        _add_repeated_phrase_flags(flags, page_copy_text)
 
     if gen_meta:
         _add_generic_opener_flags(flags, generated_description or "", section_results if gen_page_copy else {})
@@ -1257,6 +1334,9 @@ def _process_single_row(
                 brand_profile=brand_profile,
                 strategy_brief=strategy_brief,
             )
+            faq_items, faqs_trimmed = _limit_faq_items(faq_items, num_faqs)
+            if faqs_trimmed:
+                step("FAQs trimmed to requested count: " + str(len(faq_items)))
             step("✓ FAQs: " + str(len(faq_items)) + " generated")
 
             # Build schema

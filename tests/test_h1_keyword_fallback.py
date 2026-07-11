@@ -1,4 +1,5 @@
 import unittest
+import json
 import sys
 import types
 from contextlib import nullcontext
@@ -579,6 +580,49 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("SCRAPED PAGE CONTENT:\nScraped page facts.", context)
         self.assertIn("CLIENT BRIEF:\nClient brief note.", context)
 
+    def test_faq_output_is_trimmed_to_requested_count(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "num_faqs": 3,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        generated_faqs = [
+            {"question": f"Question {i}?", "answer": f"Answer {i}."}
+            for i in range(1, 6)
+        ]
+
+        with patch.object(all_in_one, "generate_strategy_brief", return_value={}), \
+             patch.object(all_in_one, "generate_faq", return_value=generated_faqs):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "num_faqs": 3,
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["faq_count"], 3)
+        self.assertEqual([item["question"] for item in result["faq_items"]], [
+            "Question 1?",
+            "Question 2?",
+            "Question 3?",
+        ])
+        schema = json.loads(result["faq_schema"])
+        self.assertEqual(len(schema["mainEntity"]), 3)
+
     def test_row_gets_review_flags_for_forbidden_phrase_and_missing_requested_output(self):
         settings = {
             **_settings(),
@@ -759,6 +803,52 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("meta_description", {flag["output"] for flag in generic_flags})
         self.assertIn("hero", {flag.get("section") for flag in generic_flags})
         self.assertTrue(all(flag["phrase"] == "Looking for" for flag in generic_flags))
+
+    def test_repeated_page_copy_phrase_is_flagged_for_review(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        page_copy = (
+            "# Industrial Dosing Systems\n"
+            "Industrial dosing systems support maintenance teams with cleaner planning. "
+            "Gas station locations need reliable workflows for daily service requests. "
+            "The same process helps gas station locations coordinate inspections and repairs. "
+            "Clear documentation gives gas station locations a simple way to brief technicians, "
+            "track urgent issues, compare parts, confirm responsibilities, and keep routine "
+            "service moving without vague handoffs or repeated calls between teams."
+        )
+
+        with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": page_copy,
+                 "_word_count": len(page_copy.split()),
+             }):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["status"], "review")
+        repeated_flag = next(flag for flag in result["qa_flags"] if flag["code"] == "repeated_phrase")
+        self.assertEqual(repeated_flag["phrase"], "gas station locations")
+        self.assertEqual(repeated_flag["count"], 3)
 
     def test_page_copy_h1_is_replaced_with_meta_h1_before_qa(self):
         settings = {
