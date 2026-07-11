@@ -323,6 +323,40 @@ def _extract_first_page_h1(section_results: dict) -> str:
     return ""
 
 
+def _assemble_full_page_copy(section_results: dict, template: dict | None = None) -> str:
+    if template:
+        return "\n\n".join(
+            str(section_results.get(section.get("name", ""), ""))
+            for section in template.get("sections", [])
+        )
+    return _full_page_copy_text(section_results)
+
+
+def _enforce_canonical_page_h1(section_results: dict, canonical_h1: str) -> tuple[dict, bool]:
+    canonical_h1 = (canonical_h1 or "").strip()
+    if not section_results or not canonical_h1:
+        return section_results, False
+
+    updated = dict(section_results)
+    for section_name, text in (section_results or {}).items():
+        if str(section_name).startswith("_"):
+            continue
+
+        lines = str(text or "").splitlines()
+        for idx, line in enumerate(lines):
+            match = re.match(r"^(#\s+)(.+?)\s*$", line.strip())
+            if not match:
+                continue
+            page_h1 = match.group(2).strip()
+            if _normalise_phrase(page_h1) == _normalise_phrase(canonical_h1):
+                return section_results, False
+            lines[idx] = f"# {canonical_h1}"
+            updated[section_name] = "\n".join(lines)
+            return updated, True
+
+    return section_results, False
+
+
 def _add_h1_alignment_flag(flags: list[dict], optimised_h1: str, section_results: dict):
     page_h1 = _extract_first_page_h1(section_results)
     if not page_h1 or not (optimised_h1 or "").strip():
@@ -1310,6 +1344,11 @@ def _process_single_row(
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
             full_page       = page_result.get("_full_page", "")
             word_count      = page_result.get("_word_count", 0)
+            section_results, h1_replaced = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+            if h1_replaced:
+                full_page = _assemble_full_page_copy(section_results, template)
+                word_count = len(full_page.split())
+                step("page copy H1 aligned to meta H1")
             run_diagnostics["output_counts"]["sections"] = len(section_results)
             run_diagnostics["output_counts"]["word_count"] = word_count
             step("✓ page copy: " + str(word_count) + " words")

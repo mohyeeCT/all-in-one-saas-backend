@@ -760,7 +760,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("hero", {flag.get("section") for flag in generic_flags})
         self.assertTrue(all(flag["phrase"] == "Looking for" for flag in generic_flags))
 
-    def test_page_copy_h1_different_from_meta_h1_is_flagged(self):
+    def test_page_copy_h1_is_replaced_with_meta_h1_before_qa(self):
         settings = {
             **_settings(),
             "gen_meta": True,
@@ -802,10 +802,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 ranked=ranked,
             )
 
-        self.assertEqual(result["status"], "review")
-        h1_flag = next(flag for flag in result["qa_flags"] if flag["code"] == "page_h1_differs_from_meta_h1")
-        self.assertEqual(h1_flag["meta_h1"], "Reliable Industrial Dosing Systems")
-        self.assertEqual(h1_flag["page_h1"], "Industrial Dosing System Services")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["section_results"]["hero"].startswith("# Reliable Industrial Dosing Systems"))
+        self.assertNotIn("page_h1_differs_from_meta_h1", [flag["code"] for flag in result["qa_flags"]])
 
     def test_missing_target_keyword_in_meta_and_page_copy_is_flagged(self):
         settings = {
