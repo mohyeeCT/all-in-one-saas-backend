@@ -1,0 +1,213 @@
+[
+  {
+    "name": "taystee_b2c_natural_variant",
+    "brand_name": "Taystee",
+    "business_type": "b2c",
+    "primary_keyword": "halal burgers michigan",
+    "generated_title": "Award-Winning Halal Burgers in Michigan | Taystee Menu",
+    "generated_description": "Discover award-winning halal burgers made for Michigan diners who want bold flavor, satisfying choices, and a welcoming local restaurant experience.",
+    "optimised_h1": "Award-Winning Halal Burgers in Michigan",
+    "input_h1": "Taystee's Burgers",
+    "faq_items": [
+      {
+        "question": "What makes these burgers a popular Michigan choice?",
+        "answer": "The menu focuses on bold flavor and a satisfying local dining experience."
+      }
+    ],
+    "section_results": {
+      "hero": "# Award-Winning Halal Burgers in Michigan\nAcross Michigan, diners choose halal options when they want a burger with bold flavor and a satisfying restaurant experience.",
+      "menu": "## Michigan Favorites with Halal Burger Craft\nExplore familiar favorites built around flavor, choice, and an inviting local experience."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": [],
+    "forbidden_codes": [
+      "brand_name_in_h1",
+      "target_keyword_missing_from_h1",
+      "target_keyword_missing_from_first_100_words",
+      "target_keyword_missing_from_h2"
+    ],
+    "expected_status": "ok"
+  },
+  {
+    "name": "b2b_consumer_cta",
+    "brand_name": "Northstar",
+    "business_type": "b2b",
+    "primary_keyword": "industrial dosing systems",
+    "generated_title": "Industrial Dosing Systems for Process Teams",
+    "generated_description": "Industrial dosing systems support process teams with practical control, maintenance planning, and clearer operating responsibilities across demanding facilities.",
+    "optimised_h1": "Industrial Dosing Systems for Process Teams",
+    "input_h1": "Process Dosing Equipment",
+    "faq_items": [
+      {
+        "question": "How can a team evaluate the right system?",
+        "answer": "Compare process requirements, maintenance access, and operating responsibilities before you buy today."
+      }
+    ],
+    "section_results": {
+      "hero": "# Industrial Dosing Systems for Process Teams\nIndustrial teams rely on systems that make dosing work easier to plan and maintain.",
+      "details": "## Systems for Industrial Dosing\nReview process requirements and add to cart when the team is ready."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": ["b2b_consumer_cta"],
+    "forbidden_codes": [],
+    "expected_status": "review"
+  },
+  {
+    "name": "brand_in_h1",
+    "brand_name": "Acme",
+    "business_type": "service",
+    "primary_keyword": "technical seo services",
+    "generated_title": "Technical SEO Services for Complex Websites | Acme",
+    "generated_description": "Technical SEO services help teams identify crawl, indexing, and site architecture issues, then organise practical priorities for stronger organic performance.",
+    "optimised_h1": "Acme Technical SEO Services",
+    "input_h1": "Technical SEO Consulting",
+    "faq_items": [
+      {
+        "question": "What does a technical review cover?",
+        "answer": "A review can examine crawl access, indexing signals, architecture, and implementation priorities."
+      }
+    ],
+    "section_results": {
+      "hero": "# Acme Technical SEO Services\nTechnical teams use SEO reviews to organise crawl, indexing, and architecture work.",
+      "details": "## Services for Technical SEO\nClear priorities help engineering and marketing teams coordinate implementation."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": ["brand_name_in_h1"],
+    "forbidden_codes": [],
+    "expected_status": "review"
+  },
+  {
+    "name": "preferred_meta_ranges_are_advisory",
+    "brand_name": "Harbor",
+    "business_type": "local",
+    "primary_keyword": "emergency plumbing services",
+    "generated_title": "Emergency Plumbing Services",
+    "generated_description": "Local plumbing help for urgent problems.",
+    "optimised_h1": "Emergency Plumbing Services",
+    "input_h1": "Urgent Plumbing Help",
+    "faq_items": [
+      {
+        "question": "What should I do when a plumbing problem starts?",
+        "answer": "Shut off the affected water supply when it is safe, then describe the issue clearly when requesting service."
+      }
+    ],
+    "section_results": {
+      "hero": "# Emergency Plumbing Services\nLocal property owners use emergency support when plumbing problems require prompt service for urgent leaks or damaged fixtures.",
+      "details": "## Plumbing Support for Emergency Service\nClear information about the problem helps the response team prepare."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": [
+      "meta_title_outside_preferred_range",
+      "meta_description_outside_preferred_range"
+    ],
+    "forbidden_codes": [],
+    "expected_status": "warning"
+  },
+  {
+    "name": "hard_meta_overages_require_review",
+    "brand_name": "Vertex",
+    "business_type": "service",
+    "primary_keyword": "cloud migration consulting",
+    "generated_title": "Cloud Migration Consulting for Enterprise Technology Teams Planning Complex Infrastructure Modernisation Projects",
+    "generated_description": "Cloud migration consulting helps enterprise technology teams assess infrastructure, dependencies, governance, operational responsibilities, implementation priorities, application sequencing, stakeholder coordination, and practical modernisation decisions across complex programmes.",
+    "optimised_h1": "Cloud Migration Consulting for Enterprise Teams",
+    "input_h1": "Cloud Modernisation Services",
+    "faq_items": [
+      {
+        "question": "How should teams prepare for migration planning?",
+        "answer": "Teams should document dependencies, ownership, operational constraints, and the decisions that require stakeholder agreement."
+      }
+    ],
+    "section_results": {
+      "hero": "# Cloud Migration Consulting for Enterprise Teams\nCloud migration work helps consulting teams organise dependencies and operating requirements.",
+      "details": "## Consulting for Cloud Migration\nA structured assessment clarifies ownership and implementation priorities."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": [
+      "meta_title_outside_preferred_range",
+      "meta_description_outside_preferred_range"
+    ],
+    "forbidden_codes": [],
+    "expected_status": "review"
+  },
+  {
+    "name": "duplicate_policy_sensitive_faq",
+    "brand_name": "Fieldcraft",
+    "business_type": "ecommerce",
+    "primary_keyword": "field service tool kits",
+    "generated_title": "Field Service Tool Kits for Mobile Repair Teams",
+    "generated_description": "Field service tool kits help mobile repair teams organise essential equipment, compare practical formats, and prepare for routine work across changing job sites.",
+    "optimised_h1": "Field Service Tool Kits for Mobile Teams",
+    "input_h1": "Mobile Repair Tool Kits",
+    "faq_items": [
+      {
+        "question": "What is the return policy?",
+        "answer": "The return policy explains the available options."
+      },
+      {
+        "question": "What is the return policy?",
+        "answer": "Review the return policy before choosing a kit."
+      }
+    ],
+    "section_results": {
+      "hero": "# Field Service Tool Kits for Mobile Teams\nField service teams use practical tool kits to organise equipment for mobile repair work.",
+      "details": "## Tool Kits for Field Service\nCompare formats by the work, storage, and access needs of the team."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": ["duplicate_faq_question", "faq_risky_mutable_topic"],
+    "forbidden_codes": [],
+    "expected_status": "review"
+  },
+  {
+    "name": "keyword_placement_is_advisory",
+    "brand_name": "Clearline",
+    "business_type": "service",
+    "primary_keyword": "warehouse automation consulting",
+    "generated_title": "Warehouse Automation Consulting for Operations Teams",
+    "generated_description": "Warehouse automation consulting helps operations teams assess workflows, system dependencies, implementation priorities, and practical opportunities for improvement.",
+    "optimised_h1": "Practical Guidance for Warehouse Operations",
+    "input_h1": "Warehouse Improvement Services",
+    "faq_items": [
+      {
+        "question": "What should operations teams evaluate first?",
+        "answer": "Teams should document workflows, constraints, dependencies, and the outcomes that matter to daily operations."
+      }
+    ],
+    "section_results": {
+      "hero": "# Practical Guidance for Warehouse Operations\nTeams begin by documenting workflows responsibilities constraints handoffs systems facilities equipment reporting maintenance safety ownership planning schedules capacity labour storage receiving dispatch inventory processes controls data roles training support governance change risk timing budgets priorities requirements performance outcomes decisions stakeholders integration sequencing readiness testing monitoring documentation communication adoption coordination resources milestones dependencies assumptions limitations opportunities objectives measures targets operations work daily routines current state future state analysis mapping discovery review research interviews observation modelling workshops audits baselines records evidence summaries diagrams inventories assessments comparisons options scenarios tradeoffs recommendations ownership approvals sponsorship standards policies architecture design procurement delivery evaluation before considering warehouse automation consulting.",
+      "details": "## Planning Operational Improvements\nThe assessment turns current-state findings into clear implementation priorities."
+    },
+    "forbidden_phrases": [],
+    "expected_codes": [
+      "target_keyword_missing_from_h1",
+      "target_keyword_missing_from_first_100_words",
+      "target_keyword_missing_from_h2"
+    ],
+    "forbidden_codes": [],
+    "expected_status": "warning"
+  },
+  {
+    "name": "forbidden_phrase_and_exclamation",
+    "brand_name": "Signalworks",
+    "business_type": "general",
+    "primary_keyword": "analytics reporting platform",
+    "generated_title": "A World-Class Analytics Reporting Platform!",
+    "generated_description": "A world-class analytics reporting platform helps teams organise dashboards, recurring reports, and practical performance reviews for clearer decisions.",
+    "optimised_h1": "Analytics Reporting Platform for Clearer Decisions",
+    "input_h1": "Reporting and Analytics",
+    "faq_items": [
+      {
+        "question": "How does the platform support recurring reporting?",
+        "answer": "It gives teams a consistent place to organise dashboards and review performance."
+      }
+    ],
+    "section_results": {
+      "hero": "# Analytics Reporting Platform for Clearer Decisions\nAnalytics teams use a reporting platform to organise recurring reviews and communicate performance clearly.",
+      "details": "## Reporting with an Analytics Platform\nConsistent dashboards support practical discussions and decisions."
+    },
+    "forbidden_phrases": ["world-class"],
+    "expected_codes": ["forbidden_phrase", "exclamation_mark_present"],
+    "forbidden_codes": [],
+    "expected_status": "review"
+  }
+]

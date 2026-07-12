@@ -80,6 +80,45 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(captured["max_tokens"], copy_gen.CLAUDE_STREAMING_TOKEN_THRESHOLD + 1)
         self.assertNotIn("thinking", captured)
 
+    def test_claude_strategy_request_can_use_medium_adaptive_effort(self):
+        captured = {}
+
+        class FakeMessages:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return types.SimpleNamespace(
+                    content=[types.SimpleNamespace(type="text", text="{}")]
+                )
+
+        class FakeAnthropic:
+            def __init__(self, api_key):
+                self.messages = FakeMessages()
+
+        anthropic_stub = types.ModuleType("anthropic")
+        anthropic_stub.Anthropic = FakeAnthropic
+        original_anthropic = sys.modules.get("anthropic")
+        sys.modules["anthropic"] = anthropic_stub
+        try:
+            text = copy_gen._call_claude(
+                "key",
+                "prompt",
+                max_tokens=copy_gen.STRATEGY_BRIEF_MAX_TOKENS,
+                model="claude-sonnet-5",
+                effort=copy_gen.STRATEGY_BRIEF_CLAUDE_EFFORT,
+            )
+        finally:
+            if original_anthropic is None:
+                sys.modules.pop("anthropic", None)
+            else:
+                sys.modules["anthropic"] = original_anthropic
+
+        self.assertEqual(text, "{}")
+        self.assertEqual(captured["extra_body"]["thinking"], {"type": "adaptive"})
+        self.assertEqual(
+            captured["extra_body"]["output_config"],
+            {"effort": copy_gen.STRATEGY_BRIEF_CLAUDE_EFFORT},
+        )
+
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}
 
@@ -310,6 +349,58 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
 
+    def test_targeted_meta_and_faq_repairs_route_through_selected_provider(self):
+        prompts = []
+        responses = [
+            json.dumps({
+                "title": "Industrial Dosing Systems for Process Control",
+                "description": "Clear metadata description for industrial operations teams.",
+                "h1_optimised": "Industrial Dosing Systems",
+            }),
+            json.dumps([
+                {
+                    "question": "How do industrial dosing systems support process control?",
+                    "answer": "They help teams manage repeatable chemical handling.",
+                    "source": "generated",
+                },
+            ]),
+        ]
+
+        def fake_provider(_api_key, prompt, **_kwargs):
+            prompts.append(prompt)
+            return responses.pop(0)
+
+        copy_gen.PROVIDER_FN["RepairTest"] = fake_provider
+        meta = copy_gen.repair_meta_copy(
+            provider="RepairTest",
+            api_key="key",
+            current={"title": "Bad!", "description": "Shop now!", "h1_optimised": "Example Services"},
+            issues=["Title contains an exclamation mark."],
+            url="https://example.com/service",
+            keyword="industrial dosing systems",
+            page_type="service",
+            business_type="b2b",
+            brand_name="Example",
+            input_h1="Current Services",
+        )
+        faqs = copy_gen.repair_faq_items(
+            provider="RepairTest",
+            api_key="key",
+            faq_items=[{"question": "Do you ship", "answer": ""}],
+            issues=["FAQ is incomplete."],
+            keyword="industrial dosing systems",
+            page_type="service",
+            business_type="b2b",
+            brand_name="Example",
+            num_faqs=1,
+        )
+
+        self.assertEqual(meta["h1_optimised"], "Industrial Dosing Systems")
+        self.assertEqual(len(faqs), 1)
+        self.assertIn("Change only what is needed", prompts[0])
+        self.assertIn("Keep useful questions", prompts[1])
+        self.assertTrue(all("consumer CTAs" in prompt for prompt in prompts))
+
     def test_generate_strategy_brief_routes_through_provider_function(self):
         captured = {}
 
@@ -321,15 +412,44 @@ class ProviderRoutingTests(unittest.TestCase):
                 "search_intent": "Commercial investigation",
                 "page_goal": "Help buyers understand the service and make contact.",
                 "audience_need": "Proof that the provider can handle regulated work.",
+                "primary_positioning": "Practical compliance support for regulated teams.",
+                "supporting_attributes": ["Plainspoken guidance", "Implementation experience"],
+                "headline_direction": "Lead with practical compliance support, not certification promises.",
                 "recommended_angle": "Lead with practical compliance experience.",
                 "brand_positioning": "Authoritative but plainspoken.",
-                "proof_points_to_use": ["ISO 27001", "implementation process"],
+                "verified_facts": [
+                    {
+                        "id": "F1",
+                        "fact": "The current page mentions audits and implementation support.",
+                        "source": "current_page",
+                        "source_excerpt": "audits and implementation support",
+                    },
+                    {
+                        "id": "F2",
+                        "fact": "The client brief prioritises ISO experience.",
+                        "source": "client_brief",
+                        "source_excerpt": "Focus on ISO experience.",
+                    },
+                ],
+                "facts_to_avoid": ["Guaranteed certification"],
+                "proof_fact_ids": ["F1", "F2"],
                 "claims_to_avoid": ["guaranteed rankings"],
                 "competitor_gaps": ["Competitors do not explain the delivery process."],
                 "meta_direction": "Mention compliance and implementation support.",
                 "faq_direction": "Answer fit, process, and proof questions.",
                 "section_guidance": [
-                    {"section": "intro", "guidance": "Lead with the compliance problem."}
+                    {
+                        "section": "intro",
+                        "responsibility": "Frame the compliance problem.",
+                        "guidance": "Lead with the operational risk.",
+                        "proof_fact_ids": ["F1"],
+                    },
+                    {
+                        "section": "process",
+                        "responsibility": "Explain delivery.",
+                        "guidance": "Show the implementation sequence.",
+                        "proof_fact_ids": ["F1", "F2"],
+                    },
                 ],
             })
 
@@ -351,7 +471,12 @@ class ProviderRoutingTests(unittest.TestCase):
                 "- Target audience: Operations leaders"
             ),
             client_brief="Avoid hype. Focus on ISO experience.",
-            page_context="The current page mentions audits and implementation support.",
+            evidence_client_brief="Avoid hype. Focus on ISO experience.",
+            page_context=(
+                "The current page mentions audits and implementation support. "
+                + ("A" * 2600)
+                + " late-page-evidence"
+            ),
             ai_overview="Search results mention risk, process, and certifications.",
             paa_questions=[{"question": "What does compliance consulting include?"}],
             competitor_section_map={"intro": ["Competitor talks about audit preparation."]},
@@ -359,22 +484,200 @@ class ProviderRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual(brief["search_intent"], "Commercial investigation")
-        self.assertEqual(brief["proof_points_to_use"], ["ISO 27001", "implementation process"])
+        self.assertEqual(brief["primary_positioning"], "Practical compliance support for regulated teams.")
+        self.assertEqual(brief["supporting_attributes"], ["Plainspoken guidance", "Implementation experience"])
+        self.assertEqual(
+            brief["proof_points_to_use"],
+            [
+                "The current page mentions audits and implementation support.",
+                "The client brief prioritises ISO experience.",
+            ],
+        )
+        self.assertEqual(brief["verified_facts"][0]["id"], "F1")
+        self.assertEqual(brief["verified_facts"][0]["source"], "current_page")
+        self.assertEqual(brief["facts_to_avoid"], ["Guaranteed certification"])
         self.assertEqual(brief["section_guidance"][0]["section"], "intro")
+        self.assertEqual(
+            brief["section_guidance"][0]["proof_points"],
+            ["The current page mentions audits and implementation support."],
+        )
+        self.assertEqual(
+            brief["section_guidance"][1]["proof_points"],
+            ["The client brief prioritises ISO experience."],
+        )
         self.assertEqual(captured["model"], "strategy-model")
         self.assertEqual(captured["max_tokens"], copy_gen.STRATEGY_BRIEF_MAX_TOKENS)
         self.assertIn("BRAND CONTEXT:", captured["prompt"])
         self.assertIn("Plainspoken expert", captured["prompt"])
         self.assertIn("Search results mention risk, process, and certifications.", captured["prompt"])
         self.assertIn("Competitor talks about audit preparation.", captured["prompt"])
+        self.assertIn("Never instruct a section to preserve the current H1", captured["prompt"])
+        self.assertIn("Assign every selected proof ID to exactly one section", captured["prompt"])
+        self.assertIn("Select page-level proof with proof_fact_ids", captured["prompt"])
+        self.assertIn("Evidence precedence is: current owned-page content first", captured["prompt"])
+        self.assertIn("Every verified fact must include an exact supporting excerpt", captured["prompt"])
+        self.assertIn("late-page-evidence", captured["prompt"])
+
+    def test_incomplete_strategy_brief_gets_one_bounded_repair(self):
+        responses = [
+            {"search_intent": "Commercial"},
+            {
+                "search_intent": "Commercial investigation",
+                "page_goal": "Help operations teams evaluate the service.",
+                "audience_need": "Clear evidence and delivery expectations.",
+                "primary_positioning": "Practical compliance support.",
+                "headline_direction": "Lead with practical compliance support.",
+                "meta_direction": "Use clear service language.",
+                "faq_direction": "Answer fit and process questions.",
+                "section_guidance": [
+                    {
+                        "section": "intro",
+                        "responsibility": "Frame the operational need.",
+                        "guidance": "Explain the service without hype.",
+                    },
+                ],
+            },
+        ]
+        captured_prompts = []
+
+        def fake_provider(_api_key, prompt, **_kwargs):
+            captured_prompts.append(prompt)
+            return json.dumps(responses.pop(0))
+
+        copy_gen.PROVIDER_FN["StrategyRepairTest"] = fake_provider
+        brief = copy_gen.generate_strategy_brief(
+            provider="StrategyRepairTest",
+            api_key="key",
+            url="https://example.com/service",
+            keyword="compliance consulting",
+            page_type="service",
+            business_type="b2b",
+            brand_name="Example",
+            template_sections=[{"name": "intro", "label": "Introduction"}],
+        )
+
+        self.assertEqual(len(captured_prompts), 2)
+        self.assertIn("CORRECTION REQUIRED", captured_prompts[1])
+        self.assertEqual(brief["primary_positioning"], "Practical compliance support.")
+        self.assertEqual(copy_gen.strategy_brief_issues(brief, [{"name": "intro"}]), [])
+
+    def test_strategy_brief_rejects_unverified_and_mutable_profile_facts(self):
+        brief = copy_gen._normalise_strategy_brief(
+            {
+                "verified_facts": [
+                    {
+                        "id": "F1",
+                        "fact": "The business has nine operating locations.",
+                        "source": "current_page",
+                        "source_excerpt": "nine operating locations",
+                    },
+                    {
+                        "id": "F2",
+                        "fact": "Detroit Burger Brawl Champion 2016.",
+                        "source": "brand_profile",
+                        "source_excerpt": "Detroit Burger Brawl Champion 2016",
+                    },
+                    {
+                        "id": "F3",
+                        "fact": "The business has 10 locations.",
+                        "source": "brand_profile",
+                        "source_excerpt": "10 locations",
+                    },
+                    {
+                        "id": "F4",
+                        "fact": "Every location uses the same recipe.",
+                        "source": "current_page",
+                        "source_excerpt": "same recipe",
+                    },
+                    {
+                        "id": "F5",
+                        "fact": "A stable but unused fact.",
+                        "source": "brand_profile",
+                        "source_excerpt": "stable but unused fact",
+                    },
+                ],
+                "proof_fact_ids": ["F1", "F2", "F3", "F4", "F5"],
+                "section_guidance": [
+                    {
+                        "section": "hero",
+                        "guidance": "Lead with current scale.",
+                        "proof_fact_ids": ["F1", "F4"],
+                    },
+                    {
+                        "section": "social_proof",
+                        "guidance": "Use stable recognition.",
+                        "proof_fact_ids": ["F3", "F2"],
+                    },
+                ],
+            },
+            evidence_sources={
+                "current_page": "The business has nine operating locations. Monroe is coming soon.",
+                "client_brief": "",
+                "brand_profile": (
+                    "Detroit Burger Brawl Champion 2016. "
+                    "The business has 10 locations. A stable but unused fact."
+                ),
+            },
+        )
+
+        verified = [item["fact"] for item in brief["verified_facts"]]
+        self.assertEqual(
+            verified,
+            [
+                "The business has nine operating locations.",
+                "Detroit Burger Brawl Champion 2016.",
+                "A stable but unused fact.",
+            ],
+        )
+        self.assertEqual(brief["proof_points_to_use"], verified[:2])
+        self.assertIn("The business has 10 locations.", brief["facts_to_avoid"])
+        self.assertIn("Every location uses the same recipe.", brief["facts_to_avoid"])
+        self.assertEqual(
+            brief["section_guidance"][0]["proof_points"],
+            ["The business has nine operating locations."],
+        )
+        self.assertEqual(
+            brief["section_guidance"][1]["proof_points"],
+            ["Detroit Burger Brawl Champion 2016."],
+        )
+
+        meta_strategy = copy_gen.format_strategy_brief_for_prompt(brief, output_type="meta")
+        page_strategy = copy_gen.format_strategy_brief_for_prompt(
+            brief,
+            output_type="page",
+            section_names=["hero"],
+            include_headline_direction=True,
+        )
+        self.assertIn("The business has nine operating locations.", meta_strategy)
+        self.assertIn("The business has 10 locations.", meta_strategy)
+        self.assertIn("The business has nine operating locations.", page_strategy)
+        self.assertNotIn("Detroit Burger Brawl Champion 2016.", page_strategy)
 
     def test_strategy_brief_is_added_to_meta_faq_and_page_prompts(self):
         strategy_brief = {
             "search_intent": "Commercial investigation",
+            "primary_positioning": "Practical compliance support for regulated teams.",
+            "supporting_attributes": ["Plainspoken guidance"],
+            "headline_direction": "Lead with practical support for regulated teams.",
             "recommended_angle": "Lead with practical compliance experience.",
+            "claims_to_avoid": ["Do not promise guaranteed certification."],
+            "proof_points_to_use": ["Page-level proof for metadata and FAQs"],
             "meta_direction": "Mention compliance and implementation support.",
             "faq_direction": "Answer fit, process, and proof questions.",
-            "section_guidance": [{"section": "intro", "guidance": "Lead with the compliance problem."}],
+            "section_guidance": [
+                {
+                    "section": "intro",
+                    "responsibility": "Frame the compliance problem.",
+                    "guidance": "Lead with the compliance problem.",
+                    "proof_points": ["ISO implementation experience"],
+                },
+                {
+                    "section": "benefits",
+                    "responsibility": "Explain the operational benefits.",
+                    "guidance": "Connect the service to lower operational risk.",
+                    "proof_points": ["Documented implementation process"],
+                },
+            ],
         }
 
         meta_capture = {}
@@ -403,9 +706,19 @@ class ProviderRoutingTests(unittest.TestCase):
         )
 
         self.assertIn("STRATEGY BRIEF:", meta_capture["prompt"])
+        self.assertIn("Do not promise guaranteed certification.", meta_capture["prompt"])
+        self.assertIn("Practical compliance support for regulated teams.", meta_capture["prompt"])
+        self.assertIn("Lead with practical support for regulated teams.", meta_capture["prompt"])
+        self.assertIn("Page-level proof for metadata and FAQs", meta_capture["prompt"])
         self.assertIn("Mention compliance and implementation support.", meta_capture["prompt"])
-        self.assertIn("Strategy brief priorities outrank exact keyword phrasing.", meta_capture["prompt"])
+        self.assertNotIn("Answer fit, process, and proof questions.", meta_capture["prompt"])
+        self.assertNotIn("Lead with the compliance problem.", meta_capture["prompt"])
+        self.assertIn(
+            "Primary positioning, headline direction, and claims to avoid are contract requirements",
+            meta_capture["prompt"],
+        )
         self.assertIn("Do not turn search-query wording into an awkward H1", meta_capture["prompt"])
+        self.assertIn("complete evidence allowlist for concrete brand claims", meta_capture["prompt"])
 
         faq_capture = {}
 
@@ -435,8 +748,15 @@ class ProviderRoutingTests(unittest.TestCase):
         )
 
         self.assertIn("STRATEGY BRIEF:", faq_capture["prompt"])
+        self.assertIn("Do not promise guaranteed certification.", faq_capture["prompt"])
+        self.assertIn("Practical compliance support for regulated teams.", faq_capture["prompt"])
+        self.assertIn("Page-level proof for metadata and FAQs", faq_capture["prompt"])
+        self.assertNotIn("Lead with practical support for regulated teams.", faq_capture["prompt"])
         self.assertIn("Answer fit, process, and proof questions.", faq_capture["prompt"])
+        self.assertNotIn("Mention compliance and implementation support.", faq_capture["prompt"])
+        self.assertNotIn("Lead with the compliance problem.", faq_capture["prompt"])
         self.assertIn("Do not turn search-query wording into FAQ questions", faq_capture["prompt"])
+        self.assertIn("complete evidence allowlist for concrete brand claims", faq_capture["prompt"])
 
         page_capture = {}
 
@@ -476,10 +796,48 @@ class ProviderRoutingTests(unittest.TestCase):
         )
 
         self.assertIn("STRATEGY BRIEF:", page_capture["prompt"])
+        self.assertIn("Do not promise guaranteed certification.", page_capture["prompt"])
+        self.assertIn("Frame the compliance problem.", page_capture["prompt"])
         self.assertIn("Lead with the compliance problem.", page_capture["prompt"])
+        self.assertIn("ISO implementation experience", page_capture["prompt"])
+        self.assertNotIn("Documented implementation process", page_capture["prompt"])
+        self.assertNotIn("Page-level proof for metadata and FAQs", page_capture["prompt"])
+        self.assertNotIn("Lead with practical support for regulated teams.", page_capture["prompt"])
+        self.assertNotIn("Mention compliance and implementation support.", page_capture["prompt"])
+        self.assertNotIn("Answer fit, process, and proof questions.", page_capture["prompt"])
         self.assertIn("Strategy brief priorities outrank exact keyword phrasing.", page_capture["prompt"])
         self.assertIn("Do not turn search-query wording into headings", page_capture["prompt"])
         self.assertIn("Treat proof points as a page-wide budget.", page_capture["prompt"])
+        self.assertIn("complete evidence allowlist for concrete claims in this section", page_capture["prompt"])
+
+        h1_strategy = copy_gen.format_strategy_brief_for_prompt(
+            strategy_brief,
+            output_type="page",
+            section_names=["intro"],
+            include_headline_direction=True,
+        )
+        self.assertIn("Lead with practical support for regulated teams.", h1_strategy)
+
+    def test_strategy_prompt_does_not_blindly_truncate_late_common_fields(self):
+        strategy_brief = {
+            "claims_to_avoid": ["Do not invent claims."],
+            "meta_direction": "Keep metadata natural.",
+            "recommended_angle": "A" * 700,
+            "brand_positioning": "B" * 700,
+            "proof_points_to_use": ["P" * 300 for _ in range(6)],
+            "page_goal": "G" * 700,
+            "audience_need": "N" * 700,
+            "search_intent": "I" * 700,
+            "competitor_gaps": ["late-field-marker"],
+        }
+
+        prompt = copy_gen.format_strategy_brief_for_prompt(strategy_brief, output_type="meta")
+
+        self.assertGreater(len(prompt), 1200)
+        self.assertIn("Do not invent claims.", prompt)
+        self.assertIn("Keep metadata natural.", prompt)
+        self.assertIn("late-field-marker", prompt)
+        self.assertLess(prompt.index("Claims to avoid"), prompt.index("Meta direction"))
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

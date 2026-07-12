@@ -3,7 +3,7 @@ import json
 import sys
 import types
 from contextlib import nullcontext
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 supabase_stub = types.ModuleType("supabase")
 supabase_stub.create_client = lambda *args, **kwargs: None
@@ -145,6 +145,59 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             if patch_combined_docx
             else nullcontext()
         )
+        page_context_patch = (
+            nullcontext()
+            if isinstance(all_in_one.scrape_page_context, Mock)
+            else patch.object(
+                all_in_one,
+                "scrape_page_context",
+                return_value={"success": False, "content": "", "error": "unavailable"},
+            )
+        )
+        scrape_url_patch = (
+            nullcontext()
+            if isinstance(all_in_one.scrape_url, Mock)
+            else patch.object(all_in_one, "scrape_url", return_value={"success": False, "body_text": ""})
+        )
+        strategy_patch = (
+            nullcontext()
+            if isinstance(all_in_one.generate_strategy_brief, Mock)
+            else patch.object(
+                all_in_one,
+                "generate_strategy_brief",
+                return_value={
+                    "search_intent": "Commercial",
+                    "page_goal": "Help the reader evaluate the page topic.",
+                    "primary_positioning": "Lead with the page's core value.",
+                    "headline_direction": "Use a clear, natural headline.",
+                    "meta_direction": "Summarise the page accurately.",
+                    "faq_direction": "Answer relevant decision questions.",
+                },
+            )
+        )
+        strategy_issues_patch = (
+            nullcontext()
+            if isinstance(all_in_one.strategy_brief_issues, Mock)
+            else patch.object(all_in_one, "strategy_brief_issues", return_value=[])
+        )
+        meta_repair_patch = (
+            nullcontext()
+            if isinstance(all_in_one.repair_meta_copy, Mock)
+            else patch.object(
+                all_in_one,
+                "repair_meta_copy",
+                side_effect=lambda **kwargs: kwargs["current"],
+            )
+        )
+        faq_repair_patch = (
+            nullcontext()
+            if isinstance(all_in_one.repair_faq_items, Mock)
+            else patch.object(
+                all_in_one,
+                "repair_faq_items",
+                side_effect=lambda **kwargs: kwargs["faq_items"],
+            )
+        )
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -155,6 +208,12 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                  "get_serp_data",
                  return_value=serp_data or {"organic": [], "paa_items": [], "ai_overview": ""},
              ), \
+             page_context_patch, \
+             scrape_url_patch, \
+             strategy_patch, \
+             strategy_issues_patch, \
+             meta_repair_patch, \
+             faq_repair_patch, \
              docx_patch:
             return all_in_one._process_single_row(
                 row=row,
@@ -441,7 +500,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 brand_profile=brand_profile,
             )
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "warning")
         brand_context = generate.call_args.kwargs["brand_context"]
         self.assertIn("BRAND CONTEXT:", brand_context)
         self.assertIn("- Voice: Plainspoken expert", brand_context)
@@ -539,6 +598,50 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         scrape_url.assert_not_called()
         self.assertEqual(generate_page.call_args.kwargs["client_existing_content"], scraped_content)
 
+    def test_page_copy_only_reads_owned_page_before_strategy_generation(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "jina_api_key": "jina-key",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "scrape_page_context",
+            return_value={"success": True, "content": "Owned page evidence."},
+        ) as owned_scrape, patch.object(
+            all_in_one,
+            "generate_strategy_brief",
+            return_value={},
+        ) as generate_strategy, patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={"hero": "# Industrial Dosing Systems\nUseful page copy.", "_word_count": 6},
+        ):
+            self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        owned_scrape.assert_called_once_with("jina-key", "https://example.com/industrial-dosing")
+        self.assertEqual(generate_strategy.call_args.kwargs["page_context"], "Owned page evidence.")
+
     def test_meta_generation_receives_scraped_page_context(self):
         settings = {
             **_settings(),
@@ -579,6 +682,62 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         context = generate_copy.call_args.kwargs["context"]
         self.assertIn("SCRAPED PAGE CONTENT:\nScraped page facts.", context)
         self.assertIn("CLIENT BRIEF:\nClient brief note.", context)
+
+    def test_meta_hard_rule_issues_are_repaired_before_page_generation(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "gen_page_copy": True,
+            "business_type": "b2b",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        repaired = {
+            "title": "Industrial Dosing Systems for Reliable Process Control",
+            "description": (
+                "Industrial facilities use reliable systems for accurate dosing, practical maintenance planning, "
+                "clearer process control, and dependable daily operations."
+            ),
+            "h1_optimised": "Industrial Dosing Systems for Process Control",
+        }
+
+        with patch.object(all_in_one, "generate_copy", return_value={
+            "title": "Example!",
+            "description": "Shop now!",
+            "h1_optimised": "Example Industrial Dosing Systems",
+        }), patch.object(all_in_one, "repair_meta_copy", return_value=repaired) as repair, patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={
+                "hero": "# Old Heading\nIndustrial facilities rely on systems that improve dosing accuracy.",
+                "details": "## Systems for Industrial Dosing\nClear maintenance responsibilities support daily work.",
+                "_word_count": 18,
+            },
+        ):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Current Process Control Services",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        repair.assert_called_once()
+        self.assertEqual(result["generated_title"], repaired["title"])
+        self.assertEqual(result["optimised_h1"], repaired["h1_optimised"])
+        self.assertTrue(result["section_results"]["hero"].startswith("# Industrial Dosing Systems for Process Control"))
+        hard_codes = {"exclamation_mark_present", "b2b_consumer_cta", "brand_name_in_h1"}
+        self.assertFalse(hard_codes.intersection(flag["code"] for flag in result["qa_flags"]))
 
     def test_faq_output_is_trimmed_to_requested_count(self):
         settings = {
@@ -622,6 +781,47 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         ])
         schema = json.loads(result["faq_schema"])
         self.assertEqual(len(schema["mainEntity"]), 3)
+
+    def test_duplicate_or_incomplete_faqs_get_one_bounded_repair(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "num_faqs": 2,
+            "business_type": "b2b",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        repaired = [
+            {"question": "How does industrial dosing support process control?", "answer": "It supports accurate, repeatable chemical handling.", "source": "generated"},
+            {"question": "What should facilities compare before choosing a system?", "answer": "Teams should compare process needs, maintenance access, and operating requirements.", "source": "generated"},
+        ]
+
+        with patch.object(all_in_one, "generate_faq", return_value=[
+            {"question": "Do you offer shipping", "answer": "Add to cart!"},
+            {"question": "Do you offer shipping", "answer": ""},
+        ]), patch.object(all_in_one, "repair_faq_items", return_value=repaired) as repair:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "num_faqs": 2,
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        repair.assert_called_once()
+        self.assertEqual(result["faq_items"], repaired)
+        hard_codes = {"duplicate_faq_question", "faq_answer_missing", "exclamation_mark_present", "b2b_consumer_cta"}
+        self.assertFalse(hard_codes.intersection(flag["code"] for flag in result["qa_flags"]))
 
     def test_row_gets_review_flags_for_forbidden_phrase_and_missing_requested_output(self):
         settings = {
@@ -947,7 +1147,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 ranked=ranked,
             )
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "warning")
         self.assertTrue(result["section_results"]["hero"].startswith("# Reliable Industrial Dosing Systems"))
         self.assertNotIn("page_h1_differs_from_meta_h1", [flag["code"] for flag in result["qa_flags"]])
 
@@ -1041,9 +1241,102 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 ranked=ranked,
             )
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "warning")
         self.assertNotIn("target_keyword_missing_from_meta", [flag["code"] for flag in result["qa_flags"]])
         self.assertNotIn("target_keyword_missing_from_page_copy", [flag["code"] for flag in result["qa_flags"]])
+
+    def test_new_quality_checks_report_hard_rules_and_advisory_seo_gaps(self):
+        flags = all_in_one._collect_qa_flags(
+            gen_meta=True,
+            gen_faqs=True,
+            gen_page_copy=True,
+            generated_title="Short!",
+            generated_description="Too short.",
+            optimised_h1="Example Services",
+            input_h1="Current Services",
+            primary_keyword="industrial dosing systems",
+            faq_items=[
+                {"question": "Do you offer shipping", "answer": "Add to cart today!"},
+                {"question": "Do you offer shipping", "answer": "Shipping is available."},
+            ],
+            section_results={
+                "hero": "# Example Services\nGeneral operational support for facilities.",
+                "details": "## Capabilities\nTeams receive practical guidance for daily work.",
+            },
+            forbidden_phrases=[],
+            brand_name="Example",
+            business_type="b2b",
+        )
+
+        by_code = {flag["code"]: flag for flag in flags}
+        expected = {
+            "exclamation_mark_present",
+            "b2b_consumer_cta",
+            "brand_name_in_h1",
+            "meta_title_outside_preferred_range",
+            "meta_description_outside_preferred_range",
+            "target_keyword_missing_from_h1",
+            "target_keyword_missing_from_first_100_words",
+            "target_keyword_missing_from_h2",
+            "duplicate_faq_question",
+            "faq_question_missing_question_mark",
+            "faq_risky_mutable_topic",
+        }
+        self.assertTrue(expected.issubset(by_code))
+        self.assertEqual(by_code["b2b_consumer_cta"]["severity"], "review")
+        self.assertEqual(by_code["target_keyword_missing_from_h1"]["severity"], "warning")
+        self.assertEqual(by_code["meta_title_outside_preferred_range"]["severity"], "warning")
+
+    def test_new_quality_checks_do_not_flag_compliant_natural_variants(self):
+        title = "Systems for Industrial Dosing in Reliable Facility Operations"
+        description = (
+            "Industrial facilities use reliable systems for accurate dosing, practical maintenance planning, "
+            "clearer process control, and dependable daily operations."
+        )
+        self.assertTrue(50 <= len(title) <= 80)
+        self.assertTrue(140 <= len(description) <= 180)
+
+        flags = all_in_one._collect_qa_flags(
+            gen_meta=True,
+            gen_faqs=True,
+            gen_page_copy=True,
+            generated_title=title,
+            generated_description=description,
+            optimised_h1="Industrial Dosing Systems for Process Control",
+            input_h1="Current Process Control Services",
+            primary_keyword="industrial dosing systems",
+            faq_items=[
+                {
+                    "question": "How does the service support process control?",
+                    "answer": "It helps operations teams plan maintenance and document routine work.",
+                },
+            ],
+            section_results={
+                "hero": (
+                    "# Industrial Dosing Systems for Process Control\n"
+                    "Industrial facilities rely on systems that improve dosing accuracy and maintenance planning."
+                ),
+                "details": "## Systems for Industrial Dosing\nClear responsibilities support consistent daily work.",
+            },
+            forbidden_phrases=[],
+            brand_name="Example",
+            business_type="b2b",
+        )
+
+        new_codes = {
+            "exclamation_mark_present",
+            "b2b_consumer_cta",
+            "brand_name_in_h1",
+            "meta_title_outside_preferred_range",
+            "meta_description_outside_preferred_range",
+            "target_keyword_missing_from_h1",
+            "target_keyword_missing_from_first_100_words",
+            "target_keyword_missing_from_h2",
+            "duplicate_faq_question",
+            "faq_question_missing_question_mark",
+            "faq_risky_mutable_topic",
+        }
+        self.assertFalse(new_codes.intersection(flag["code"] for flag in flags))
 
     def test_page_copy_result_stores_context_for_section_reruns(self):
         settings = {
@@ -1358,7 +1651,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         results = final_payload["results"]
         self.assertEqual(results[0]["status"], "ok")
         self.assertEqual(results[1]["status"], "review")
-        self.assertEqual(final_payload["failed_rows"], 1)
+        self.assertEqual(final_payload["failed_rows"], 0)
 
         flags = results[1]["qa_flags"]
         codes = [flag["code"] for flag in flags]

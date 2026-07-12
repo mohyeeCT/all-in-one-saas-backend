@@ -343,6 +343,12 @@ class GscClientTests(unittest.TestCase):
 
 
 class RuntimePathTests(unittest.TestCase):
+    def test_aio_settings_preserve_brand_consistency_controls(self):
+        settings = AIOSettings(brand_consistency_check=True, brand_consistency_threshold=82)
+
+        self.assertTrue(settings.brand_consistency_check)
+        self.assertEqual(settings.brand_consistency_threshold, 82)
+
     def test_initial_hydration_database_failure_returns_fixed_safe_503(self):
         private_detail = "postgres-password-and-host-private-detail"
         request = AIOJobRequest(
@@ -849,6 +855,9 @@ class RuntimePathTests(unittest.TestCase):
         persisted = final.payload["results"][0]
         self.assertEqual(persisted["section_results"]["hero"], "# Fresh technical SEO hero")
         self.assertEqual(persisted["docx_b64"], "c2FmZS1kb2N4")
+        self.assertIn("qa_flags", persisted)
+        self.assertEqual(persisted["status"], "review")
+        self.assertEqual(final.payload["failed_rows"], 0)
         self.assertNotIn(private_api_key, repr(final.payload))
         self.assertNotIn("_gsc_credentials", repr(final.payload))
 

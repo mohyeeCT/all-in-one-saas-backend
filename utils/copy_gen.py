@@ -12,9 +12,10 @@ SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT = 1200
 SECTION_AI_OVERVIEW_CHAR_LIMIT = 600
 SECTION_REVIEWER_NOTE_LIMIT = 5
 SECTION_REVIEWER_NOTE_CHAR_LIMIT = 300
-SECTION_STRATEGY_BRIEF_CHAR_LIMIT = 1200
-STRATEGY_BRIEF_MAX_TOKENS = 8192
+STRATEGY_BRIEF_MAX_TOKENS = 12288
+STRATEGY_BRIEF_CLAUDE_EFFORT = "medium"
 STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT = 2500
+STRATEGY_BRIEF_PAGE_CONTEXT_CHAR_LIMIT = 10000
 
 
 # ── Sanitiser ─────────────────────────────────────────────────────────────────
@@ -239,15 +240,49 @@ _STRATEGY_FIELD_LABELS = {
     "search_intent": "Search intent",
     "page_goal": "Page goal",
     "audience_need": "Audience need",
+    "primary_positioning": "Primary positioning",
+    "supporting_attributes": "Supporting attributes (do not lead the title or H1)",
+    "headline_direction": "Headline direction",
     "recommended_angle": "Recommended angle",
     "brand_positioning": "Brand positioning",
     "proof_points_to_use": "Proof points to use",
+    "verified_facts": "Verified facts",
+    "facts_to_avoid": "Unverified or conflicting facts to avoid",
     "claims_to_avoid": "Claims to avoid",
     "competitor_gaps": "Competitor gaps",
     "meta_direction": "Meta direction",
     "faq_direction": "FAQ direction",
     "section_guidance": "Section guidance",
 }
+
+_VERIFIED_FACT_SOURCES = {"current_page", "client_brief", "brand_profile"}
+_PROFILE_FACTS_REQUIRING_CURRENT_EVIDENCE = (
+    "location",
+    "rating",
+    "review",
+    "currently",
+    "coming soon",
+    "available",
+    "availability",
+    "delivery",
+    "pricing",
+    "price",
+    "hours",
+    "timeline",
+    "days to",
+    "months to",
+    "every location",
+    "all locations",
+    "rewards program",
+    "qr ",
+    "doordash",
+    "uber eats",
+    "franchis",
+    "order online",
+    "pickup",
+    "menu",
+    "halal",
+)
 
 
 def _clean_strategy_text(value, max_chars: int = 500) -> str:
@@ -270,12 +305,23 @@ def _clean_strategy_list(value, max_items: int = 6) -> list[str]:
     return items
 
 
-def _normalise_strategy_brief(data: dict) -> dict:
+def _evidence_text(value) -> str:
+    return re.sub(r"\s+", " ", sanitise(str(value or ""))).casefold().strip()
+
+
+def _profile_fact_requires_current_evidence(fact: str) -> bool:
+    fact_text = _evidence_text(fact)
+    return any(term in fact_text for term in _PROFILE_FACTS_REQUIRING_CURRENT_EVIDENCE)
+
+
+def _normalise_strategy_brief(data: dict, evidence_sources: dict | None = None) -> dict:
     brief = {}
     for key in (
         "search_intent",
         "page_goal",
         "audience_need",
+        "primary_positioning",
+        "headline_direction",
         "recommended_angle",
         "brand_positioning",
         "meta_direction",
@@ -285,21 +331,125 @@ def _normalise_strategy_brief(data: dict) -> dict:
         if text:
             brief[key] = text
 
-    for key in ("proof_points_to_use", "claims_to_avoid", "competitor_gaps"):
+    for key in ("supporting_attributes", "claims_to_avoid", "competitor_gaps"):
         items = _clean_strategy_list(data.get(key))
         if items:
             brief[key] = items
 
+    fact_contract_present = "verified_facts" in data
+    verified_facts = []
+    verified_fact_keys = set()
+    verified_fact_by_id = {}
+    rejected_facts = []
+    evidence = evidence_sources or {}
+    for item in (data.get("verified_facts") or [])[:12]:
+        if not isinstance(item, dict):
+            continue
+        fact = _clean_strategy_text(item.get("fact"), 400)
+        fact_id = _clean_strategy_text(item.get("id"), 24) or f"F{len(verified_facts) + 1}"
+        source = _clean_strategy_text(item.get("source"), 40).casefold()
+        source_excerpt = _clean_strategy_text(item.get("source_excerpt"), 300)
+        source_text = evidence.get(source, "")
+        excerpt_is_supported = bool(
+            source_excerpt
+            and source_text
+            and _evidence_text(source_excerpt) in _evidence_text(source_text)
+        )
+        if (
+            not fact
+            or source not in _VERIFIED_FACT_SOURCES
+            or (evidence_sources is not None and not excerpt_is_supported)
+            or (source == "brand_profile" and _profile_fact_requires_current_evidence(fact))
+        ):
+            if fact:
+                rejected_facts.append(fact)
+            continue
+        fact_key = _evidence_text(fact)
+        if fact_key in verified_fact_keys:
+            continue
+        fact_id_key = fact_id.casefold()
+        if fact_id_key in verified_fact_by_id:
+            fact_id = f"F{len(verified_facts) + 1}"
+            fact_id_key = fact_id.casefold()
+        verified_fact_keys.add(fact_key)
+        verified_fact_by_id[fact_id_key] = fact
+        verified_facts.append({
+            "id": fact_id,
+            "fact": fact,
+            "source": source,
+            "source_excerpt": source_excerpt,
+        })
+    if verified_facts:
+        brief["verified_facts"] = verified_facts
+
+    facts_to_avoid = _clean_strategy_list(data.get("facts_to_avoid"), max_items=12)
+    facts_to_avoid_keys = {_evidence_text(item) for item in facts_to_avoid}
+    for fact in rejected_facts:
+        fact_key = _evidence_text(fact)
+        if fact_key in verified_fact_keys:
+            continue
+        if fact_key not in facts_to_avoid_keys:
+            facts_to_avoid.append(fact)
+            facts_to_avoid_keys.add(fact_key)
+    if facts_to_avoid:
+        brief["facts_to_avoid"] = facts_to_avoid[:12]
+
+    proof_points = []
+    if fact_contract_present:
+        for fact_id in _clean_strategy_list(data.get("proof_fact_ids"), max_items=12):
+            fact = verified_fact_by_id.get(fact_id.casefold())
+            if fact and fact not in proof_points:
+                proof_points.append(fact)
+        if not proof_points:
+            proof_points = [
+                item
+                for item in _clean_strategy_list(data.get("proof_points_to_use"), max_items=12)
+                if _evidence_text(item) in verified_fact_keys
+            ]
+    else:
+        proof_points = _clean_strategy_list(data.get("proof_points_to_use"), max_items=12)
+    if proof_points:
+        brief["proof_points_to_use"] = proof_points
+    proof_point_keys = {_evidence_text(item) for item in proof_points}
+
     section_items = []
+    owned_proof_points = set()
     raw_sections = data.get("section_guidance") or []
     if not isinstance(raw_sections, list):
         raw_sections = [raw_sections]
     for item in raw_sections[:10]:
         if isinstance(item, dict):
             section = _clean_strategy_text(item.get("section") or item.get("name") or item.get("label"), 80)
+            responsibility = _clean_strategy_text(item.get("responsibility") or item.get("purpose"), 300)
             guidance = _clean_strategy_text(item.get("guidance") or item.get("direction") or item.get("notes"), 400)
-            if guidance:
-                section_items.append({"section": section, "guidance": guidance})
+            proof_points = []
+            section_proof_candidates = []
+            if fact_contract_present:
+                for fact_id in _clean_strategy_list(item.get("proof_fact_ids"), max_items=4):
+                    fact = verified_fact_by_id.get(fact_id.casefold())
+                    if fact:
+                        section_proof_candidates.append(fact)
+                if not section_proof_candidates:
+                    section_proof_candidates = _clean_strategy_list(item.get("proof_points"), max_items=4)
+            else:
+                section_proof_candidates = _clean_strategy_list(item.get("proof_points"), max_items=4)
+            for proof_point in section_proof_candidates:
+                proof_key = " ".join(proof_point.casefold().split())
+                if fact_contract_present and _evidence_text(proof_point) not in proof_point_keys:
+                    continue
+                if proof_key in owned_proof_points:
+                    continue
+                owned_proof_points.add(proof_key)
+                proof_points.append(proof_point)
+            if responsibility or guidance or proof_points:
+                section_item = {"section": section}
+                if responsibility:
+                    section_item["responsibility"] = responsibility
+                if guidance:
+                    section_item["guidance"] = guidance
+                if proof_points:
+                    section_item["proof_points"] = proof_points
+                section_items.append(section_item)
         else:
             text = _clean_strategy_text(item, 400)
             if text:
@@ -307,29 +457,149 @@ def _normalise_strategy_brief(data: dict) -> dict:
     if section_items:
         brief["section_guidance"] = section_items
 
+    if fact_contract_present and brief.get("proof_points_to_use"):
+        assigned_proof_keys = {
+            _evidence_text(proof_point)
+            for section_item in section_items
+            for proof_point in section_item.get("proof_points", [])
+        }
+        assigned_proof_points = [
+            proof_point
+            for proof_point in brief["proof_points_to_use"]
+            if _evidence_text(proof_point) in assigned_proof_keys
+        ]
+        if assigned_proof_points:
+            brief["proof_points_to_use"] = assigned_proof_points
+        else:
+            brief.pop("proof_points_to_use", None)
+
     return brief
 
 
-def format_strategy_brief_for_prompt(strategy_brief: dict | None) -> str:
+def strategy_brief_issues(
+    brief: dict | None,
+    template_sections: list | None = None,
+    required_outputs: list[str] | set[str] | None = None,
+) -> list[str]:
+    """Return structural issues that make a per-row brief unsafe to trust as a contract."""
+    values = brief or {}
+    required = set(required_outputs or {"meta", "faq", "page_copy"})
+    issues = []
+    if not values.get("search_intent"):
+        issues.append("Search intent is missing.")
+    if not values.get("page_goal"):
+        issues.append("Page goal is missing.")
+    if not (values.get("primary_positioning") or values.get("recommended_angle") or values.get("brand_positioning")):
+        issues.append("Primary positioning is missing.")
+    if {"meta", "page_copy"}.intersection(required) and not values.get("headline_direction"):
+        issues.append("Headline direction is missing.")
+    if "meta" in required and not values.get("meta_direction"):
+        issues.append("Meta direction is missing.")
+    if "faq" in required and not values.get("faq_direction"):
+        issues.append("FAQ direction is missing.")
+
+    expected_sections = {
+        _clean_strategy_text(section.get("name"), 80).casefold()
+        for section in (template_sections or [])
+        if isinstance(section, dict) and _clean_strategy_text(section.get("name"), 80)
+    }
+    if "page_copy" in required and expected_sections:
+        covered_sections = {
+            _clean_strategy_text(item.get("section"), 80).casefold()
+            for item in (values.get("section_guidance") or [])
+            if isinstance(item, dict) and _clean_strategy_text(item.get("section"), 80)
+        }
+        missing_sections = sorted(expected_sections - covered_sections)
+        if missing_sections:
+            issues.append("Section contracts are missing for: " + ", ".join(missing_sections) + ".")
+    return issues
+
+
+def format_strategy_brief_for_prompt(
+    strategy_brief: dict | None,
+    *,
+    output_type: str = "",
+    section_names: list[str] | None = None,
+    include_headline_direction: bool = False,
+) -> str:
     if not strategy_brief:
         return ""
 
+    strategy_values = dict(strategy_brief)
+    if not strategy_values.get("primary_positioning"):
+        fallback_positioning = strategy_values.get("recommended_angle") or strategy_values.get("brand_positioning")
+        if fallback_positioning:
+            strategy_values["primary_positioning"] = fallback_positioning
+
+    field_order = ["claims_to_avoid", "facts_to_avoid", "primary_positioning", "supporting_attributes"]
+    if output_type == "meta":
+        field_order.extend(("verified_facts", "headline_direction", "meta_direction", "proof_points_to_use"))
+    elif output_type == "faq":
+        field_order.extend(("verified_facts", "faq_direction", "proof_points_to_use"))
+    elif output_type == "page":
+        if include_headline_direction:
+            field_order.append("headline_direction")
+        field_order.append("section_guidance")
+    else:
+        field_order.extend((
+            "headline_direction",
+            "meta_direction",
+            "faq_direction",
+            "verified_facts",
+            "proof_points_to_use",
+            "section_guidance",
+        ))
+    field_order.extend((
+        "page_goal",
+        "audience_need",
+        "search_intent",
+        "competitor_gaps",
+    ))
+
+    matching_sections = set()
+    for name in section_names or []:
+        cleaned_name = _clean_strategy_text(name, 80)
+        if cleaned_name:
+            matching_sections.add(cleaned_name.casefold())
+    filter_sections = output_type == "page" and section_names is not None
     lines = []
-    for key in _STRATEGY_FIELD_LABELS:
-        value = strategy_brief.get(key)
+    for key in field_order:
+        value = strategy_values.get(key)
         if not value:
             continue
         label = _STRATEGY_FIELD_LABELS[key]
-        if key == "section_guidance" and isinstance(value, list):
+        if key == "verified_facts" and isinstance(value, list):
+            fact_lines = []
+            for item in value[:12]:
+                if not isinstance(item, dict):
+                    continue
+                fact = _clean_strategy_text(item.get("fact"), 400)
+                source = _clean_strategy_text(item.get("source"), 40).replace("_", " ")
+                if fact:
+                    fact_lines.append(f"- {fact} (source: {source or 'verified input'})")
+            if fact_lines:
+                lines.append(f"{label}:\n" + "\n".join(fact_lines))
+        elif key == "section_guidance" and isinstance(value, list):
             section_lines = []
             for item in value[:10]:
                 if isinstance(item, dict):
                     section = _clean_strategy_text(item.get("section"), 80)
+                    if filter_sections and section.casefold() not in matching_sections:
+                        continue
+                    responsibility = _clean_strategy_text(item.get("responsibility"), 300)
                     guidance = _clean_strategy_text(item.get("guidance"), 400)
+                    proof_points = _clean_strategy_list(item.get("proof_points"), max_items=4)
+                    details = []
+                    if responsibility:
+                        details.append(f"  Responsibility: {responsibility}")
                     if guidance:
-                        prefix = f"{section}: " if section else ""
-                        section_lines.append(f"- {prefix}{guidance}")
-                else:
+                        details.append(f"  Guidance: {guidance}")
+                    if proof_points:
+                        details.append("  Owned proof points:")
+                        details.extend(f"    - {proof_point}" for proof_point in proof_points)
+                    if details:
+                        section_lines.append(f"- Section: {section or 'Unspecified'}\n" + "\n".join(details))
+                elif not filter_sections:
                     text = _clean_strategy_text(item, 400)
                     if text:
                         section_lines.append(f"- {text}")
@@ -346,7 +616,7 @@ def format_strategy_brief_for_prompt(strategy_brief: dict | None) -> str:
 
     if not lines:
         return ""
-    return "STRATEGY BRIEF:\n" + "\n".join(lines)[:SECTION_STRATEGY_BRIEF_CHAR_LIMIT]
+    return "STRATEGY BRIEF:\n" + "\n".join(lines)
 
 
 def _build_section_prompt(
@@ -394,14 +664,19 @@ def _build_section_prompt(
 
     existing_block = ""
     if client_existing_content and client_existing_content.strip():
-        existing_block = f"\nClient's existing content on this topic (extract useful facts or claims, do not copy):\n{client_existing_content[:SECTION_EXISTING_CONTENT_CHAR_LIMIT]}"
+        existing_block = f"\nClient's existing content on this topic (context only; concrete facts must also appear in this section's owned proof points):\n{client_existing_content[:SECTION_EXISTING_CONTENT_CHAR_LIMIT]}"
 
     brief_block = ""
     if client_brief and client_brief.strip():
         brief_block = f"\nClient brief notes:\n{client_brief[:SECTION_CLIENT_BRIEF_CHAR_LIMIT]}"
 
     strategy_block = ""
-    formatted_strategy = format_strategy_brief_for_prompt(strategy_brief)
+    formatted_strategy = format_strategy_brief_for_prompt(
+        strategy_brief,
+        output_type="page",
+        section_names=[section.get("name", "")],
+        include_headline_direction=section.get("heading_level", "h2") == "h1",
+    )
     if formatted_strategy:
         strategy_block = f"\n{formatted_strategy}"
 
@@ -468,6 +743,11 @@ Hard rules for all output:
 {forbidden_block}
 - You may adjust word order, add small connecting words, or use a close grammatical variation when the exact keyword phrase would sound awkward.
 - Strategy brief priorities outrank exact keyword phrasing.
+- Primary positioning, headline direction, and claims to avoid are contract requirements, not optional suggestions.
+- Supporting attributes must remain supporting. Do not move one into the H1 unless the headline direction explicitly requires it.
+- Use only the proof points assigned to this section in its section contract. Do not borrow proof owned by another section.
+- Treat owned proof points as the complete evidence allowlist for concrete claims in this section. Do not infer adjacent details such as recipes, counts, ratings, timelines, locations, availability, or operational practices.
+- Never use a fact listed under unverified or conflicting facts to avoid.
 - Do not turn search-query wording into headings or sentence openings; rewrite it into natural language when needed.
 - Do not force the keyword at the beginning of the first sentence.
 - A keyword used awkwardly is worse than not using it. Quality of integration matters more than quantity.
@@ -476,7 +756,7 @@ Hard rules for all output:
 - Treat proof points as a page-wide budget. Use each proof point in one best-fit section unless repeating it is essential for accuracy or conversion.
 - Before using a brand claim, origin detail, award, location phrase, or differentiator, check the earlier page copy and avoid restating it in similar words.
 - Do not write phrases like 'this page', 'this collection', 'this category', 'this range', or 'on this page'. Name the product, category, service, topic, brand, or location directly.
-- Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims unless they are supported by client existing content, client brief, or brand context.
+- Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims. Use them only when they appear in this section's owned proof points.
 - Competitor context is topic inspiration, not proof of client facts.
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
@@ -528,7 +808,13 @@ def _extract_anthropic_stream_text(stream) -> str:
     return text
 
 
-def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
+def _call_claude(
+    api_key: str,
+    prompt: str,
+    max_tokens: int = 1500,
+    model: str = None,
+    effort: str | None = None,
+) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     resolved_model = model or DEFAULT_MODELS["Claude"]
@@ -536,6 +822,11 @@ def _call_claude(api_key: str, prompt: str, max_tokens: int = 1500, model: str =
         **_anthropic_request_options(resolved_model, max_tokens),
         "messages": [{"role": "user", "content": prompt}],
     }
+    if effort:
+        request["extra_body"] = {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": effort},
+        }
     if max_tokens > CLAUDE_STREAMING_TOKEN_THRESHOLD:
         with client.messages.stream(**request) as stream:
             return _extract_anthropic_stream_text(stream)
@@ -727,7 +1018,7 @@ def repair_repeated_page_copy(
     api_key: str,
     model: str = None,
 ) -> dict:
-    """Rewrite only sections containing repeated phrases, in one bounded provider call."""
+    """Rewrite only sections containing supplied deterministic issue phrases."""
     fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
@@ -750,9 +1041,17 @@ def repair_repeated_page_copy(
         for section in (template or {}).get("sections", [])
         if section.get("name") in affected
     }
-    prompt = f"""You are performing one focused editorial repair on page copy.
+    repair_strategy = format_strategy_brief_for_prompt(
+        strategy_brief,
+        output_type="page",
+        section_names=list(affected),
+        include_headline_direction=any(
+            rules.get("heading_level") == "h1" for rules in section_rules.values()
+        ),
+    )
+    prompt = f"""You are performing one focused deterministic-rule repair on page copy.
 
-Repeated phrases to reduce:
+Issue phrases or characters to remove or reduce:
 {json.dumps(phrases, ensure_ascii=False)}
 
 Affected sections:
@@ -761,12 +1060,14 @@ Affected sections:
 Section responsibilities:
 {json.dumps(section_rules, ensure_ascii=False)}
 
-{format_strategy_brief_for_prompt(strategy_brief)}
+{repair_strategy}
 
 Rules:
 - Return a JSON object with exactly the same affected section keys and rewritten Markdown values.
 - Preserve every heading level and the original meaning, supported facts, brand casing, and approximate section word count.
 - Keep each proof point in its single best-fit location. Remove redundant restatements rather than replacing them with synonyms.
+- Remove forbidden punctuation, forbidden phrases, or unsuitable CTAs when they are listed as issues.
+- Treat each section's owned proof points as its complete evidence allowlist. Never restore or introduce a fact listed under facts to avoid.
 - Make transitions natural and vary sentence structure. Do not introduce new claims, facts, offers, or keyword variants.
 - Do not change sections that were not supplied.
 - Never use em dashes or exclamation marks.
@@ -832,7 +1133,7 @@ def _build_faq_prompt(
         if bp.get("products_services"):bp_lines.append(f"Products/services: {bp['products_services']}")
         if bp.get("example_copy"):     bp_lines.append(f"Example copy to emulate in style (not content):\n{bp['example_copy']}")
     brand_profile_block = ("BRAND CONTEXT:\n" + "\n".join(bp_lines)) if bp_lines else ""
-    strategy_block = format_strategy_brief_for_prompt(strategy_brief)
+    strategy_block = format_strategy_brief_for_prompt(strategy_brief, output_type="faq")
 
     paa_lines = []
     for item in paa_items[:num_faqs + 3]:
@@ -877,7 +1178,7 @@ Rules:
 - Questions and answers must be specific to this page.
 - Use AI Overview and PAA data as research signals, but do not copy or rephrase questions verbatim.
 - Only use AIO/PAA questions if genuinely relevant to that specific page.
-- Never use forbidden phrases or em dashes.
+- Never use forbidden phrases, em dashes, or exclamation marks.
 - Lead each answer with a direct, complete response in the first sentence.
 - Match answer length to question complexity:
   - Simple yes/no or definition questions: 1-2 direct sentences, about 20-45 words.
@@ -889,6 +1190,8 @@ Rules:
 - Avoid using more than 2 questions with the same starter word in one page's FAQ set.
 - Do not force awkward starters. Choose starters that match the page, search intent, and answer type.
 - Strategy brief priorities outrank exact keyword phrasing.
+- Primary positioning and supporting attributes must keep their assigned hierarchy across the FAQ set.
+- Verified facts are the complete evidence allowlist for concrete brand claims. Do not infer adjacent details or use any fact listed as unverified or conflicting.
 - Do not turn search-query wording into FAQ questions; rewrite awkward exact keywords into natural question language.
 - No filler openers (never: "Great question", "Certainly", "Of course", "Absolutely").
 - Return only a JSON array of objects with question, answer, and source keys.
@@ -1294,11 +1597,13 @@ def generate_strategy_brief(
     h1: str = "",
     brand_context: str = "",
     client_brief: str = "",
+    evidence_client_brief: str = "",
     page_context: str = "",
     ai_overview: str = "",
     paa_questions: list | None = None,
     competitor_section_map: dict | None = None,
     template_sections: list | None = None,
+    required_outputs: list[str] | None = None,
     model: str = None,
 ) -> dict:
     fn = PROVIDER_FN.get(provider)
@@ -1324,7 +1629,7 @@ Client brief:
 {client_brief[:STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT] or "Not available"}
 
 Current page context:
-{page_context[:STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT] or "Not available"}
+{page_context[:STRATEGY_BRIEF_PAGE_CONTEXT_CHAR_LIMIT] or "Not available"}
 
 Google AI Overview:
 {ai_overview[:STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT] or "Not available"}
@@ -1340,8 +1645,23 @@ Template sections:
 
 Rules:
 - Do not invent facts, policies, guarantees, pricing, certifications, availability, outcomes, or performance claims.
+- Evidence precedence is: current owned-page content first, explicit client brief second, and Brand Profile last.
+- If the current page conflicts with the Brand Profile, use the current page and place the conflicting profile claim in facts_to_avoid.
+- Brand Profile facts about current operations or mutable details, including locations, ratings, reviews, menu, availability, ordering, delivery, certification, rewards, and timelines, are not verified unless the current page or explicit client brief confirms them.
+- Do not infer a number by counting a list. If a current count is not stated explicitly, omit it.
+- Every verified fact must include an exact supporting excerpt copied from current page context, the explicit client brief, or Brand Profile.
+- AI Overview, PAA, competitor signals, niche context, tone guidance, and example copy are never evidence about this client.
 - Use competitors as gap/context signals only, not as proof about this client.
 - If proof is missing, say what kind of proof is needed instead of inventing it.
+- Choose one primary positioning idea that leads the whole page. Supporting attributes may reinforce it but must not replace it in the title or H1.
+- Headline direction must describe the message hierarchy, not provide exact title or H1 copy.
+- Never instruct a section to preserve the current H1 or the exact target-keyword wording.
+- Give every section one distinct responsibility.
+- Select page-level proof with proof_fact_ids, using only IDs from verified_facts.
+- Assign every selected proof ID to exactly one section through that section's proof_fact_ids. Do not repeat an ID across section contracts.
+- Primary positioning, supporting attributes, and guidance may contain concrete claims only when those claims appear in verified_facts.
+- Give the hero or first H1 section no more than one owned proof point.
+- Section guidance must not prescribe exact heading copy. Only headline_direction may direct the title or H1.
 - Keep the brief tactical and usable by copywriters.
 - Return only strict JSON.
 
@@ -1350,22 +1670,75 @@ JSON schema:
   "search_intent": "one sentence",
   "page_goal": "one sentence",
   "audience_need": "one sentence",
-  "recommended_angle": "one sentence",
-  "brand_positioning": "one sentence",
-  "proof_points_to_use": ["supported proof point", "..."],
+  "primary_positioning": "the single idea that must lead the page",
+  "supporting_attributes": ["important supporting message that must not replace the primary positioning", "..."],
+  "headline_direction": "message hierarchy for the title and H1, without exact copy",
+  "verified_facts": [
+    {{
+      "id": "F1",
+      "fact": "concise factual statement",
+      "source": "current_page | client_brief | brand_profile",
+      "source_excerpt": "exact supporting words from that source"
+    }}
+  ],
+  "facts_to_avoid": ["stale, conflicting, inferred, or unsupported fact", "..."],
+  "proof_fact_ids": ["F1", "F2"],
   "claims_to_avoid": ["risky or unsupported claim", "..."],
   "competitor_gaps": ["gap or opportunity", "..."],
   "meta_direction": "one sentence",
   "faq_direction": "one sentence",
   "section_guidance": [
-    {{"section": "section_name", "guidance": "specific instruction for this section"}}
+    {{
+      "section": "section_name",
+      "responsibility": "the section's one distinct job",
+      "guidance": "specific instruction without exact heading copy",
+      "proof_fact_ids": ["F1"]
+    }}
   ]
 }}
 """
 
-    raw = fn(api_key, prompt, max_tokens=STRATEGY_BRIEF_MAX_TOKENS, model=resolved_model)
-    result = _parse_json_object(raw, "Strategy brief response must be a JSON object")
-    return _normalise_strategy_brief(result)
+    provider_options = {
+        "max_tokens": STRATEGY_BRIEF_MAX_TOKENS,
+        "model": resolved_model,
+    }
+    if provider == "Claude" and fn is _call_claude:
+        provider_options["effort"] = STRATEGY_BRIEF_CLAUDE_EFFORT
+    evidence_sources = {
+        "current_page": page_context,
+        "client_brief": evidence_client_brief,
+        "brand_profile": brand_context,
+    }
+
+    raw = fn(api_key, prompt, **provider_options)
+    try:
+        result = _parse_json_object(raw, "Strategy brief response must be a JSON object")
+        brief = _normalise_strategy_brief(result, evidence_sources=evidence_sources)
+        issues = strategy_brief_issues(brief, template_sections, required_outputs)
+    except Exception:
+        brief = {}
+        issues = ["The first response was not valid strategy JSON."]
+
+    if not issues:
+        return brief
+
+    repair_prompt = f"""{prompt}
+
+CORRECTION REQUIRED:
+The previous strategy response was incomplete or invalid.
+Problems to fix:
+{chr(10).join(f'- {issue}' for issue in issues)}
+
+Previous response:
+{raw[:6000]}
+
+Return one complete replacement JSON object matching the requested schema. Do not explain the correction."""
+    repaired_raw = fn(api_key, repair_prompt, **provider_options)
+    repaired_result = _parse_json_object(repaired_raw, "Repaired strategy brief response must be a JSON object")
+    repaired_brief = _normalise_strategy_brief(repaired_result, evidence_sources=evidence_sources)
+
+    repaired_issues = strategy_brief_issues(repaired_brief, template_sections, required_outputs)
+    return repaired_brief if len(repaired_issues) <= len(issues) else brief
 
 
 def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
@@ -1375,7 +1748,7 @@ def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
 
     resolved_model = kwargs.get("model") or DEFAULT_MODELS.get(provider)
     brand_context = kwargs.get("brand_context", "") or "BRAND CONTEXT:\nNone"
-    strategy_block = format_strategy_brief_for_prompt(kwargs.get("strategy_brief"))
+    strategy_block = format_strategy_brief_for_prompt(kwargs.get("strategy_brief"), output_type="meta")
     prompt = f"""Write SEO metadata for this page.
 
 URL: {kwargs.get("url", "")}
@@ -1396,8 +1769,12 @@ Rules:
 - H1 has no hard character limit but should aim for under 80 characters.
 - Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
 - Include the target keyword naturally, ideally near the start where it fits.
-- Never use forbidden phrases or em dashes.
-- Strategy brief priorities outrank exact keyword phrasing.
+- Never use forbidden phrases, em dashes, or exclamation marks.
+- The H1 must not contain the brand name. The title or description may use it when appropriate.
+- On B2B pages, never use consumer CTAs such as "shop now", "add to cart", "grab yours", or "buy today".
+- Primary positioning, headline direction, and claims to avoid are contract requirements and outrank exact keyword phrasing.
+- Supporting attributes must not lead the title or H1 unless headline direction explicitly requires it.
+- Verified facts are the complete evidence allowlist for concrete brand claims. Do not infer adjacent details or use any fact listed as unverified or conflicting.
 - Do not turn search-query wording into an awkward H1; rewrite exact keywords into natural headline language when needed.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
@@ -1410,6 +1787,144 @@ Rules:
         "description": sanitise(result.get("description", ""), brand_name),
         "h1_optimised": sanitise(result.get("h1_optimised", ""), brand_name),
     }
+
+
+def repair_meta_copy(
+    provider: str,
+    api_key: str,
+    *,
+    current: dict,
+    issues: list[str],
+    url: str,
+    keyword: str,
+    page_type: str,
+    business_type: str,
+    brand_name: str,
+    input_h1: str,
+    forbidden_phrases: str = "",
+    context: str = "",
+    brand_context: str = "",
+    strategy_brief: dict | None = None,
+    model: str = None,
+) -> dict:
+    """Run one bounded Meta correction while preserving the row strategy contract."""
+    fn = PROVIDER_FN.get(provider)
+    if not fn:
+        raise ValueError(f"Unknown provider: {provider}")
+    strategy_block = format_strategy_brief_for_prompt(strategy_brief, output_type="meta")
+    brand_block = brand_context or "BRAND CONTEXT:\nNone"
+    prompt = f"""Repair this metadata bundle. Change only what is needed to resolve the listed issues.
+
+URL: {url}
+Target keyword: {keyword}
+Page type: {page_type}
+Business type: {business_type}
+Brand name: {brand_name or "N/A"}
+Input H1: {input_h1 or "Not provided"}
+Forbidden phrases: {forbidden_phrases or "None"}
+
+Current metadata:
+{json.dumps(current or {}, ensure_ascii=False)}
+
+Issues to fix:
+{chr(10).join(f'- {issue}' for issue in issues)}
+
+{brand_block}
+{strategy_block}
+
+Supporting page context:
+{context[:8000] or "Not available"}
+
+Rules:
+- Preserve the strategy's primary positioning and headline direction.
+- Use verified facts as the complete allowlist for concrete brand claims.
+- Keep the title at or below 90 characters and the description at or below 200 characters.
+- Use a natural H1 below about 80 characters. Never put the brand name in the H1.
+- Do not force awkward search-query wording into the H1.
+- Never use forbidden phrases, em dashes, or exclamation marks.
+- On B2B pages, do not use consumer CTAs.
+- Return only JSON with title, description, and h1_optimised.
+"""
+    raw = fn(
+        api_key,
+        prompt,
+        max_tokens=META_MAX_TOKENS,
+        model=model or DEFAULT_MODELS.get(provider),
+    )
+    result = _parse_json_object(raw, "Meta repair response must be a JSON object")
+    return {
+        "title": sanitise(result.get("title", ""), brand_name),
+        "description": sanitise(result.get("description", ""), brand_name),
+        "h1_optimised": sanitise(result.get("h1_optimised", ""), brand_name),
+    }
+
+
+def repair_faq_items(
+    provider: str,
+    api_key: str,
+    *,
+    faq_items: list,
+    issues: list[str],
+    keyword: str,
+    page_type: str,
+    business_type: str,
+    brand_name: str,
+    num_faqs: int,
+    page_context: str = "",
+    forbidden_phrases: str = "",
+    strategy_brief: dict | None = None,
+    model: str = None,
+) -> list:
+    """Repair a generated FAQ set once without changing its evidence contract."""
+    fn = PROVIDER_FN.get(provider)
+    if not fn:
+        raise ValueError(f"Unknown provider: {provider}")
+    strategy_block = format_strategy_brief_for_prompt(strategy_brief, output_type="faq")
+    prompt = f"""Repair this FAQ set. Keep useful questions and replace only items needed to resolve the issues.
+
+Target keyword: {keyword}
+Page type: {page_type}
+Business type: {business_type}
+Brand name: {brand_name or "N/A"}
+Required FAQ count: {num_faqs}
+Forbidden phrases: {forbidden_phrases or "None"}
+
+Current FAQs:
+{json.dumps(faq_items or [], ensure_ascii=False)}
+
+Issues to fix:
+{chr(10).join(f'- {issue}' for issue in issues)}
+
+{strategy_block}
+
+Owned-page context:
+{page_context[:8000] or "Not available"}
+
+Rules:
+- Return exactly {num_faqs} distinct FAQ objects with question, answer, and source keys.
+- Every question must be natural, page-specific, and end with a question mark.
+- Every answer must lead with a direct response.
+- Verified facts are the complete allowlist for concrete brand claims.
+- Never invent policies, availability, pricing, guarantees, outcomes, or operational details.
+- Never use forbidden phrases, em dashes, exclamation marks, or consumer CTAs on B2B pages.
+- Return only a JSON array.
+"""
+    raw = fn(
+        api_key,
+        prompt,
+        max_tokens=FAQ_MAX_TOKENS,
+        model=model or DEFAULT_MODELS.get(provider),
+    )
+    repaired = _parse_faq_json(raw)
+    return [
+        {
+            "question": sanitise(item.get("question", ""), brand_name),
+            "answer": sanitise(item.get("answer", ""), brand_name),
+            "source": item.get("source", "generated"),
+        }
+        for item in repaired
+        if isinstance(item, dict)
+    ][:num_faqs]
 
 
 def score_brand_consistency(

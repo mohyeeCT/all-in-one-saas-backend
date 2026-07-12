@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from google.auth.exceptions import RefreshError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from auth import get_current_user, get_supabase
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
@@ -29,7 +29,7 @@ from utils.templates import get_template, get_templates_for_page_type, parse_cus
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
     generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
-    sanitise, score_brand_consistency
+    repair_faq_items, repair_meta_copy, sanitise, score_brand_consistency, strategy_brief_issues
 )
 from utils.docx_export import build_docx
 
@@ -82,6 +82,28 @@ _REPEATED_PHRASE_STOPWORDS = _CONTENT_GAP_STOPWORDS | {
     "our", "over", "than", "that", "these", "they", "through", "use", "used",
     "using", "was", "way", "will", "you",
 }
+
+_QA_SEVERITIES = {"warning", "review", "error"}
+_B2B_CONSUMER_CTAS = (
+    "shop now",
+    "add to cart",
+    "grab yours",
+    "buy today",
+    "buy now",
+    "order yours",
+)
+_FAQ_RISKY_TOPICS = (
+    "shipping",
+    "delivery",
+    "return policy",
+    "returns",
+    "refund",
+    "warranty",
+    "guarantee",
+    "in stock",
+    "availability",
+    "pricing",
+)
 
 
 def _safe_gsc_auth_method(settings: dict, gsc_credentials: dict | None, gsc_client=None) -> str:
@@ -231,13 +253,58 @@ def _normalise_phrase(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
-def _add_qa_flag(flags: list[dict], code: str, message: str, output: str = "", phrase: str = ""):
-    flag = {"code": code, "message": message}
+def _add_qa_flag(
+    flags: list[dict],
+    code: str,
+    message: str,
+    output: str = "",
+    phrase: str = "",
+    severity: str = "review",
+):
+    flag = {
+        "code": code,
+        "message": message,
+        "severity": severity if severity in _QA_SEVERITIES else "review",
+    }
     if output:
         flag["output"] = output
     if phrase:
         flag["phrase"] = phrase
     flags.append(flag)
+
+
+def _qa_status(flags: list[dict]) -> str:
+    severities = {str(flag.get("severity") or "review") for flag in (flags or [])}
+    if "error" in severities:
+        return "error"
+    if "review" in severities:
+        return "review"
+    if "warning" in severities:
+        return "warning"
+    return "ok"
+
+
+def _result_failed(result: dict) -> bool:
+    status = str((result or {}).get("status") or "")
+    return bool((result or {}).get("error")) or status == "error" or status.startswith("skipped:")
+
+
+def _add_strategy_qa_flag(
+    flags: list[dict],
+    strategy_status: str,
+    strategy_issues: list[str] | None = None,
+):
+    if strategy_status == "ready" or strategy_status == "not_requested":
+        return
+    issues = [str(issue).strip() for issue in (strategy_issues or []) if str(issue).strip()]
+    message = (
+        "Strategy brief was unavailable; outputs were generated without the shared strategy layer."
+        if strategy_status == "unavailable"
+        else "Strategy brief is incomplete and needs review."
+    )
+    _add_qa_flag(flags, "strategy_brief_" + strategy_status, message, "strategy", severity="review")
+    if issues:
+        flags[-1]["details"] = issues[:6]
 
 
 def _normalise_similarity_text(text: str) -> list[str]:
@@ -482,6 +549,323 @@ def _keyword_present(keyword: str, text: str) -> bool:
     return matched >= required
 
 
+def _keyword_token_root(token: str) -> str:
+    token = str(token or "").lower()
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _qa_keyword_present(keyword: str, text: str) -> bool:
+    if _keyword_present(keyword, text):
+        return True
+    meaningful_tokens = _meaningful_keyword_tokens(keyword)
+    text_tokens = _normalise_similarity_text(text)
+    if not meaningful_tokens or not text_tokens:
+        return False
+    text_roots = {_keyword_token_root(token) for token in text_tokens}
+    matched = sum(1 for token in meaningful_tokens if _keyword_token_root(token) in text_roots)
+    required = len(meaningful_tokens) if len(meaningful_tokens) <= 3 else int(len(meaningful_tokens) * 0.75 + 0.999)
+    return matched >= required
+
+
+def _generated_output_texts(
+    generated_title: str,
+    generated_description: str,
+    optimised_h1: str,
+    faq_items: list,
+    section_results: dict,
+) -> list[tuple[str, str]]:
+    outputs = [
+        ("meta_title", generated_title or ""),
+        ("meta_description", generated_description or ""),
+        ("meta_h1", optimised_h1 or ""),
+        ("page_copy", _full_page_copy_text(section_results)),
+    ]
+    for index, item in enumerate(faq_items or []):
+        if isinstance(item, dict):
+            outputs.append((f"faq_{index + 1}", f"{item.get('question', '')}\n{item.get('answer', '')}"))
+    return outputs
+
+
+def _add_exclamation_flags(flags: list[dict], outputs: list[tuple[str, str]]):
+    for output, text in outputs:
+        if "!" in text:
+            _add_qa_flag(
+                flags,
+                "exclamation_mark_present",
+                f"Exclamation mark found in {output.replace('_', ' ')}.",
+                output,
+                "!",
+                severity="review",
+            )
+
+
+def _add_b2b_consumer_cta_flags(
+    flags: list[dict],
+    business_type: str,
+    outputs: list[tuple[str, str]],
+):
+    if str(business_type or "").casefold() != "b2b":
+        return
+    for output, text in outputs:
+        for phrase in _B2B_CONSUMER_CTAS:
+            if _contains_forbidden_phrase(text, phrase):
+                _add_qa_flag(
+                    flags,
+                    "b2b_consumer_cta",
+                    f'Consumer CTA "{phrase}" found in B2B {output.replace("_", " ")}.',
+                    output,
+                    phrase,
+                    severity="review",
+                )
+
+
+def _add_brand_in_h1_flags(
+    flags: list[dict],
+    brand_name: str,
+    gen_meta: bool,
+    gen_page_copy: bool,
+    optimised_h1: str,
+    section_results: dict,
+):
+    brand = str(brand_name or "").strip()
+    if not brand:
+        return
+    candidates = []
+    if gen_meta and str(optimised_h1 or "").strip():
+        candidates.append(("meta_h1", str(optimised_h1)))
+    page_h1 = _extract_first_page_h1(section_results) if gen_page_copy else ""
+    if page_h1:
+        candidates.append(("page_h1", page_h1))
+    for output, h1 in candidates:
+        if _contains_forbidden_phrase(h1, brand):
+            _add_qa_flag(
+                flags,
+                "brand_name_in_h1",
+                "H1 contains the brand name, which conflicts with the AIO headline rule.",
+                output,
+                brand,
+                severity="review",
+            )
+
+
+def _add_meta_length_flags(
+    flags: list[dict],
+    gen_meta: bool,
+    generated_title: str,
+    generated_description: str,
+):
+    if not gen_meta:
+        return
+    title = str(generated_title or "").strip()
+    description = str(generated_description or "").strip()
+    if title and not 50 <= len(title) <= 80:
+        severity = "review" if len(title) > 90 else "warning"
+        _add_qa_flag(
+            flags,
+            "meta_title_outside_preferred_range",
+            f"Meta title is {len(title)} characters; the preferred range is 50 to 80.",
+            "meta_title",
+            severity=severity,
+        )
+        flags[-1].update({"actual_length": len(title), "preferred_min": 50, "preferred_max": 80})
+    if description and not 140 <= len(description) <= 180:
+        severity = "review" if len(description) > 200 else "warning"
+        _add_qa_flag(
+            flags,
+            "meta_description_outside_preferred_range",
+            f"Meta description is {len(description)} characters; the preferred range is 140 to 180.",
+            "meta_description",
+            severity=severity,
+        )
+        flags[-1].update({"actual_length": len(description), "preferred_min": 140, "preferred_max": 180})
+
+
+def _add_keyword_placement_flags(
+    flags: list[dict],
+    primary_keyword: str,
+    gen_meta: bool,
+    gen_page_copy: bool,
+    optimised_h1: str,
+    section_results: dict,
+):
+    keyword = str(primary_keyword or "").strip()
+    if not keyword:
+        return
+    if gen_meta and str(optimised_h1 or "").strip() and not _qa_keyword_present(keyword, optimised_h1):
+        _add_qa_flag(
+            flags,
+            "target_keyword_missing_from_h1",
+            "Target keyword or a close grammatical variant was not found in the optimised H1.",
+            "meta_h1",
+            severity="warning",
+        )
+        flags[-1]["keyword"] = keyword
+
+    if not gen_page_copy:
+        return
+    page_copy = _full_page_copy_text(section_results)
+    body_lines = [
+        line
+        for line in page_copy.splitlines()
+        if not re.match(r"^\s*#{1,6}\s+", line)
+    ]
+    first_words = _normalise_similarity_text("\n".join(body_lines))[:100]
+    if first_words and not _qa_keyword_present(keyword, " ".join(first_words)):
+        _add_qa_flag(
+            flags,
+            "target_keyword_missing_from_first_100_words",
+            "Target keyword or a close grammatical variant was not found in the first 100 body words.",
+            "page_copy",
+            severity="warning",
+        )
+        flags[-1]["keyword"] = keyword
+
+    h2_labels = []
+    for line in page_copy.splitlines():
+        match = re.match(r"^\s*##\s+(.+?)\s*$", line)
+        if match:
+            h2_labels.append(match.group(1))
+    if h2_labels and not any(_qa_keyword_present(keyword, label) for label in h2_labels):
+        _add_qa_flag(
+            flags,
+            "target_keyword_missing_from_h2",
+            "Target keyword or a close grammatical variant was not found in any H2 heading.",
+            "page_copy",
+            severity="warning",
+        )
+        flags[-1]["keyword"] = keyword
+
+
+def _add_faq_quality_flags(flags: list[dict], faq_items: list):
+    seen_questions = set()
+    for index, item in enumerate(faq_items or []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        output = f"faq_{index + 1}"
+        normalised_question = _normalise_phrase(question.rstrip("?"))
+        if normalised_question and normalised_question in seen_questions:
+            _add_qa_flag(flags, "duplicate_faq_question", "Duplicate FAQ question found.", output, severity="review")
+        seen_questions.add(normalised_question)
+        if question and not question.endswith("?"):
+            _add_qa_flag(flags, "faq_question_missing_question_mark", "FAQ question does not end with a question mark.", output, severity="warning")
+        if question and not answer:
+            _add_qa_flag(flags, "faq_answer_missing", "FAQ question has no answer.", output, severity="review")
+        combined = f"{question}\n{answer}"
+        for topic in _FAQ_RISKY_TOPICS:
+            if _contains_forbidden_phrase(combined, topic):
+                _add_qa_flag(
+                    flags,
+                    "faq_risky_mutable_topic",
+                    f'FAQ discusses mutable or policy-sensitive topic "{topic}" and needs evidence review.',
+                    output,
+                    topic,
+                    severity="warning",
+                )
+                break
+
+
+def _meta_repair_issues(
+    generated_title: str,
+    generated_description: str,
+    optimised_h1: str,
+    input_h1: str,
+    brand_name: str,
+    business_type: str,
+    forbidden_phrases: list[str],
+) -> list[str]:
+    issues = []
+    if not str(generated_title or "").strip():
+        issues.append("Title is missing.")
+    if not str(generated_description or "").strip():
+        issues.append("Meta description is missing.")
+    if not str(optimised_h1 or "").strip():
+        issues.append("Optimised H1 is missing.")
+    if len(str(generated_title or "")) > 90:
+        issues.append("Title exceeds 90 characters.")
+    if len(str(generated_description or "")) > 200:
+        issues.append("Meta description exceeds 200 characters.")
+    if input_h1 and _normalise_phrase(generated_title) == _normalise_phrase(input_h1):
+        issues.append("Title duplicates the input H1.")
+    if brand_name and _contains_forbidden_phrase(optimised_h1, brand_name):
+        issues.append("Optimised H1 contains the brand name.")
+
+    outputs = {
+        "title": str(generated_title or ""),
+        "description": str(generated_description or ""),
+        "H1": str(optimised_h1 or ""),
+    }
+    for label, text in outputs.items():
+        if "!" in text:
+            issues.append(f"{label} contains an exclamation mark.")
+        for phrase in forbidden_phrases:
+            if _contains_forbidden_phrase(text, phrase):
+                issues.append(f'{label} contains forbidden phrase "{phrase}".')
+        if str(business_type or "").casefold() == "b2b":
+            for phrase in _B2B_CONSUMER_CTAS:
+                if _contains_forbidden_phrase(text, phrase):
+                    issues.append(f'{label} contains B2B-inappropriate CTA "{phrase}".')
+    return list(dict.fromkeys(issues))
+
+
+def _faq_repair_issues(
+    faq_items: list,
+    business_type: str,
+    forbidden_phrases: list[str],
+) -> list[str]:
+    issues = []
+    seen_questions = set()
+    for index, item in enumerate(faq_items or []):
+        if not isinstance(item, dict):
+            issues.append(f"FAQ {index + 1} is not a valid object.")
+            continue
+        question = str(item.get("question") or "").strip()
+        answer = str(item.get("answer") or "").strip()
+        normalised = _normalise_phrase(question.rstrip("?"))
+        if not question or not answer:
+            issues.append(f"FAQ {index + 1} is missing a question or answer.")
+        if question and not question.endswith("?"):
+            issues.append(f"FAQ {index + 1} question has no question mark.")
+        if normalised and normalised in seen_questions:
+            issues.append(f"FAQ {index + 1} duplicates an earlier question.")
+        seen_questions.add(normalised)
+        combined = f"{question}\n{answer}"
+        if "!" in combined:
+            issues.append(f"FAQ {index + 1} contains an exclamation mark.")
+        for phrase in forbidden_phrases:
+            if _contains_forbidden_phrase(combined, phrase):
+                issues.append(f'FAQ {index + 1} contains forbidden phrase "{phrase}".')
+        if str(business_type or "").casefold() == "b2b":
+            for phrase in _B2B_CONSUMER_CTAS:
+                if _contains_forbidden_phrase(combined, phrase):
+                    issues.append(f'FAQ {index + 1} contains B2B-inappropriate CTA "{phrase}".')
+    return list(dict.fromkeys(issues))
+
+
+def _page_repair_phrases(
+    page_copy_text: str,
+    repeated_phrases: list[str],
+    business_type: str,
+    forbidden_phrases: list[str],
+) -> list[str]:
+    phrases = [str(phrase).strip() for phrase in repeated_phrases if str(phrase).strip()]
+    if "!" in str(page_copy_text or ""):
+        phrases.append("!")
+    for phrase in forbidden_phrases:
+        if _contains_forbidden_phrase(page_copy_text, phrase):
+            phrases.append(phrase)
+    if str(business_type or "").casefold() == "b2b":
+        for phrase in _B2B_CONSUMER_CTAS:
+            if _contains_forbidden_phrase(page_copy_text, phrase):
+                phrases.append(phrase)
+    return list(dict.fromkeys(phrases))
+
+
 def _add_keyword_presence_flags(
     flags: list[dict],
     primary_keyword: str,
@@ -609,10 +993,11 @@ def _add_similarity_flag(result: dict, code: str, message: str, output: str, pre
         "code": code,
         "message": message,
         "output": output,
+        "severity": "review",
         "similar_to_row": previous_row,
         "similarity": round(similarity, 3),
     })
-    if result.get("status") == "ok":
+    if result.get("status") in {"ok", "warning"}:
         result["status"] = "review"
 
 
@@ -842,6 +1227,8 @@ def _collect_qa_flags(
     section_results: dict,
     forbidden_phrases: list[str],
     template: dict | None = None,
+    brand_name: str = "",
+    business_type: str = "general",
 ) -> list[dict]:
     flags = []
 
@@ -882,16 +1269,39 @@ def _collect_qa_flags(
         meta_text=meta_text,
         page_copy_text=page_copy_text,
     )
+    _add_keyword_placement_flags(
+        flags,
+        primary_keyword=primary_keyword,
+        gen_meta=gen_meta,
+        gen_page_copy=gen_page_copy,
+        optimised_h1=optimised_h1,
+        section_results=section_results,
+    )
+    _add_meta_length_flags(
+        flags,
+        gen_meta=gen_meta,
+        generated_title=generated_title,
+        generated_description=generated_description,
+    )
+    _add_brand_in_h1_flags(
+        flags,
+        brand_name=brand_name,
+        gen_meta=gen_meta,
+        gen_page_copy=gen_page_copy,
+        optimised_h1=optimised_h1,
+        section_results=section_results,
+    )
+    _add_faq_quality_flags(flags, faq_items)
 
-    outputs = [
-        ("meta_title", generated_title or ""),
-        ("meta_description", generated_description or ""),
-        ("meta_h1", optimised_h1 or ""),
-        ("page_copy", page_copy_text),
-    ]
-    for item in faq_items or []:
-        if isinstance(item, dict):
-            outputs.append(("faq", f"{item.get('question', '')}\n{item.get('answer', '')}"))
+    outputs = _generated_output_texts(
+        generated_title,
+        generated_description,
+        optimised_h1,
+        faq_items,
+        section_results,
+    )
+    _add_exclamation_flags(flags, outputs)
+    _add_b2b_consumer_cta_flags(flags, business_type, outputs)
 
     seen_matches = set()
     for output, text in outputs:
@@ -909,6 +1319,8 @@ def _collect_qa_flags(
                 )
                 seen_matches.add(key)
 
+    for flag in flags:
+        flag.setdefault("severity", "review")
     return flags
 
 
@@ -964,7 +1376,8 @@ def _process_single_row(
     forbidden_phrase_text = ", ".join(forbidden_phrase_list)
 
     # Build client brief — merge niche context + brand profile + custom brief
-    client_brief = settings.get("client_brief", "") or ""
+    explicit_client_brief = settings.get("client_brief", "") or ""
+    client_brief = explicit_client_brief
     _niche_ctx = get_niche_context(settings.get("niche", ""))
     if _niche_ctx:
         client_brief = (client_brief + "\n\n" + _niche_ctx).strip()
@@ -1162,11 +1575,11 @@ def _process_single_row(
         step("⚠ SERP failed: " + str(e)[:60])
 
     # ─────────────────────────────────────────────────────────────────────
-    # STEP 3 — Page context scrape (for FAQs)
+    # STEP 3 — Owned-page context (shared by strategy and every output)
     # ─────────────────────────────────────────────────────────────────────
     page_context = ""
     scraped_page_content = ""
-    if (gen_faqs or gen_meta) and jina_key:
+    if gen_faqs or gen_meta or gen_page_copy:
         step("scraping page context...")
         try:
             sc = scrape_page_context(jina_key, url)
@@ -1175,12 +1588,21 @@ def _process_single_row(
                 run_diagnostics["scrape"]["page_context_success"] = True
                 run_diagnostics["input_signal_counts"]["scraped_page_chars"] = len(scraped_page_content)
                 page_context = scraped_page_content
-                if client_brief:
-                    page_context = (page_context + "\n\n" + client_brief).strip()
-                run_diagnostics["input_signal_counts"]["page_context_chars"] = len(page_context)
                 step("page context: " + str(len(page_context)) + " chars")
-        except Exception:
-            page_context = client_brief
+            else:
+                fallback = scrape_url(url, api_key=jina_key)
+                if fallback.get("success"):
+                    scraped_page_content = str(fallback.get("body_text") or "")[:10000]
+                    page_context = scraped_page_content
+                    run_diagnostics["scrape"]["page_context_success"] = bool(scraped_page_content)
+                    run_diagnostics["input_signal_counts"]["scraped_page_chars"] = len(scraped_page_content)
+                    step("page context loaded with fallback scraper")
+        except Exception as e:
+            step("owned-page scrape unavailable: " + str(e)[:60])
+
+        if client_brief:
+            page_context = (page_context + "\n\n" + client_brief).strip()
+        run_diagnostics["input_signal_counts"]["page_context_chars"] = len(page_context)
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 4 — Competitor scraping (for page copy)
@@ -1239,6 +1661,17 @@ def _process_single_row(
     # STEP 5 — Generate strategy brief, then meta copy
     # ─────────────────────────────────────────────────────────────────────
     strategy_brief = {}
+    strategy_status = "not_requested"
+    strategy_issues = []
+    required_strategy_outputs = [
+        output
+        for output, enabled in (
+            ("meta", gen_meta),
+            ("faq", gen_faqs),
+            ("page_copy", gen_page_copy),
+        )
+        if enabled
+    ]
     if gen_meta or gen_faqs or gen_page_copy:
         step("building strategy brief...")
         try:
@@ -1254,15 +1687,25 @@ def _process_single_row(
                 h1=h1,
                 brand_context=brand_context,
                 client_brief=client_brief,
-                page_context=page_context or scraped_page_content,
+                evidence_client_brief=explicit_client_brief,
+                page_context=scraped_page_content,
                 ai_overview=ai_overview,
                 paa_questions=paa_questions,
                 competitor_section_map=competitor_section_map,
                 template_sections=(template or {}).get("sections", []),
+                required_outputs=required_strategy_outputs,
             )
-            step("strategy brief ready")
+            strategy_issues = strategy_brief_issues(
+                strategy_brief,
+                (template or {}).get("sections", []),
+                required_strategy_outputs,
+            )
+            strategy_status = "ready" if not strategy_issues else "needs_review"
+            step("strategy brief ready" if not strategy_issues else "strategy brief needs review")
         except Exception as e:
             strategy_brief = {}
+            strategy_status = "unavailable"
+            strategy_issues = [str(e)[:160] or "Strategy generation failed."]
             step("strategy brief unavailable: " + str(e)[:60])
 
     generated_title = None
@@ -1296,6 +1739,45 @@ def _process_single_row(
             generated_title       = meta_result.get("title", "")
             generated_description = meta_result.get("description", "")
             optimised_h1          = meta_result.get("h1_optimised", "")
+            meta_issues = _meta_repair_issues(
+                generated_title,
+                generated_description,
+                optimised_h1,
+                input_h1_for_qa,
+                brand_name if include_brand else "",
+                business_type,
+                forbidden_phrase_list,
+            )
+            if meta_issues:
+                try:
+                    repaired_meta = repair_meta_copy(
+                        provider=provider,
+                        api_key=api_key,
+                        model=model,
+                        current={
+                            "title": generated_title,
+                            "description": generated_description,
+                            "h1_optimised": optimised_h1,
+                        },
+                        issues=meta_issues,
+                        url=url,
+                        keyword=primary_keyword,
+                        page_type=page_type,
+                        business_type=business_type,
+                        brand_name=brand_name if include_brand else "",
+                        input_h1=input_h1_for_qa,
+                        forbidden_phrases=forbidden_phrase_text,
+                        context="\n\n".join(meta_context_parts),
+                        brand_context=brand_context,
+                        strategy_brief=strategy_brief,
+                    )
+                    if all(str(repaired_meta.get(key) or "").strip() for key in ("title", "description", "h1_optimised")):
+                        generated_title = repaired_meta["title"]
+                        generated_description = repaired_meta["description"]
+                        optimised_h1 = repaired_meta["h1_optimised"]
+                        step("meta copy repaired")
+                except Exception as e:
+                    step("meta repair unavailable: " + str(e)[:60])
             # Use optimised H1 as page H1 if we didn't have one
             if not h1 and optimised_h1:
                 h1 = optimised_h1
@@ -1338,6 +1820,30 @@ def _process_single_row(
             faq_items, faqs_trimmed = _limit_faq_items(faq_items, num_faqs)
             if faqs_trimmed:
                 step("FAQs trimmed to requested count: " + str(len(faq_items)))
+            faq_issues = _faq_repair_issues(faq_items, business_type, forbidden_phrase_list)
+            if faq_issues:
+                try:
+                    repaired_faqs = repair_faq_items(
+                        provider=provider,
+                        api_key=api_key,
+                        model=model,
+                        faq_items=faq_items,
+                        issues=faq_issues,
+                        keyword=primary_keyword,
+                        page_type=page_type,
+                        business_type=business_type,
+                        brand_name=brand_name if include_brand else "",
+                        num_faqs=num_faqs,
+                        page_context=page_context,
+                        forbidden_phrases=forbidden_phrase_text,
+                        strategy_brief=strategy_brief,
+                    )
+                    repaired_faqs, _ = _limit_faq_items(repaired_faqs, num_faqs)
+                    if len(repaired_faqs) == num_faqs:
+                        faq_items = repaired_faqs
+                        step("FAQ quality issues repaired")
+                except Exception as e:
+                    step("FAQ repair unavailable: " + str(e)[:60])
             step("✓ FAQs: " + str(len(faq_items)) + " generated")
 
             # Build schema
@@ -1434,11 +1940,17 @@ def _process_single_row(
                 item["phrase"]
                 for item in _repeated_phrase_candidates(full_page or _full_page_copy_text(section_results))
             ]
-            if repeated_phrases:
+            repair_phrases = _page_repair_phrases(
+                full_page or _full_page_copy_text(section_results),
+                repeated_phrases,
+                business_type,
+                forbidden_phrase_list,
+            )
+            if repair_phrases:
                 try:
                     repaired_sections = repair_repeated_page_copy(
                         section_results=section_results,
-                        repeated_phrases=repeated_phrases,
+                        repeated_phrases=repair_phrases,
                         template=template,
                         strategy_brief=strategy_brief,
                         brand_name=brand_name,
@@ -1451,7 +1963,7 @@ def _process_single_row(
                         section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
                         full_page = _assemble_full_page_copy(section_results, template)
                         word_count = len(full_page.split())
-                        step("page copy repetition repaired")
+                        step("page copy quality issues repaired")
                 except Exception as e:
                     step("page copy repetition repair unavailable: " + str(e)[:60])
             run_diagnostics["output_counts"]["sections"] = len(section_results)
@@ -1511,7 +2023,10 @@ def _process_single_row(
         section_results=section_results,
         forbidden_phrases=forbidden_phrase_list,
         template=template,
+        brand_name=brand_name,
+        business_type=business_type,
     )
+    _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
     brand_consistency = {}
     if settings.get("brand_consistency_check") and brand_profile:
         review_outputs = {}
@@ -1537,6 +2052,7 @@ def _process_single_row(
                     brand_profile=brand_profile,
                     outputs=review_outputs,
                 )
+                brand_consistency["evaluation_mode"] = "same_provider"
                 threshold = int(settings.get("brand_consistency_threshold", 70))
                 if brand_consistency.get("score", 100) < threshold:
                     _add_qa_flag(
@@ -1553,6 +2069,7 @@ def _process_single_row(
     return {
         "url":                  url,
         "h1":                   h1,
+        "input_h1":             input_h1_for_qa,
         "primary_keyword":      primary_keyword,
         "keyword_source":       keyword_source,
         "model":                model or "",
@@ -1574,12 +2091,14 @@ def _process_single_row(
         "competitor_section_map": stored_competitor_section_map if gen_page_copy else {},
         "content_gap_summary":  content_gap_summary if gen_page_copy else [],
         "strategy_brief":       strategy_brief,
+        "strategy_status":      strategy_status,
+        "strategy_issues":      strategy_issues,
         "brand_consistency":    brand_consistency,
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
         "qa_flags":             qa_flags,
         "run_diagnostics":      _finish_diagnostics(),
-        "status":               "review" if qa_flags else "ok",
+        "status":               _qa_status(qa_flags),
     }
 
 
@@ -1774,7 +2293,7 @@ def _process_job(
             _update_job(sb, job_id, user_id, {
                 "status":       "cancelled",
                 "current_step": f"Cancelled after {idx}/{total} rows.",
-                "failed_rows":  sum(1 for r in results if r.get("status") != "ok"),
+                "failed_rows":  sum(1 for r in results if _result_failed(r)),
             })
             return
 
@@ -1791,7 +2310,7 @@ def _process_job(
             _update_job(sb, job_id, user_id, {
                 "status":       "cancelled",
                 "current_step": f"Cancelled during row {idx + 1}.",
-                "failed_rows":  sum(1 for r in results if r.get("status") != "ok"),
+                "failed_rows":  sum(1 for r in results if _result_failed(r)),
                 "results":      results,
             })
             return
@@ -1813,7 +2332,7 @@ def _process_job(
             _update_job(sb, job_id, user_id, {
                 "status":       "cancelled",
                 "current_step": f"Cancelled after {idx + 1}/{total} rows.",
-                "failed_rows":  sum(1 for r in results if r.get("status") != "ok"),
+                "failed_rows":  sum(1 for r in results if _result_failed(r)),
             })
             return
 
@@ -1827,7 +2346,7 @@ def _process_job(
         "status":        "complete",
         "current_step":  final_step,
         "completed_rows": len(results),
-        "failed_rows":   sum(1 for r in results if r.get("status") != "ok"),
+        "failed_rows":   sum(1 for r in results if _result_failed(r)),
         "results":       results,
         "internal_link_suggestions": internal_link_suggestions,
     })
@@ -1867,6 +2386,8 @@ class AIOSettings(BaseModel):
     custom_template_text: str = ""
     client_brief: str = ""
     brand_profile_id: str = ""
+    brand_consistency_check: bool = False
+    brand_consistency_threshold: int = Field(default=70, ge=0, le=100)
     jina_api_key: str = ""
     use_gsc: bool = False
     site_url: str = ""

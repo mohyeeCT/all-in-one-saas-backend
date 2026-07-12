@@ -48,7 +48,16 @@ def _is_stale(job: dict, threshold: timedelta) -> bool:
 def _failed_row_count(results: list | None, fallback: int = 0) -> int:
     if not isinstance(results, list):
         return fallback
-    return sum(1 for row in results if isinstance(row, dict) and row.get("status") != "ok")
+    return sum(
+        1
+        for row in results
+        if isinstance(row, dict)
+        and (
+            row.get("error")
+            or row.get("status") == "error"
+            or str(row.get("status") or "").startswith("skipped:")
+        )
+    )
 
 
 def _has_finished_rows(job: dict) -> bool:
@@ -311,6 +320,7 @@ def rerun_row(
     step_msg += "..."
 
     sb.table("jobs").update({
+        "status": "running",
         "current_step": step_msg,
         "updated_at": "now()"
     }).eq("id", job_id).eq("user_id", user.id).execute()
@@ -403,12 +413,15 @@ def _rerun_single_row(job_id: str, row_index: int, rows: list, settings: dict, s
 
         sb.table("jobs").update({
             "results": current_results,
+            "status": "complete",
+            "failed_rows": _failed_row_count(current_results),
             "current_step": f"Row {row_index + 1} complete.",
             "updated_at": "now()"
         }).eq("id", job_id).eq("user_id", user_id).execute()
 
     except Exception:
         sb.table("jobs").update({
+            "status": "complete",
             "current_step": f"Row {row_index + 1} failed: {traceback.format_exc(limit=1)[:120]}",
             "updated_at": "now()"
         }).eq("id", job_id).eq("user_id", user_id).execute()
@@ -537,7 +550,7 @@ def _rerun_multiple_rows(job_id: str, row_indices: list, rows: list, settings: d
         "status": "complete",
         "current_step": f"Re-run complete — {len(row_indices)} row(s) updated.",
         "results": results,
-        "failed_rows": sum(1 for r in results if r.get("error") or r.get("status") == "error"),
+        "failed_rows": _failed_row_count(results),
         "updated_at": "now()",
     }).eq("id", job_id).eq("user_id", user_id).execute()
 
@@ -654,7 +667,14 @@ def _rerun_single_section(
     from utils.copy_gen import _build_section_prompt, DEFAULT_MODELS, PROVIDER_FN, sanitise
     from utils.templates import get_template
     from utils.dfs import get_serp_data
-    from routers.all_in_one import _build_combined_docx, _split_forbidden_phrases
+    from routers.all_in_one import (
+        _add_strategy_qa_flag,
+        _build_combined_docx,
+        _build_content_gap_summary,
+        _collect_qa_flags,
+        _qa_status,
+        _split_forbidden_phrases,
+    )
 
     try:
         settings = hydrate_job_settings(sb, user_id, job.get("settings") or {})
@@ -714,10 +734,11 @@ def _rerun_single_section(
                         client_brief = (client_brief + "\n\n" + "\n".join(parts)).strip()
             except Exception:
                 pass
-        forbidden_phrase_text = ", ".join(_split_forbidden_phrases(
+        forbidden_phrase_list = _split_forbidden_phrases(
             settings.get("forbidden_phrases", ""),
             brand_words_to_avoid,
-        ))
+        )
+        forbidden_phrase_text = ", ".join(forbidden_phrase_list)
 
         # ── 3. Template and section definition ────────────────────────────────
         template_key = stored_row.get("template_key") or settings.get("template_key", "service_page")
@@ -819,6 +840,32 @@ def _rerun_single_section(
         )
         word_count = len(full_page.split())
 
+        qa_flags = _collect_qa_flags(
+            gen_meta=bool(stored_row.get("gen_meta", settings.get("gen_meta", True))),
+            gen_faqs=bool(stored_row.get("gen_faqs", settings.get("gen_faqs", True))),
+            gen_page_copy=True,
+            generated_title=row_result.get("generated_title") or "",
+            generated_description=row_result.get("generated_description") or "",
+            optimised_h1=row_result.get("optimised_h1") or "",
+            input_h1=row_result.get("input_h1") or stored_row.get("h1") or h1,
+            primary_keyword=overall_primary_keyword,
+            faq_items=row_result.get("faq_items") or [],
+            section_results=section_results,
+            forbidden_phrases=forbidden_phrase_list,
+            template=template,
+            brand_name=brand_name,
+            business_type=business_type,
+        )
+        strategy_status = row_result.get("strategy_status") or ("ready" if strategy_brief else "unavailable")
+        _add_strategy_qa_flag(qa_flags, strategy_status, row_result.get("strategy_issues") or [])
+        for existing_flag in row_result.get("qa_flags") or []:
+            if existing_flag.get("code") == "brand_consistency_low":
+                qa_flags.append(existing_flag)
+        content_gap_summary = _build_content_gap_summary(
+            row_result.get("competitor_section_map") or {},
+            section_results,
+        )
+
         # ── 8. Regenerate docx ─────────────────────────────────────────────────
         docx_b64 = row_result.get("docx_b64")  # keep old if rebuild fails
         try:
@@ -857,10 +904,14 @@ def _rerun_single_section(
             "section_rerun_notes": section_rerun_notes,
             "word_count": word_count,
             "docx_b64": docx_b64,
+            "content_gap_summary": content_gap_summary,
+            "qa_flags": qa_flags,
+            "status": _qa_status(qa_flags),
         }
 
         sb.table("jobs").update({
             "results": current_results,
+            "failed_rows": _failed_row_count(current_results),
             "current_step": f"Section '{section_name}' regenerated for row {row_index + 1}.",
             "updated_at": "now()",
         }).eq("id", job_id).eq("user_id", user_id).execute()
