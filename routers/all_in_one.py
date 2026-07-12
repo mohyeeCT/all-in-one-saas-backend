@@ -219,6 +219,18 @@ def _build_brand_context(brand_profile: dict | None, niche: str = "") -> str:
     return "\n".join(parts)
 
 
+def _build_brand_style_context(brand_profile: dict | None) -> str:
+    lines = []
+    profile = brand_profile or {}
+    voice = profile.get("brand_voice") or profile.get("tone_of_voice")
+    tone = profile.get("tone")
+    if voice:
+        lines.append("- Voice: " + str(voice))
+    if tone:
+        lines.append("- Tone: " + str(tone))
+    return "BRAND STYLE:\n" + "\n".join(lines) if lines else ""
+
+
 def _split_forbidden_phrases(*values) -> list[str]:
     phrases = []
     seen = set()
@@ -1326,6 +1338,7 @@ def _process_single_row(
         if parts:
             client_brief = (client_brief + "\n\n" + "\n".join(parts)).strip()
     brand_context = _build_brand_context(brand_profile, settings.get("niche", ""))
+    brand_style_context = _build_brand_style_context(brand_profile)
 
     use_gsc  = settings.get("use_gsc", False)
     site_url = settings.get("site_url", "")
@@ -1644,14 +1657,17 @@ def _process_single_row(
     generated_description = None
     optimised_h1 = None
     input_h1_for_qa = h1
+    evidence_contract_ready = bool(
+        strategy_status == "ready" and strategy_brief.get("verified_facts")
+    )
 
     if gen_meta:
         step("generating meta copy...")
         try:
             meta_context_parts = []
-            if scraped_page_content:
+            if scraped_page_content and not evidence_contract_ready:
                 meta_context_parts.append("SCRAPED PAGE CONTENT:\n" + scraped_page_content[:10000])
-            if client_brief:
+            if client_brief and not evidence_contract_ready:
                 meta_context_parts.append("CLIENT BRIEF:\n" + client_brief)
             meta_result = generate_copy(
                 provider=provider,
@@ -1663,7 +1679,7 @@ def _process_single_row(
                 brand_name=brand_name if include_brand else "",
                 forbidden_phrases=forbidden_phrase_text,
                 context="\n\n".join(meta_context_parts),
-                brand_context=brand_context,
+                brand_context=brand_style_context if evidence_contract_ready else brand_context,
                 business_type=business_type,
                 h1=h1,
                 strategy_brief=strategy_brief,
@@ -1816,6 +1832,7 @@ def _process_single_row(
                 forbidden_phrases=forbidden_phrase_text,
                 progress_callback=on_section,
                 strategy_brief=strategy_brief,
+                brand_style_context=brand_style_context if evidence_contract_ready else "",
             )
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
             full_page       = page_result.get("_full_page", "")

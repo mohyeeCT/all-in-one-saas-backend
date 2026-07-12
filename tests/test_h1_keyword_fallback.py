@@ -448,7 +448,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIsNone(result["primary_keyword"])
         self.assertEqual(result["status"], "skipped: no keywords found")
 
-    def test_meta_generation_receives_structured_brand_context(self):
+    def test_meta_generation_receives_style_only_brand_context_when_evidence_is_ready(self):
         settings = {
             **_settings(),
             "gen_meta": True,
@@ -497,17 +497,16 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "warning")
         brand_context = generate.call_args.kwargs["brand_context"]
-        self.assertIn("BRAND CONTEXT:", brand_context)
+        self.assertIn("BRAND STYLE:", brand_context)
         self.assertIn("- Voice: Plainspoken expert", brand_context)
         self.assertIn("- Tone: Confident", brand_context)
-        self.assertIn("- Target audience: Facilities managers", brand_context)
-        self.assertIn("- Unique selling points: Same-day support", brand_context)
-        self.assertIn("- Key messages to reinforce: Reduce downtime", brand_context)
-        self.assertIn("- Competitors to differentiate from: Acme Rival", brand_context)
-        self.assertIn("- Products/services: Industrial dosing systems", brand_context)
-        self.assertIn("- Words to avoid: cheap", brand_context)
-        self.assertIn("- Example copy to emulate in style, not content:\nExisting brand sample.", brand_context)
-        self.assertIn("- Additional brand guidelines:\nAlways mention compliance.", brand_context)
+        self.assertNotIn("Facilities managers", brand_context)
+        self.assertNotIn("Same-day support", brand_context)
+        self.assertNotIn("Reduce downtime", brand_context)
+        self.assertNotIn("Acme Rival", brand_context)
+        self.assertNotIn("Industrial dosing systems", brand_context)
+        self.assertNotIn("Existing brand sample", brand_context)
+        self.assertNotIn("Always mention compliance", brand_context)
         self.assertNotIn("tone_of_voice", brand_context)
 
     def test_faq_generation_receives_structured_ai_overview_sections(self):
@@ -650,7 +649,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(generate_strategy.call_args.kwargs["page_context"], "Owned page evidence.")
 
 
-    def test_meta_generation_receives_scraped_page_context(self):
+    def test_meta_generation_excludes_raw_context_when_evidence_contract_is_ready(self):
         settings = {
             **_settings(),
             "gen_meta": True,
@@ -688,8 +687,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "review")
         context = generate_copy.call_args.kwargs["context"]
-        self.assertIn("SCRAPED PAGE CONTENT:\nScraped page facts.", context)
-        self.assertIn("CLIENT BRIEF:\nClient brief note.", context)
+        self.assertEqual(context, "")
+        strategy_brief = generate_copy.call_args.kwargs["strategy_brief"]
+        self.assertEqual(strategy_brief["verified_facts"][0]["id"], "F1")
 
 
     def test_faq_output_is_trimmed_to_requested_count(self):

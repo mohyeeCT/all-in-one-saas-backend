@@ -260,6 +260,47 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Reject competitor-focused, generic, off-topic", captured["prompt"])
         self.assertIn("Search signals are never evidence", captured["prompt"])
 
+    def test_faq_plan_rejects_broadened_scope_and_backfills_safe_candidates(self):
+        captured = {}
+
+        def fake_provider(_api_key, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return json.dumps([
+                {"question": "Is all the food halal?", "fact_ids": ["F1"]},
+                {"question": "Which location is near Detroit?", "fact_ids": ["F2"]},
+                {"question": "Are all meats halal?", "fact_ids": ["F1"]},
+                {"question": "Where does Taystee's have locations?", "fact_ids": ["F2"]},
+                {"question": "What food is served?", "fact_ids": ["F1"]},
+            ])
+
+        copy_gen.PROVIDER_FN["ScopeTest"] = fake_provider
+        plan = copy_gen.generate_faq_plan(
+            provider="ScopeTest",
+            api_key="key",
+            keyword="best halal burger in Detroit",
+            page_type="homepage",
+            business_type="local",
+            brand_name="Taystee's",
+            num_faqs=2,
+            paa_items=[],
+            ai_overview_raw="",
+            strategy_brief={
+                "verified_facts": [
+                    {"id": "F1", "fact": "All meats are halal.", "source": "current_page"},
+                    {"id": "F2", "fact": "Locations are in Dearborn, Dearborn Heights, and Warren.", "source": "current_page"},
+                ],
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            [
+                {"question": "Are all meats halal?", "fact_ids": ["F1"]},
+                {"question": "Where does Taystee's have locations?", "fact_ids": ["F2"]},
+            ],
+        )
+        self.assertIn("Candidate questions: 5", captured["prompt"])
+
     def test_paa_answer_snippets_are_sentence_aware(self):
         answer = (
             "This first sentence should remain intact. "
@@ -374,6 +415,78 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result[0]["answer"], "The page documents implementation support.")
         self.assertNotIn("10 locations", result[0]["answer"])
         self.assertNotIn("60 days", result[0]["answer"])
+
+    def test_faq_generation_normalises_punctuation_and_discards_promotional_scope(self):
+        def fake_provider(_api_key, _prompt, **_kwargs):
+            return json.dumps([{
+                "question": "How can customers order?",
+                "claims": [
+                    {"text": "Delivery is available", "fact_ids": ["F1"]},
+                    {"text": "Orders can be placed online", "fact_ids": ["F1"]},
+                    {"text": "Order whenever a craving hits", "fact_ids": ["F1"]},
+                ],
+            }])
+
+        copy_gen.PROVIDER_FN["ScopeTest"] = fake_provider
+        result = copy_gen.generate_faq(
+            provider="ScopeTest",
+            api_key="key",
+            keyword="halal burgers",
+            page_type="homepage",
+            brand_name="Taystee's",
+            business_type="local",
+            h1="Halal Burgers",
+            ai_overview_sections=[],
+            ai_overview_raw="",
+            paa_items=[],
+            num_faqs=1,
+            strategy_brief={
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "Delivery is available and orders can be placed online.",
+                    "source": "current_page",
+                }],
+            },
+            faq_plan=[{"question": "How can customers order?", "fact_ids": ["F1"]}],
+        )
+
+        self.assertEqual(result[0]["answer"], "Delivery is available. Orders can be placed online.")
+        self.assertNotIn("craving hits", result[0]["answer"])
+
+    def test_faq_generation_rejects_claims_that_broaden_all_meats_to_all_food(self):
+        def fake_provider(_api_key, _prompt, **_kwargs):
+            return json.dumps([{
+                "question": "Are all meats halal?",
+                "claims": [
+                    {"text": "All food is halal", "fact_ids": ["F1"]},
+                    {"text": "All meats are halal", "fact_ids": ["F1"]},
+                ],
+            }])
+
+        copy_gen.PROVIDER_FN["ScopeTest"] = fake_provider
+        result = copy_gen.generate_faq(
+            provider="ScopeTest",
+            api_key="key",
+            keyword="halal burgers",
+            page_type="homepage",
+            brand_name="Taystee's",
+            business_type="local",
+            h1="Halal Burgers",
+            ai_overview_sections=[],
+            ai_overview_raw="",
+            paa_items=[],
+            num_faqs=1,
+            strategy_brief={
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "All meats are halal.",
+                    "source": "current_page",
+                }],
+            },
+            faq_plan=[{"question": "Are all meats halal?", "fact_ids": ["F1"]}],
+        )
+
+        self.assertEqual(result[0]["answer"], "All meats are halal.")
 
     def test_generate_strategy_brief_routes_through_provider_function(self):
         captured = {}
@@ -669,14 +782,15 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", meta_capture["prompt"])
         self.assertIn("Do not promise guaranteed certification.", meta_capture["prompt"])
-        self.assertIn("Practical compliance support for regulated teams.", meta_capture["prompt"])
+        self.assertNotIn("Practical compliance support for regulated teams.", meta_capture["prompt"])
+        self.assertNotIn("Plainspoken guidance", meta_capture["prompt"])
         self.assertIn("Lead with practical support for regulated teams.", meta_capture["prompt"])
         self.assertIn("Page-level proof for metadata and FAQs", meta_capture["prompt"])
         self.assertIn("Mention compliance and implementation support.", meta_capture["prompt"])
         self.assertNotIn("Answer fit, process, and proof questions.", meta_capture["prompt"])
         self.assertNotIn("Lead with the compliance problem.", meta_capture["prompt"])
         self.assertIn(
-            "Primary positioning, headline direction, and claims to avoid are contract requirements",
+            "Headline direction, verified facts, and output constraints are contract requirements",
             meta_capture["prompt"],
         )
         self.assertIn("Do not turn search-query wording into an awkward H1", meta_capture["prompt"])
@@ -762,8 +876,8 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", page_capture["prompt"])
         self.assertIn("Do not promise guaranteed certification.", page_capture["prompt"])
-        self.assertIn("Frame the compliance problem.", page_capture["prompt"])
-        self.assertIn("Lead with the compliance problem.", page_capture["prompt"])
+        self.assertNotIn("Frame the compliance problem.", page_capture["prompt"])
+        self.assertNotIn("Lead with the compliance problem.", page_capture["prompt"])
         self.assertIn("ISO implementation experience", page_capture["prompt"])
         self.assertNotIn("Documented implementation process", page_capture["prompt"])
         self.assertNotIn("Page-level proof for metadata and FAQs", page_capture["prompt"])
@@ -783,7 +897,7 @@ class ProviderRoutingTests(unittest.TestCase):
         )
         self.assertIn("Lead with practical support for regulated teams.", h1_strategy)
 
-    def test_strategy_prompt_does_not_blindly_truncate_late_common_fields(self):
+    def test_meta_strategy_prompt_excludes_broad_planning_fields(self):
         strategy_brief = {
             "claims_to_avoid": ["Do not invent claims."],
             "meta_direction": "Keep metadata natural.",
@@ -798,11 +912,72 @@ class ProviderRoutingTests(unittest.TestCase):
 
         prompt = copy_gen.format_strategy_brief_for_prompt(strategy_brief, output_type="meta")
 
-        self.assertGreater(len(prompt), 1200)
         self.assertIn("Do not invent claims.", prompt)
         self.assertIn("Keep metadata natural.", prompt)
-        self.assertIn("late-field-marker", prompt)
+        self.assertNotIn("late-field-marker", prompt)
+        self.assertNotIn("N" * 100, prompt)
+        self.assertNotIn("A" * 100, prompt)
         self.assertLess(prompt.index("Output constraints"), prompt.index("Meta direction"))
+
+    def test_evidence_bound_page_omits_raw_research_and_filters_scope_inferences(self):
+        captured = {}
+
+        def fake_provider(_api_key, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return (
+                "## Why Detroit Keeps Coming Back\n"
+                "Taystee's won the Detroit Burger Brawl in 2016. "
+                "Families keep coming back. Every location follows the same kitchen standards."
+            )
+
+        copy_gen.PROVIDER_FN["ScopeTest"] = fake_provider
+        result = copy_gen.generate_page(
+            template={"sections": [{
+                "name": "differentiators",
+                "label": "Differentiators",
+                "purpose": "Explain a verified distinction.",
+                "word_count": [20, 80],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": "Use evidence.",
+            }]},
+            keyword_assignment={},
+            lsi_keywords={},
+            business_type="local",
+            brand_name="Taystee's",
+            h1="Award-Winning Halal Burgers",
+            page_type="homepage",
+            paa_questions=[{"question": "Unverified PAA signal"}],
+            ai_overview="Unverified AI Overview signal",
+            competitor_section_map={"differentiators": ["Unverified competitor excerpt"]},
+            client_brief="Unverified client claim",
+            client_existing_content="Unverified scraped claim",
+            provider="ScopeTest",
+            api_key="key",
+            brand_style_context="BRAND STYLE:\n- Voice: Direct",
+            strategy_brief={
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "Taystee's won the Detroit Burger Brawl in 2016.",
+                    "source": "current_page",
+                }],
+                "section_guidance": [{
+                    "section": "differentiators",
+                    "proof_points": ["Taystee's won the Detroit Burger Brawl in 2016."],
+                }],
+            },
+        )
+
+        self.assertNotIn("Unverified PAA signal", captured["prompt"])
+        self.assertNotIn("Unverified AI Overview signal", captured["prompt"])
+        self.assertNotIn("Unverified competitor excerpt", captured["prompt"])
+        self.assertNotIn("Unverified client claim", captured["prompt"])
+        self.assertNotIn("Unverified scraped claim", captured["prompt"])
+        self.assertIn("Brand style (style only, never factual evidence)", captured["prompt"])
+        self.assertEqual(
+            result["differentiators"],
+            "## Differentiators\nTaystee's won the Detroit Burger Brawl in 2016.",
+        )
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):

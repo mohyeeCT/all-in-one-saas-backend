@@ -571,7 +571,7 @@ def format_strategy_brief_for_prompt(
         if fallback_positioning:
             strategy_values["primary_positioning"] = fallback_positioning
 
-    field_order = ["primary_positioning", "supporting_attributes"]
+    field_order = []
     if output_type == "meta":
         field_order.extend(("verified_facts", "headline_direction", "meta_direction", "proof_points_to_use"))
     elif output_type == "faq":
@@ -589,12 +589,10 @@ def format_strategy_brief_for_prompt(
             "proof_points_to_use",
             "section_guidance",
         ))
-    field_order.extend((
-        "page_goal",
-        "audience_need",
-        "search_intent",
-        "competitor_gaps",
-    ))
+    if output_type in {"meta", "faq", "page"}:
+        field_order.extend(("page_goal", "search_intent"))
+    else:
+        field_order.extend(("page_goal", "audience_need", "search_intent", "competitor_gaps"))
 
     matching_sections = set()
     for name in section_names or []:
@@ -629,14 +627,8 @@ def format_strategy_brief_for_prompt(
                     section = _clean_strategy_text(item.get("section"), 80)
                     if filter_sections and section.casefold() not in matching_sections:
                         continue
-                    responsibility = _clean_strategy_text(item.get("responsibility"), 300)
-                    guidance = _clean_strategy_text(item.get("guidance"), 400)
                     proof_points = _clean_strategy_list(item.get("proof_points"), max_items=4)
                     details = []
-                    if responsibility:
-                        details.append(f"  Responsibility: {responsibility}")
-                    if guidance:
-                        details.append(f"  Guidance: {guidance}")
                     if proof_points:
                         details.append("  Owned proof points:")
                         details.extend(f"    - {proof_point}" for proof_point in proof_points)
@@ -680,8 +672,10 @@ def _build_section_prompt(
     forbidden_phrases: str = "",
     reviewer_corrections: list[str] | None = None,
     strategy_brief: dict | None = None,
+    brand_style_context: str = "",
 ) -> str:
     section_name = str(section.get("name") or "").casefold()
+    evidence_bound = bool(_verified_fact_map(strategy_brief))
     kw_slot = section.get("keyword_slot", "none")
     wc_min, wc_max = section.get("word_count", [150, 250])
 
@@ -696,23 +690,27 @@ def _build_section_prompt(
         keyword_instruction = ""
 
     paa_block = ""
-    if paa_questions and section["name"] == "faq":
+    if paa_questions and section["name"] == "faq" and not evidence_bound:
         paa_lines = "\n".join(f"- {q['question']}" for q in paa_questions[:SECTION_PAA_QUESTION_LIMIT])
         paa_block = f"\nPeople Also Ask questions to draw from:\n{paa_lines}"
 
     competitor_block = ""
-    if competitor_excerpts:
+    if competitor_excerpts and not evidence_bound:
         excerpts = "\n".join(f"- {e}" for e in competitor_excerpts[:SECTION_COMPETITOR_EXCERPT_LIMIT] if e.strip())
         if excerpts:
             competitor_block = f"\nWhat competitors cover in this section (use as context, not as copy):\n{excerpts}"
 
     existing_block = ""
-    if client_existing_content and client_existing_content.strip():
+    if client_existing_content and client_existing_content.strip() and not evidence_bound:
         existing_block = f"\nClient's existing content on this topic (context only; concrete facts must also appear in this section's owned proof points):\n{client_existing_content[:SECTION_EXISTING_CONTENT_CHAR_LIMIT]}"
 
     brief_block = ""
-    if client_brief and client_brief.strip():
+    if client_brief and client_brief.strip() and not evidence_bound:
         brief_block = f"\nClient brief notes:\n{client_brief[:SECTION_CLIENT_BRIEF_CHAR_LIMIT]}"
+
+    style_block = ""
+    if brand_style_context and brand_style_context.strip():
+        style_block = f"\nBrand style (style only, never factual evidence):\n{brand_style_context[:SECTION_CLIENT_BRIEF_CHAR_LIMIT]}"
 
     strategy_block = ""
     formatted_strategy = format_strategy_brief_for_prompt(
@@ -740,7 +738,7 @@ def _build_section_prompt(
         heading_instruction = "Do not add a heading. Write body copy only."
 
     ai_overview_block = ""
-    if ai_overview and ai_overview.strip():
+    if ai_overview and ai_overview.strip() and not evidence_bound:
         ai_overview_block = f"\nGoogle AI Overview for this topic (use as reference for what topics to cover, do not copy):\n{ai_overview[:SECTION_AI_OVERVIEW_CHAR_LIMIT]}"
 
     forbidden_block = ""
@@ -792,10 +790,11 @@ Hard rules for all output:
 {forbidden_block}
 - You may adjust word order, add small connecting words, or use a close grammatical variation when the exact keyword phrase would sound awkward.
 - Strategy brief priorities outrank exact keyword phrasing.
-- Primary positioning, headline direction, and claims to avoid are contract requirements, not optional suggestions.
-- Supporting attributes must remain supporting. Do not move one into the H1 unless the headline direction explicitly requires it.
+- The section's owned proof points and output constraints are contract requirements, not optional suggestions.
 - Use only the proof points assigned to this section in its section contract. Do not borrow proof owned by another section.
 - Treat owned proof points as the complete evidence allowlist for concrete claims in this section. Do not infer adjacent details such as recipes, counts, ratings, timelines, locations, availability, or operational practices.
+- The target keyword, URL, search intent, and location words in an award name are not evidence that the business operates in, serves, is near, or is a destination for that location.
+- A list of locations does not prove proximity, coverage across an area, or which location is closest.
 - Do not infer calls, visits, walk-ins, wait times, heat lamps, drive-through service, curbside service, ordering speed, or preparation practices. Mention one only when an assigned proof point explicitly supports it.
 - {cta_rule.lstrip('- ')}
 - Never use a fact listed under unverified or conflicting facts to avoid.
@@ -812,7 +811,7 @@ Hard rules for all output:
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
 - Return only the section copy. No preamble, no notes, no explanations.
-{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{strategy_block}{prev_block}{correction_block}"""
+{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
 
@@ -990,6 +989,7 @@ def generate_page(
     forbidden_phrases: str = "",
     progress_callback=None,
     strategy_brief: dict | None = None,
+    brand_style_context: str = "",
 ) -> dict:
     """
     Runs the section-by-section generation loop.
@@ -1015,7 +1015,8 @@ def generate_page(
         primary_kw = assignment.get("primary", "")
         supporting_kw = assignment.get("supporting", "")
         lsi_kws = lsi_keywords.get(supporting_kw or primary_kw, [])
-        comp_excerpts = competitor_section_map.get(sec_name, [])
+        evidence_bound = bool(_verified_fact_map(strategy_brief))
+        comp_excerpts = [] if evidence_bound else competitor_section_map.get(sec_name, [])
 
         prompt = _build_section_prompt(
             section=section,
@@ -1026,19 +1027,23 @@ def generate_page(
             brand_name=brand_name,
             h1=h1,
             page_type=page_type,
-            paa_questions=paa_questions if sec_name == "faq" else [],
+            paa_questions=paa_questions if sec_name == "faq" and not evidence_bound else [],
             competitor_excerpts=comp_excerpts,
             client_brief=client_brief,
             previous_section_text="\n\n".join(previous_sections),
-            client_existing_content=client_existing_content if i == 0 else "",
-            ai_overview=ai_overview,
+            client_existing_content=client_existing_content if i == 0 and not evidence_bound else "",
+            ai_overview="" if evidence_bound else ai_overview,
             forbidden_phrases=forbidden_phrases,
             strategy_brief=strategy_brief,
+            brand_style_context=brand_style_context,
         )
 
         try:
             raw = fn(api_key, prompt, max_tokens=PAGE_SECTION_MAX_TOKENS, model=resolved_model)
             text = sanitise(raw, brand_name)
+            if evidence_bound:
+                evidence_text = _section_evidence_text(strategy_brief, sec_name)
+                text = _filter_unsupported_scope_sentences(text, evidence_text, section.get("label", ""))
         except Exception as e:
             text = f"[ERROR generating section '{section['label']}': {e}]"
 
@@ -1076,6 +1081,88 @@ def _verified_fact_map(strategy_brief: dict | None) -> dict[str, dict]:
 
 def _normalise_faq_question(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+
+_SCOPE_REQUIREMENTS = (
+    (
+        r"\b(?:all (?:of )?(?:the )?(?:food|menu|items?|products?)|everything)\b",
+        r"\b(?:all (?:of )?(?:the )?(?:food|menu|items?|products?)|everything)\b",
+    ),
+    (r"\b(?:near|nearest|closest|nearby|minutes? away|short drive)\b", r"\b(?:near|nearest|closest|nearby|minutes? away|short drive)\b"),
+    (r"\b(?:across|throughout)\b", r"\b(?:across|throughout)\b"),
+    (r"\b(?:whenever|always|any time|every day|24/7)\b", r"\b(?:whenever|always|any time|every day|24/7)\b"),
+    (r"\bfamil(?:y|ies)\b", r"\bfamil(?:y|ies)\b"),
+    (r"\b(?:same kitchen standards|same standards)\b", r"\b(?:same kitchen standards|same standards)\b"),
+    (r"\b(?:better than|beats|unlike)\b", r"\b(?:better than|beats|unlike)\b"),
+)
+
+_PROMOTIONAL_INFERENCE_PATTERNS = (
+    r"\bkeeps? coming back\b",
+    r"\bdrive to on purpose\b",
+    r"\bdoes(?: not|n't) happen by accident\b",
+    r"\bone satisfied customer at a time\b",
+    r"\breal industry respect\b",
+    r"\bplan a trip around\b",
+    r"\bcraving hits\b",
+)
+
+
+def _uses_unsupported_scope(text: str, evidence_text: str) -> bool:
+    candidate = str(text or "").casefold()
+    evidence = str(evidence_text or "").casefold()
+    for trigger_pattern, evidence_pattern in _SCOPE_REQUIREMENTS:
+        if re.search(trigger_pattern, candidate) and not re.search(evidence_pattern, evidence):
+            return True
+    return any(
+        re.search(pattern, candidate) and not re.search(pattern, evidence)
+        for pattern in _PROMOTIONAL_INFERENCE_PATTERNS
+    )
+
+
+def _ensure_terminal_punctuation(text: str) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return ""
+    if not re.search(r"[.?!]['\")\]]*$", cleaned):
+        cleaned += "."
+    return cleaned
+
+
+def _section_evidence_text(strategy_brief: dict | None, section_name: str) -> str:
+    target = _clean_strategy_text(section_name, 80).casefold()
+    for item in (strategy_brief or {}).get("section_guidance") or []:
+        if not isinstance(item, dict):
+            continue
+        if _clean_strategy_text(item.get("section"), 80).casefold() == target:
+            return " ".join(_clean_strategy_list(item.get("proof_points"), max_items=4))
+    return ""
+
+
+def _filter_unsupported_scope_sentences(text: str, evidence_text: str, section_label: str = "") -> str:
+    kept_lines = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if kept_lines and kept_lines[-1]:
+                kept_lines.append("")
+            continue
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading_match:
+            if _uses_unsupported_scope(heading_match.group(2), evidence_text):
+                fallback = _clean_strategy_text(section_label, 100)
+                if fallback:
+                    kept_lines.append(f"{heading_match.group(1)} {fallback}")
+            else:
+                kept_lines.append(stripped)
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+", stripped)
+        kept_sentences = [
+            sentence for sentence in sentences
+            if sentence and not _uses_unsupported_scope(sentence, evidence_text)
+        ]
+        if kept_sentences:
+            kept_lines.append(" ".join(kept_sentences))
+    return "\n".join(kept_lines).strip()
 
 
 def _format_faq_strategy_for_prompt(strategy_brief: dict | None) -> str:
@@ -1130,13 +1217,14 @@ def generate_faq_plan(
         question = _clean_strategy_text(question, 220)
         if question:
             signals.append(question)
+    candidate_count = num_faqs + 3
     prompt = f"""Plan factual FAQs for one specific page.
 
 Target keyword: {keyword}
 Page type: {page_type}
 Business type: {business_type}
 Brand name: {brand_name or "Not specified"}
-Required questions: {num_faqs}
+Candidate questions: {candidate_count}
 
 {_format_faq_strategy_for_prompt(strategy_brief)}
 
@@ -1149,12 +1237,14 @@ Rules:
 - Prioritise the target search intent and useful decision-making information.
 - Reject competitor-focused, generic, off-topic, or merely available search signals.
 - Do not use FAQs as leftover space for unrelated page topics such as franchising, locations, ordering, or policies unless they directly serve the search intent and have assigned evidence.
-- Return exactly {num_faqs} distinct, natural questions with varied starters.
+- Return exactly {candidate_count} distinct, natural candidate questions with varied starters. Extra candidates allow deterministic evidence checks to remove unsafe questions.
 - Assign one to three verified fact IDs to every question.
 - Every answer must be fully supportable by the assigned facts alone.
 - Search signals are never evidence and must not add facts.
 - Do not plan comparisons unless verified facts support the comparison itself.
 - Do not plan questions about proximity, timelines, ratings, wait times, guarantees, availability, or operational practices unless an assigned fact explicitly supports them.
+- Do not broaden a category in a fact. For example, "all meats are halal" does not support "all food is halal."
+- A location list does not support "near," "nearest," "closest," "across," or "throughout" claims.
 - Return only a JSON array of objects with question and fact_ids keys.
 """
     raw = fn(
@@ -1176,7 +1266,13 @@ Rules:
             for value in item.get("fact_ids") or []
             if str(value).strip() in fact_map
         ]
-        if not question_key or question_key in seen or not fact_ids:
+        evidence_text = " ".join(fact_map[fact_id]["fact"] for fact_id in fact_ids)
+        if (
+            not question_key
+            or question_key in seen
+            or not fact_ids
+            or _uses_unsupported_scope(question, evidence_text)
+        ):
             continue
         seen.add(question_key)
         if not question.endswith("?"):
@@ -1247,6 +1343,8 @@ Rules:
 - Put each factual clause in its own claims object with the supporting fact_ids.
 - Each claim must use one or more IDs assigned to that question. Never cite an unassigned ID.
 - Do not infer adjacent details such as proximity, speed, wait times, service methods, customer types, comparisons, guarantees, availability, recipes, counts, ratings, or operational practices.
+- Do not broaden the category or scope of a fact. "All meats" does not mean "all food," and a location list does not establish proximity or regional coverage.
+- Do not append promotional conclusions such as "whenever a craving hits," "keeps coming back," or "worth the drive" unless those exact ideas are supported by an assigned fact.
 - Do not use raw page content, search signals, competitor information, or unverified brand-profile details as evidence.
 - Lead with a direct answer. Keep simple answers short and let complex answers use multiple supported claims.
 - Never use forbidden phrases, em dashes, exclamation marks, or filler openers.
@@ -1348,7 +1446,9 @@ def generate_faq(
             evidence_numbers = set(re.findall(r"\b\d[\d.,-]*\b", evidence_text))
             if not claim_numbers.issubset(evidence_numbers):
                 continue
-            claim_texts.append(text)
+            if _uses_unsupported_scope(text, evidence_text):
+                continue
+            claim_texts.append(_ensure_terminal_punctuation(text))
             used_ids.extend(claim_ids)
         if not claim_texts:
             continue
@@ -1846,9 +1946,10 @@ Rules:
 - Never use forbidden phrases, em dashes, or exclamation marks.
 - The H1 must not contain the brand name. The title or description may use it when appropriate.
 - On B2B pages, never use consumer CTAs such as "shop now", "add to cart", "grab yours", or "buy today".
-- Primary positioning, headline direction, and claims to avoid are contract requirements and outrank exact keyword phrasing.
-- Supporting attributes must not lead the title or H1 unless headline direction explicitly requires it.
+- Headline direction, verified facts, and output constraints are contract requirements and outrank exact keyword phrasing.
 - Verified facts are the complete evidence allowlist for concrete brand claims. Do not infer adjacent details or use any fact listed as unverified or conflicting.
+- The target keyword, URL, search intent, and location words inside an award name are not evidence that the business operates in, serves, is near, or is a destination for that location.
+- A list of locations does not establish proximity, regional coverage, or which location is closest.
 - Do not turn search-query wording into an awkward H1; rewrite exact keywords into natural headline language when needed.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
