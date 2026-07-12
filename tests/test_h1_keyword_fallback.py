@@ -1195,6 +1195,93 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(flag["section"], "hero")
         self.assertEqual(result["status"], "review")
 
+    def test_editorial_review_uses_separate_provider_and_owned_page_evidence(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+            "review_provider": "Gemini (free)",
+            "review_model": "gemini-3.5-flash",
+            "review_api_key": "gemini-key",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        owned_page = "Example serves Detroit, Ann Arbor, and Warren."
+
+        with patch.object(all_in_one, "scrape_page_context", return_value={
+                 "success": True,
+                 "content": owned_page,
+                 "error": "",
+             }), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems for operations teams.",
+                 "_word_count": 6,
+             }), \
+             patch.object(all_in_one, "review_output_quality", return_value={"issues": []}) as review:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        review.assert_called_once()
+        self.assertEqual(review.call_args.kwargs["provider"], "Gemini (free)")
+        self.assertEqual(review.call_args.kwargs["model"], "gemini-3.5-flash")
+        self.assertEqual(review.call_args.kwargs["api_key"], "gemini-key")
+        self.assertIn(owned_page, review.call_args.kwargs["owned_page_evidence"])
+        self.assertEqual(result["editorial_review_status"], "ready")
+        self.assertEqual(result["review_providers"]["generation"], "Claude")
+        self.assertEqual(result["review_providers"]["editorial_review"], "Gemini (free)")
+
+    def test_editorial_review_failure_is_visible_in_qa(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "review_provider": "Gemini (free)",
+            "review_model": "gemini-3.5-flash",
+            "review_api_key": "gemini-key",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems for operations teams.",
+                 "_word_count": 6,
+             }), \
+             patch.object(all_in_one, "review_output_quality", side_effect=ValueError("bad json")):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(result["editorial_review_status"], "unavailable")
+        self.assertIn("editorial_review_unavailable", [flag["code"] for flag in result["qa_flags"]])
+        self.assertEqual(result["status"], "review")
+
     def test_page_repair_gets_one_bounded_residual_pass(self):
         settings = {
             **_settings(),
@@ -1614,9 +1701,50 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             )
 
         score_brand_consistency.assert_called_once()
+        self.assertEqual(score_brand_consistency.call_args.kwargs["provider"], "Claude")
         self.assertEqual(result["brand_consistency"]["score"], 62)
         self.assertEqual(result["status"], "review")
         self.assertIn("brand_consistency_low", [flag["code"] for flag in result["qa_flags"]])
+
+    def test_brand_review_failure_is_visible_in_qa(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "brand_consistency_check": True,
+            "review_provider": "Gemini (free)",
+            "review_model": "gemini-3.5-flash",
+            "review_api_key": "gemini-key",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems for operations teams.",
+                 "_word_count": 6,
+             }), \
+             patch.object(all_in_one, "_collect_qa_flags", return_value=[]), \
+             patch.object(all_in_one, "score_brand_consistency", side_effect=RuntimeError("quota")):
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+                brand_profile={"tone_of_voice": "precise and technical"},
+            )
+
+        self.assertEqual(result["brand_consistency_status"], "unavailable")
+        self.assertIn("brand_consistency_unavailable", [flag["code"] for flag in result["qa_flags"]])
+        self.assertEqual(result["status"], "review")
 
     def test_page_copy_scrapes_use_saved_jina_key(self):
         settings = {

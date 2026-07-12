@@ -268,6 +268,30 @@ class CredentialSelectionTests(unittest.TestCase):
         self.assertNotIn("_gsc_service_account", hydrated)
         self.assertNotIn("attacker", repr(hydrated))
 
+    def test_hydration_loads_a_separate_reviewer_key(self):
+        tables = _tables("service_account")
+        tables["user_credentials"][0]["provider_settings"] = {
+            "provider": "Claude",
+            "api_keys": {
+                "Claude": "claude-runtime-secret",
+                "Gemini (free)": "gemini-runtime-secret",
+            },
+            "dfs_password": "runtime-dfs-secret",
+        }
+        hydrated = hydrate_job_settings(
+            _Supabase(tables),
+            "user-1",
+            {
+                "provider": "Claude",
+                "review_provider": "Gemini (free)",
+                "review_api_key": "attacker-review-secret",
+            },
+        )
+
+        self.assertEqual(hydrated["api_key"], "claude-runtime-secret")
+        self.assertEqual(hydrated["review_api_key"], "gemini-runtime-secret")
+        self.assertNotIn("attacker-review-secret", repr(hydrated))
+
     def test_reconnect_marker_is_tenant_status_and_ciphertext_stale_safe(self):
         tables = _tables("google_oauth")
         sb = _Supabase(tables)

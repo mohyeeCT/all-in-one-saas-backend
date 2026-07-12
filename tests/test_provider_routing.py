@@ -2,6 +2,7 @@ import json
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 from utils import copy_gen
 from utils.templates import get_template
@@ -1077,6 +1078,8 @@ class ProviderRoutingTests(unittest.TestCase):
             outputs={
                 "page_copy": {"benefits": "Guaranteed results for every client."},
             },
+            owned_page_evidence="Our locations include Detroit, Ann Arbor, and Warren.",
+            client_evidence="The client brief confirms delivery is available.",
         )
 
         self.assertEqual(result["issues"][0]["code"], "unsupported_claim")
@@ -1085,7 +1088,44 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(captured["max_tokens"], copy_gen.EDITORIAL_REVIEW_MAX_TOKENS)
         self.assertIn("The current page documents implementation support.", captured["prompt"])
         self.assertIn("Guaranteed results", captured["prompt"])
+        self.assertIn("Our locations include Detroit, Ann Arbor, and Warren.", captured["prompt"])
+        self.assertIn("The client brief confirms delivery is available.", captured["prompt"])
+        self.assertIn("curated but not exhaustive", captured["prompt"])
         self.assertIn("Do not evaluate keyword selection, placement, or exact-match usage", captured["prompt"])
+
+    def test_gemini_review_uses_json_mode_and_current_flash_model(self):
+        with patch.object(
+            copy_gen,
+            "_call_gemini_json",
+            return_value='{"issues": []}',
+        ) as call_gemini_json:
+            result = copy_gen.review_output_quality(
+                provider="Gemini (free)",
+                api_key="gemini-key",
+                strategy_brief={"primary_positioning": "Clear local positioning."},
+                outputs={"meta": {"title": "Example title"}},
+            )
+
+        self.assertEqual(result, {"issues": []})
+        call_gemini_json.assert_called_once()
+        self.assertEqual(call_gemini_json.call_args.kwargs["model"], "gemini-3.5-flash")
+
+    def test_gemini_brand_review_uses_json_mode(self):
+        with patch.object(
+            copy_gen,
+            "_call_gemini_json",
+            return_value='{"score": 91, "reason": "Strong alignment."}',
+        ) as call_gemini_json:
+            result = copy_gen.score_brand_consistency(
+                provider="Gemini (free)",
+                api_key="gemini-key",
+                brand_profile={"tone_of_voice": "direct"},
+                outputs={"meta": "Direct copy."},
+            )
+
+        self.assertEqual(result["score"], 91)
+        call_gemini_json.assert_called_once()
+        self.assertEqual(call_gemini_json.call_args.kwargs["model"], "gemini-3.5-flash")
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}

@@ -861,8 +861,24 @@ def _call_gemini(api_key: str, prompt: str, max_tokens: int = 1500, model: str =
     from google import genai
     client = genai.Client(api_key=api_key)
     resp = client.models.generate_content(
-        model=model or "gemini-2.0-flash",
+        model=model or "gemini-3.5-flash",
         contents=prompt,
+    )
+    return resp.text.strip()
+
+
+def _call_gemini_json(api_key: str, prompt: str, max_tokens: int = 1500, model: str = None) -> str:
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    resp = client.models.generate_content(
+        model=model or "gemini-3.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            max_output_tokens=max_tokens,
+        ),
     )
     return resp.text.strip()
 
@@ -903,8 +919,8 @@ PROVIDER_FN = {
 DEFAULT_MODELS = {
     "Claude": "claude-sonnet-5",
     "OpenAI": "gpt-5.5",
-    "Gemini": "gemini-2.0-flash",
-    "Gemini (free)": "gemini-2.0-flash",
+    "Gemini": "gemini-3.5-flash",
+    "Gemini (free)": "gemini-3.5-flash",
     "Mistral": "mistral-small-latest",
     "Mistral (free tier)": "mistral-small-latest",
     "Groq": "llama-3.3-70b-versatile",
@@ -1939,6 +1955,8 @@ def review_output_quality(
     model: str = None,
     strategy_brief: dict | None = None,
     outputs: dict | None = None,
+    owned_page_evidence: str = "",
+    client_evidence: str = "",
 ) -> dict:
     """Review assembled outputs against the strategy evidence contract."""
     fn = PROVIDER_FN.get(provider)
@@ -1966,6 +1984,12 @@ def review_output_quality(
 STRATEGY AND EVIDENCE CONTRACT:
 {json.dumps(review_contract, ensure_ascii=False)}
 
+OWNED-PAGE EVIDENCE:
+{owned_page_evidence or "Not available."}
+
+EXPLICIT CLIENT EVIDENCE:
+{client_evidence or "Not available."}
+
 GENERATED OUTPUTS:
 {json.dumps(outputs or {}, ensure_ascii=False)}
 
@@ -1975,8 +1999,11 @@ Flag only clear, actionable problems using these codes:
 - generic_exaggeration: persuasive wording materially overstates a verified fact, such as saying an award "vetted" the business or implying superiority beyond the evidence.
 
 Rules:
-- Verified facts are valid and must never be flagged as fabricated or unverified.
-- Judge each concrete claim against verified_facts. Do not infer adjacent facts.
+- Strategy verified facts are curated but not exhaustive.
+- Treat the current owned page as the strongest evidence, followed by explicit client evidence, then the strategy and brand profile.
+- Verified facts and claims directly supported by owned-page or explicit client evidence are valid and must never be flagged as fabricated or unverified.
+- Judge each concrete claim against all supplied client evidence. Do not infer adjacent facts.
+- AI Overview, PAA, and competitor material are research context, not evidence about the client.
 - Do not evaluate keyword selection, placement, or exact-match usage.
 - Do not flag ordinary transitions, subjective tone choices, or harmless paraphrases.
 - For page_copy issues, section must exactly match one supplied page-copy section key.
@@ -1984,7 +2011,8 @@ Rules:
 - Return at most 8 issues and omit speculative findings.
 - Return strict JSON only: {{"issues":[{{"output":"meta|faqs|page_copy","section":"section key or empty","code":"unsupported_claim|strategy_misalignment|generic_exaggeration","message":"short actionable explanation","claim":"exact problematic phrase"}}]}}
 """
-    raw = fn(
+    call = _call_gemini_json if provider.startswith("Gemini") else fn
+    raw = call(
         api_key,
         prompt,
         max_tokens=EDITORIAL_REVIEW_MAX_TOKENS,
@@ -2071,7 +2099,8 @@ Every item in verified_facts is approved evidence and must not reduce the score 
 Use facts_to_avoid and claims_to_avoid only to identify genuine brand-guideline violations in the generated outputs.
 """
 
-    raw = fn(api_key, prompt, max_tokens=DIAGNOSTIC_MAX_TOKENS, model=resolved_model)
+    call = _call_gemini_json if provider.startswith("Gemini") else fn
+    raw = call(api_key, prompt, max_tokens=DIAGNOSTIC_MAX_TOKENS, model=resolved_model)
     result = _parse_json_object(raw, "Brand consistency response must be a JSON object")
 
     try:

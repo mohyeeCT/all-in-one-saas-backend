@@ -1440,6 +1440,10 @@ def _process_single_row(
     provider     = settings.get("provider", "Claude")
     model        = settings.get("model") or None
     api_key      = settings.get("api_key", "")
+    review_provider = settings.get("review_provider") or provider
+    review_model = settings.get("review_model") or (model if review_provider == provider else None)
+    review_api_key = settings.get("review_api_key") or (api_key if review_provider == provider else "")
+    review_mode = "same_provider" if review_provider == provider else "cross_provider"
     brand_name   = settings.get("brand_name", "")
     business_type = settings.get("business_type", "general")
     min_volume   = int(settings.get("min_volume", 10))
@@ -1479,6 +1483,13 @@ def _process_single_row(
     run_diagnostics = {
         "provider": provider,
         "model": model or "",
+        "review": {
+            "provider": review_provider,
+            "model": review_model or "",
+            "mode": review_mode,
+            "editorial_status": "not_requested",
+            "brand_status": "not_requested",
+        },
         "gsc_auth_method": gsc_auth_method,
         "page_type": page_type,
         "template_key": template_key,
@@ -2097,6 +2108,7 @@ def _process_single_row(
     run_diagnostics["output_counts"]["word_count"] = word_count
 
     editorial_review = {"issues": []}
+    editorial_review_status = "not_requested"
     if strategy_status == "ready" and strategy_brief:
         editorial_outputs = _build_editorial_outputs(
             gen_meta=gen_meta,
@@ -2110,18 +2122,27 @@ def _process_single_row(
         )
         if editorial_outputs:
             step("reviewing evidence and strategy alignment...")
-            try:
-                editorial_review = review_output_quality(
-                    provider=provider,
-                    api_key=api_key,
-                    model=model,
-                    strategy_brief=strategy_brief,
-                    outputs=editorial_outputs,
-                )
-            except Exception as e:
-                step("editorial review unavailable: " + str(e)[:60])
+            if not review_api_key:
+                editorial_review_status = "unavailable"
+                step("editorial review unavailable: reviewer credentials missing")
+            else:
+                try:
+                    editorial_review = review_output_quality(
+                        provider=review_provider,
+                        api_key=review_api_key,
+                        model=review_model,
+                        strategy_brief=strategy_brief,
+                        outputs=editorial_outputs,
+                        owned_page_evidence=scraped_page_content,
+                        client_evidence=explicit_client_brief,
+                    )
+                    editorial_review_status = "ready"
+                except Exception as e:
+                    editorial_review_status = "unavailable"
+                    step("editorial review unavailable: " + str(e)[:60])
 
     run_diagnostics["output_counts"]["editorial_issues"] = len(editorial_review.get("issues") or [])
+    run_diagnostics["review"]["editorial_status"] = editorial_review_status
 
     # STEP 9 — Build combined docx
     docx_b64 = None
@@ -2175,7 +2196,16 @@ def _process_single_row(
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
     _add_editorial_qa_flags(qa_flags, editorial_review)
+    if editorial_review_status == "unavailable":
+        _add_qa_flag(
+            qa_flags,
+            "editorial_review_unavailable",
+            "Evidence and strategy review could not be completed.",
+            "editorial_review",
+            severity="review",
+        )
     brand_consistency = {}
+    brand_consistency_status = "not_requested"
     if settings.get("brand_consistency_check") and brand_profile:
         review_outputs = {}
         if gen_meta and (generated_title or generated_description or optimised_h1):
@@ -2192,28 +2222,42 @@ def _process_single_row(
             review_outputs["page_copy"] = full_page or "\n\n".join(str(v) for v in section_results.values())
 
         if review_outputs:
-            try:
-                brand_consistency = score_brand_consistency(
-                    provider=provider,
-                    api_key=api_key,
-                    model=model,
-                    brand_profile=brand_profile,
-                    strategy_brief=strategy_brief,
-                    outputs=review_outputs,
-                )
-                brand_consistency["evaluation_mode"] = "same_provider"
-                threshold = int(settings.get("brand_consistency_threshold", 70))
-                if brand_consistency.get("score", 100) < threshold:
-                    _add_qa_flag(
-                        qa_flags,
-                        "brand_consistency_low",
-                        "Brand consistency score is below the review threshold.",
-                        "brand_consistency",
+            if not review_api_key:
+                brand_consistency_status = "unavailable"
+            else:
+                try:
+                    brand_consistency = score_brand_consistency(
+                        provider=review_provider,
+                        api_key=review_api_key,
+                        model=review_model,
+                        brand_profile=brand_profile,
+                        strategy_brief=strategy_brief,
+                        outputs=review_outputs,
                     )
-                    qa_flags[-1]["score"] = brand_consistency.get("score")
-                    qa_flags[-1]["reason"] = brand_consistency.get("reason", "")
-            except Exception:
-                brand_consistency = {}
+                    brand_consistency_status = "ready"
+                    brand_consistency["evaluation_mode"] = review_mode
+                    threshold = int(settings.get("brand_consistency_threshold", 70))
+                    if brand_consistency.get("score", 100) < threshold:
+                        _add_qa_flag(
+                            qa_flags,
+                            "brand_consistency_low",
+                            "Brand consistency score is below the review threshold.",
+                            "brand_consistency",
+                        )
+                        qa_flags[-1]["score"] = brand_consistency.get("score")
+                        qa_flags[-1]["reason"] = brand_consistency.get("reason", "")
+                except Exception:
+                    brand_consistency_status = "unavailable"
+                    brand_consistency = {}
+            if brand_consistency_status == "unavailable":
+                _add_qa_flag(
+                    qa_flags,
+                    "brand_consistency_unavailable",
+                    "Brand consistency review could not be completed.",
+                    "brand_consistency",
+                    severity="review",
+                )
+    run_diagnostics["review"]["brand_status"] = brand_consistency_status
 
     return {
         "url":                  url,
@@ -2243,7 +2287,14 @@ def _process_single_row(
         "strategy_status":      strategy_status,
         "strategy_issues":      strategy_issues,
         "editorial_review":     editorial_review,
+        "editorial_review_status": editorial_review_status,
         "brand_consistency":    brand_consistency,
+        "brand_consistency_status": brand_consistency_status,
+        "review_providers": {
+            "generation": provider,
+            "editorial_review": review_provider,
+            "brand_consistency": review_provider,
+        },
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
         "qa_flags":             qa_flags,
@@ -2521,6 +2572,9 @@ class AIOSettings(BaseModel):
     provider: str = "Claude"
     model: str = ""
     api_key: str = ""
+    review_provider: str = ""
+    review_model: str = ""
+    review_api_key: str = ""
     dfs_login: str = ""
     dfs_password: str = ""
     business_type: str = "general"
