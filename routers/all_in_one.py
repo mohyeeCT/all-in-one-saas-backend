@@ -29,7 +29,9 @@ from utils.templates import get_template, get_templates_for_page_type, parse_cus
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
     generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
-    repair_faq_items, repair_meta_copy, sanitise, score_brand_consistency, strategy_brief_issues
+    repair_faq_items, repair_meta_copy, review_output_quality, sanitise, score_brand_consistency,
+    strategy_brief_issues, META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
+    META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
 )
 from utils.docx_export import build_docx
 
@@ -305,6 +307,63 @@ def _add_strategy_qa_flag(
     _add_qa_flag(flags, "strategy_brief_" + strategy_status, message, "strategy", severity="review")
     if issues:
         flags[-1]["details"] = issues[:6]
+
+
+def _build_editorial_outputs(
+    *,
+    gen_meta: bool,
+    gen_faqs: bool,
+    gen_page_copy: bool,
+    generated_title: str,
+    generated_description: str,
+    optimised_h1: str,
+    faq_items: list,
+    section_results: dict,
+) -> dict:
+    outputs = {}
+    if gen_meta and any((generated_title, generated_description, optimised_h1)):
+        outputs["meta"] = {
+            "title": generated_title or "",
+            "description": generated_description or "",
+            "h1_optimised": optimised_h1 or "",
+        }
+    if gen_faqs and faq_items:
+        outputs["faqs"] = faq_items
+    if gen_page_copy and section_results:
+        outputs["page_copy"] = {
+            key: value
+            for key, value in section_results.items()
+            if not str(key).startswith("_")
+        }
+    return outputs
+
+
+def _add_editorial_qa_flags(flags: list[dict], review: dict):
+    severity_by_code = {
+        "unsupported_claim": "review",
+        "strategy_misalignment": "review",
+        "generic_exaggeration": "warning",
+    }
+    for issue in (review or {}).get("issues", []):
+        if not isinstance(issue, dict):
+            continue
+        code = str(issue.get("code") or "").strip()
+        message = str(issue.get("message") or "").strip()
+        output = str(issue.get("output") or "").strip()
+        claim = str(issue.get("claim") or "").strip()
+        if not code or not message:
+            continue
+        _add_qa_flag(
+            flags,
+            code,
+            message,
+            output,
+            claim,
+            severity=severity_by_code.get(code, "review"),
+        )
+        section = str(issue.get("section") or "").strip()
+        if section:
+            flags[-1]["section"] = section
 
 
 def _normalise_similarity_text(text: str) -> list[str]:
@@ -662,26 +721,36 @@ def _add_meta_length_flags(
         return
     title = str(generated_title or "").strip()
     description = str(generated_description or "").strip()
-    if title and not 50 <= len(title) <= 80:
+    if title and not META_TITLE_PREFERRED_MIN <= len(title) <= META_TITLE_PREFERRED_MAX:
         severity = "review" if len(title) > 90 else "warning"
         _add_qa_flag(
             flags,
             "meta_title_outside_preferred_range",
-            f"Meta title is {len(title)} characters; the preferred range is 50 to 80.",
+            f"Meta title is {len(title)} characters; the preferred range is "
+            f"{META_TITLE_PREFERRED_MIN} to {META_TITLE_PREFERRED_MAX}.",
             "meta_title",
             severity=severity,
         )
-        flags[-1].update({"actual_length": len(title), "preferred_min": 50, "preferred_max": 80})
-    if description and not 140 <= len(description) <= 180:
+        flags[-1].update({
+            "actual_length": len(title),
+            "preferred_min": META_TITLE_PREFERRED_MIN,
+            "preferred_max": META_TITLE_PREFERRED_MAX,
+        })
+    if description and not META_DESCRIPTION_PREFERRED_MIN <= len(description) <= META_DESCRIPTION_PREFERRED_MAX:
         severity = "review" if len(description) > 200 else "warning"
         _add_qa_flag(
             flags,
             "meta_description_outside_preferred_range",
-            f"Meta description is {len(description)} characters; the preferred range is 140 to 180.",
+            f"Meta description is {len(description)} characters; the preferred range is "
+            f"{META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX}.",
             "meta_description",
             severity=severity,
         )
-        flags[-1].update({"actual_length": len(description), "preferred_min": 140, "preferred_max": 180})
+        flags[-1].update({
+            "actual_length": len(description),
+            "preferred_min": META_DESCRIPTION_PREFERRED_MIN,
+            "preferred_max": META_DESCRIPTION_PREFERRED_MAX,
+        })
 
 
 def _add_keyword_placement_flags(
@@ -786,10 +855,18 @@ def _meta_repair_issues(
         issues.append("Meta description is missing.")
     if not str(optimised_h1 or "").strip():
         issues.append("Optimised H1 is missing.")
-    if len(str(generated_title or "")) > 90:
-        issues.append("Title exceeds 90 characters.")
-    if len(str(generated_description or "")) > 200:
-        issues.append("Meta description exceeds 200 characters.")
+    title_length = len(str(generated_title or ""))
+    description_length = len(str(generated_description or ""))
+    if generated_title and not META_TITLE_PREFERRED_MIN <= title_length <= META_TITLE_PREFERRED_MAX:
+        issues.append(
+            f"Title is {title_length} characters; target "
+            f"{META_TITLE_PREFERRED_MIN} to {META_TITLE_PREFERRED_MAX}."
+        )
+    if generated_description and not META_DESCRIPTION_PREFERRED_MIN <= description_length <= META_DESCRIPTION_PREFERRED_MAX:
+        issues.append(
+            f"Meta description is {description_length} characters; target "
+            f"{META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX}."
+        )
     if input_h1 and _normalise_phrase(generated_title) == _normalise_phrase(input_h1):
         issues.append("Title duplicates the input H1.")
     if brand_name and _contains_forbidden_phrase(optimised_h1, brand_name):
@@ -1874,6 +1951,8 @@ def _process_single_row(
     section_results = {}
     full_page       = ""
     word_count      = 0
+    page_repair_attempts = 0
+    page_repair_failed = False
 
     if gen_page_copy and template:
         step("generating page copy (" + str(len(template["sections"])) + " sections)...")
@@ -1947,6 +2026,7 @@ def _process_single_row(
                 forbidden_phrase_list,
             )
             if repair_phrases:
+                page_repair_attempts += 1
                 try:
                     repaired_sections = repair_repeated_page_copy(
                         section_results=section_results,
@@ -1965,6 +2045,7 @@ def _process_single_row(
                         word_count = len(full_page.split())
                         step("page copy quality issues repaired")
                 except Exception as e:
+                    page_repair_failed = True
                     step("page copy repetition repair unavailable: " + str(e)[:60])
             run_diagnostics["output_counts"]["sections"] = len(section_results)
             run_diagnostics["output_counts"]["word_count"] = word_count
@@ -1975,8 +2056,74 @@ def _process_single_row(
             step("⚠ page copy failed: " + str(e)[:80])
 
     # ─────────────────────────────────────────────────────────────────────
-    # STEP 8 — Build combined docx
+    # STEP 8 — Review assembled outputs against the evidence contract
     # ─────────────────────────────────────────────────────────────────────
+    if gen_page_copy and section_results:
+        section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+        full_page = _assemble_full_page_copy(section_results, template)
+        word_count = len(full_page.split())
+        residual_phrases = _page_repair_phrases(
+            full_page,
+            [item["phrase"] for item in _repeated_phrase_candidates(full_page)],
+            business_type,
+            forbidden_phrase_list,
+        )
+        if residual_phrases and page_repair_attempts < 2 and not page_repair_failed:
+            page_repair_attempts += 1
+            try:
+                repaired_sections = repair_repeated_page_copy(
+                    section_results=section_results,
+                    repeated_phrases=residual_phrases,
+                    template=template,
+                    strategy_brief=strategy_brief,
+                    brand_name=brand_name,
+                    provider=provider,
+                    api_key=api_key,
+                    model=model,
+                )
+                if repaired_sections != section_results:
+                    section_results = repaired_sections
+                    section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+                    full_page = _assemble_full_page_copy(section_results, template)
+                    word_count = len(full_page.split())
+                    step("page copy residual issues repaired")
+            except Exception as e:
+                step("page copy residual repair unavailable: " + str(e)[:60])
+
+    if not input_h1_for_qa and optimised_h1:
+        h1 = optimised_h1
+    run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
+    run_diagnostics["output_counts"]["sections"] = len(section_results)
+    run_diagnostics["output_counts"]["word_count"] = word_count
+
+    editorial_review = {"issues": []}
+    if strategy_status == "ready" and strategy_brief:
+        editorial_outputs = _build_editorial_outputs(
+            gen_meta=gen_meta,
+            gen_faqs=gen_faqs,
+            gen_page_copy=gen_page_copy,
+            generated_title=generated_title or "",
+            generated_description=generated_description or "",
+            optimised_h1=optimised_h1 or "",
+            faq_items=faq_items,
+            section_results=section_results,
+        )
+        if editorial_outputs:
+            step("reviewing evidence and strategy alignment...")
+            try:
+                editorial_review = review_output_quality(
+                    provider=provider,
+                    api_key=api_key,
+                    model=model,
+                    strategy_brief=strategy_brief,
+                    outputs=editorial_outputs,
+                )
+            except Exception as e:
+                step("editorial review unavailable: " + str(e)[:60])
+
+    run_diagnostics["output_counts"]["editorial_issues"] = len(editorial_review.get("issues") or [])
+
+    # STEP 9 — Build combined docx
     docx_b64 = None
     step("building combined docx...")
     try:
@@ -2027,6 +2174,7 @@ def _process_single_row(
         business_type=business_type,
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
+    _add_editorial_qa_flags(qa_flags, editorial_review)
     brand_consistency = {}
     if settings.get("brand_consistency_check") and brand_profile:
         review_outputs = {}
@@ -2050,6 +2198,7 @@ def _process_single_row(
                     api_key=api_key,
                     model=model,
                     brand_profile=brand_profile,
+                    strategy_brief=strategy_brief,
                     outputs=review_outputs,
                 )
                 brand_consistency["evaluation_mode"] = "same_provider"
@@ -2093,6 +2242,7 @@ def _process_single_row(
         "strategy_brief":       strategy_brief,
         "strategy_status":      strategy_status,
         "strategy_issues":      strategy_issues,
+        "editorial_review":     editorial_review,
         "brand_consistency":    brand_consistency,
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
@@ -2160,13 +2310,13 @@ def _build_combined_docx(
             p = doc.add_paragraph()
             p.add_run("Title Tag: ").bold = True
             p.add_run(generated_title)
-            char_note = f"  ({len(generated_title)} chars{'  ⚠ over 90' if len(generated_title) > 90 else ''})"
+            char_note = f"  ({len(generated_title)} chars{'  ⚠ over 80' if len(generated_title) > META_TITLE_PREFERRED_MAX else ''})"
             p.add_run(char_note)
         if generated_description:
             p = doc.add_paragraph()
             p.add_run("Meta Description: ").bold = True
             p.add_run(generated_description)
-            char_note = f"  ({len(generated_description)} chars{'  ⚠ over 200' if len(generated_description) > 200 else ''})"
+            char_note = f"  ({len(generated_description)} chars{'  ⚠ over 180' if len(generated_description) > META_DESCRIPTION_PREFERRED_MAX else ''})"
             p.add_run(char_note)
         if optimised_h1:
             p = doc.add_paragraph()

@@ -339,8 +339,8 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result["h1_optimised"], "Example Service")
         self.assertEqual(captured["model"], "test-meta-model")
         self.assertEqual(captured["max_tokens"], copy_gen.META_MAX_TOKENS)
-        self.assertIn("Title should aim for up to 90 characters.", captured["prompt"])
-        self.assertIn("Meta description should aim for up to 200 characters.", captured["prompt"])
+        self.assertIn("Title should be 50 to 80 characters.", captured["prompt"])
+        self.assertIn("Meta description should be 140 to 180 characters.", captured["prompt"])
         self.assertIn("H1 has no hard character limit but should aim for under 80 characters.", captured["prompt"])
         self.assertIn("BRAND CONTEXT:", captured["prompt"])
         self.assertIn("- Voice: Plainspoken expert", captured["prompt"])
@@ -1018,6 +1018,14 @@ class ProviderRoutingTests(unittest.TestCase):
             api_key="key",
             model="brand-review-model",
             brand_profile={"tone_of_voice": "precise and technical", "words_to_avoid": "cheap"},
+            strategy_brief={
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "WDIV Detroit named the business Best Burger.",
+                    "source": "current_page",
+                }],
+                "facts_to_avoid": ["An unverified review count."],
+            },
             outputs={
                 "meta": "Industrial dosing systems for technical teams.",
                 "page_copy": "Helpful, friendly copy that sounds casual.",
@@ -1031,6 +1039,53 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Return strict JSON", captured["prompt"])
         self.assertIn("precise and technical", captured["prompt"])
         self.assertIn("cheap", captured["prompt"])
+        self.assertIn("WDIV Detroit named the business Best Burger.", captured["prompt"])
+        self.assertIn("An unverified review count.", captured["prompt"])
+        self.assertIn("must not reduce the score", captured["prompt"])
+
+    def test_output_quality_review_uses_verified_evidence_and_ignores_keywords(self):
+        captured = {}
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
+            captured["model"] = model
+            return json.dumps({
+                "issues": [{
+                    "output": "page_copy",
+                    "section": "benefits",
+                    "code": "unsupported_claim",
+                    "message": "The copy adds an unsupported guarantee.",
+                    "claim": "Guaranteed results",
+                }]
+            })
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+        result = copy_gen.review_output_quality(
+            provider="Test",
+            api_key="key",
+            model="editorial-review-model",
+            strategy_brief={
+                "primary_positioning": "Practical support backed by documented experience.",
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "The current page documents implementation support.",
+                    "source": "current_page",
+                }],
+                "facts_to_avoid": ["Guaranteed results"],
+            },
+            outputs={
+                "page_copy": {"benefits": "Guaranteed results for every client."},
+            },
+        )
+
+        self.assertEqual(result["issues"][0]["code"], "unsupported_claim")
+        self.assertEqual(result["issues"][0]["section"], "benefits")
+        self.assertEqual(captured["model"], "editorial-review-model")
+        self.assertEqual(captured["max_tokens"], copy_gen.EDITORIAL_REVIEW_MAX_TOKENS)
+        self.assertIn("The current page documents implementation support.", captured["prompt"])
+        self.assertIn("Guaranteed results", captured["prompt"])
+        self.assertIn("Do not evaluate keyword selection, placement, or exact-match usage", captured["prompt"])
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}

@@ -16,6 +16,11 @@ STRATEGY_BRIEF_MAX_TOKENS = 12288
 STRATEGY_BRIEF_CLAUDE_EFFORT = "medium"
 STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT = 2500
 STRATEGY_BRIEF_PAGE_CONTEXT_CHAR_LIMIT = 10000
+META_TITLE_PREFERRED_MIN = 50
+META_TITLE_PREFERRED_MAX = 80
+META_DESCRIPTION_PREFERRED_MIN = 140
+META_DESCRIPTION_PREFERRED_MAX = 180
+EDITORIAL_REVIEW_MAX_TOKENS = 2048
 
 
 # ── Sanitiser ─────────────────────────────────────────────────────────────────
@@ -1764,8 +1769,8 @@ Additional context: {kwargs.get("context", "") or "None"}
 {strategy_block}
 
 Rules:
-- Title should aim for up to 90 characters.
-- Meta description should aim for up to 200 characters.
+- Title should be {META_TITLE_PREFERRED_MIN} to {META_TITLE_PREFERRED_MAX} characters.
+- Meta description should be {META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX} characters.
 - H1 has no hard character limit but should aim for under 80 characters.
 - Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
 - Include the target keyword naturally, ideally near the start where it fits.
@@ -1838,7 +1843,8 @@ Supporting page context:
 Rules:
 - Preserve the strategy's primary positioning and headline direction.
 - Use verified facts as the complete allowlist for concrete brand claims.
-- Keep the title at or below 90 characters and the description at or below 200 characters.
+- Keep the title between {META_TITLE_PREFERRED_MIN} and {META_TITLE_PREFERRED_MAX} characters.
+- Keep the description between {META_DESCRIPTION_PREFERRED_MIN} and {META_DESCRIPTION_PREFERRED_MAX} characters.
 - Use a natural H1 below about 80 characters. Never put the brand name in the H1.
 - Do not force awkward search-query wording into the H1.
 - Never use forbidden phrases, em dashes, or exclamation marks.
@@ -1927,11 +1933,96 @@ Rules:
     ][:num_faqs]
 
 
+def review_output_quality(
+    provider: str,
+    api_key: str,
+    model: str = None,
+    strategy_brief: dict | None = None,
+    outputs: dict | None = None,
+) -> dict:
+    """Review assembled outputs against the strategy evidence contract."""
+    fn = PROVIDER_FN.get(provider)
+    if not fn:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    brief = strategy_brief or {}
+    review_contract = {
+        key: brief.get(key)
+        for key in (
+            "primary_positioning",
+            "supporting_attributes",
+            "headline_direction",
+            "meta_direction",
+            "faq_direction",
+            "verified_facts",
+            "facts_to_avoid",
+            "claims_to_avoid",
+            "section_guidance",
+        )
+        if brief.get(key)
+    }
+    prompt = f"""Review these assembled outputs against the supplied strategy and evidence contract.
+
+STRATEGY AND EVIDENCE CONTRACT:
+{json.dumps(review_contract, ensure_ascii=False)}
+
+GENERATED OUTPUTS:
+{json.dumps(outputs or {}, ensure_ascii=False)}
+
+Flag only clear, actionable problems using these codes:
+- unsupported_claim: a concrete client fact, comparison, guarantee, operational detail, or implication is not supported by verified_facts or is listed in facts_to_avoid / claims_to_avoid.
+- strategy_misalignment: an output contradicts the strategy's positioning, message priority, or section responsibility.
+- generic_exaggeration: persuasive wording materially overstates a verified fact, such as saying an award "vetted" the business or implying superiority beyond the evidence.
+
+Rules:
+- Verified facts are valid and must never be flagged as fabricated or unverified.
+- Judge each concrete claim against verified_facts. Do not infer adjacent facts.
+- Do not evaluate keyword selection, placement, or exact-match usage.
+- Do not flag ordinary transitions, subjective tone choices, or harmless paraphrases.
+- For page_copy issues, section must exactly match one supplied page-copy section key.
+- For meta or faqs, leave section empty.
+- Return at most 8 issues and omit speculative findings.
+- Return strict JSON only: {{"issues":[{{"output":"meta|faqs|page_copy","section":"section key or empty","code":"unsupported_claim|strategy_misalignment|generic_exaggeration","message":"short actionable explanation","claim":"exact problematic phrase"}}]}}
+"""
+    raw = fn(
+        api_key,
+        prompt,
+        max_tokens=EDITORIAL_REVIEW_MAX_TOKENS,
+        model=model or DEFAULT_MODELS.get(provider),
+    )
+    result = _parse_json_object(raw, "Editorial review response must be a JSON object")
+    allowed_outputs = {"meta", "faqs", "page_copy"}
+    allowed_codes = {"unsupported_claim", "strategy_misalignment", "generic_exaggeration"}
+    page_sections = set(((outputs or {}).get("page_copy") or {}).keys())
+    issues = []
+    for item in (result.get("issues") or [])[:8]:
+        if not isinstance(item, dict):
+            continue
+        output = str(item.get("output") or "").strip()
+        code = str(item.get("code") or "").strip()
+        section = str(item.get("section") or "").strip()
+        message = sanitise(str(item.get("message") or "").strip())[:300]
+        claim = sanitise(str(item.get("claim") or "").strip())[:240]
+        if output not in allowed_outputs or code not in allowed_codes or not message:
+            continue
+        if output == "page_copy" and section not in page_sections:
+            continue
+        issues.append({
+            "output": output,
+            "section": section if output == "page_copy" else "",
+            "code": code,
+            "message": message,
+            "claim": claim,
+        })
+    return {"issues": issues}
+
+
 def score_brand_consistency(
     provider: str,
     api_key: str,
     model: str = None,
     brand_profile: dict | None = None,
+    strategy_brief: dict | None = None,
     outputs: dict | None = None,
 ) -> dict:
     fn = PROVIDER_FN.get(provider)
@@ -1940,6 +2031,14 @@ def score_brand_consistency(
 
     resolved_model = model or DEFAULT_MODELS.get(provider)
     profile = brand_profile or {}
+    brief = strategy_brief or {}
+    evidence_context = {
+        "verified_facts": brief.get("verified_facts") or [],
+        "facts_to_avoid": brief.get("facts_to_avoid") or [],
+        "claims_to_avoid": brief.get("claims_to_avoid") or [],
+        "primary_positioning": brief.get("primary_positioning") or "",
+        "supporting_attributes": brief.get("supporting_attributes") or [],
+    }
     output_lines = []
     for label, value in (outputs or {}).items():
         text = str(value or "").strip()
@@ -1958,13 +2057,18 @@ BRAND PROFILE:
 - Guidelines: {profile.get("guidelines") or "Not specified"}
 - Example copy style: {profile.get("example_copy") or "Not specified"}
 
+VERIFIED EVIDENCE AND MESSAGE PRIORITIES:
+{json.dumps(evidence_context, ensure_ascii=False)}
+
 GENERATED OUTPUTS:
 {chr(10).join(output_lines) or "No generated outputs provided."}
 
 Return strict JSON with:
 {{"score": 0-100, "reason": "one short sentence"}}
 
-Score based only on brand voice, tone, avoided words, and alignment with the profile. Do not judge SEO quality or factual completeness.
+Score based only on brand voice, tone, avoided words, and message alignment. Do not judge SEO quality or factual completeness.
+Every item in verified_facts is approved evidence and must not reduce the score or be described as fabricated, unlisted, or unverified.
+Use facts_to_avoid and claims_to_avoid only to identify genuine brand-guideline violations in the generated outputs.
 """
 
     raw = fn(api_key, prompt, max_tokens=DIAGNOSTIC_MAX_TOKENS, model=resolved_model)

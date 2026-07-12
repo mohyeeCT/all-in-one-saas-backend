@@ -198,6 +198,15 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 side_effect=lambda **kwargs: kwargs["faq_items"],
             )
         )
+        editorial_review_patch = (
+            nullcontext()
+            if isinstance(all_in_one.review_output_quality, Mock)
+            else patch.object(
+                all_in_one,
+                "review_output_quality",
+                return_value={"issues": []},
+            )
+        )
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -214,6 +223,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              strategy_issues_patch, \
              meta_repair_patch, \
              faq_repair_patch, \
+             editorial_review_patch, \
              docx_patch:
             return all_in_one._process_single_row(
                 row=row,
@@ -641,6 +651,32 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         owned_scrape.assert_called_once_with("jina-key", "https://example.com/industrial-dosing")
         self.assertEqual(generate_strategy.call_args.kwargs["page_context"], "Owned page evidence.")
+
+    def test_meta_repair_uses_same_preferred_ranges_as_final_qa(self):
+        issues = all_in_one._meta_repair_issues(
+            generated_title="T" * 81,
+            generated_description="D" * 181,
+            optimised_h1="Natural service heading",
+            input_h1="",
+            brand_name="Example",
+            business_type="service",
+            forbidden_phrases=[],
+        )
+
+        self.assertIn("Title is 81 characters; target 50 to 80.", issues)
+        self.assertIn("Meta description is 181 characters; target 140 to 180.", issues)
+
+        in_range = all_in_one._meta_repair_issues(
+            generated_title="T" * 50,
+            generated_description="D" * 140,
+            optimised_h1="Natural service heading",
+            input_h1="",
+            brand_name="Example",
+            business_type="service",
+            forbidden_phrases=[],
+        )
+        self.assertFalse(any("target 50 to 80" in issue for issue in in_range))
+        self.assertFalse(any("target 140 to 180" in issue for issue in in_range))
 
     def test_meta_generation_receives_scraped_page_context(self):
         settings = {
@@ -1103,6 +1139,116 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         repair.assert_called_once()
         self.assertEqual(result["section_results"]["hero"], repaired_copy)
+        self.assertFalse(any(flag["code"] == "repeated_phrase" for flag in result["qa_flags"]))
+
+    def test_editorial_review_flags_unsupported_claim_without_rewriting_output(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        original = "# Industrial Dosing Systems\nLocal media vetted this service for every operations team."
+        review_result = {
+            "issues": [{
+                "output": "page_copy",
+                "section": "hero",
+                "code": "unsupported_claim",
+                "message": "The wording adds an unsupported endorsement.",
+                "claim": "Local media vetted this service",
+            }]
+        }
+
+        with patch.object(all_in_one, "generate_page", return_value={
+                 "hero": original,
+                 "_full_page": original,
+                 "_word_count": len(original.split()),
+             }), \
+             patch.object(
+                 all_in_one,
+                 "review_output_quality",
+                 return_value=review_result,
+             ) as review:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        review.assert_called_once()
+        self.assertEqual(result["section_results"]["hero"], original)
+        self.assertEqual(result["editorial_review"], review_result)
+        flag = next(flag for flag in result["qa_flags"] if flag["code"] == "unsupported_claim")
+        self.assertEqual(flag["section"], "hero")
+        self.assertEqual(result["status"], "review")
+
+    def test_page_repair_gets_one_bounded_residual_pass(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        original = (
+            "# Industrial Dosing Systems\n"
+            "Gas station locations need planning. Gas station locations need records. "
+            "Gas station locations need clear ownership."
+        )
+        partial = (
+            "# Industrial Dosing Systems\n"
+            "Gas station locations need planning. Gas station locations need records. "
+            "Gas station locations also need clear ownership and documented responsibilities."
+        )
+        repaired = (
+            "# Industrial Dosing Systems\n"
+            "Operations teams need practical planning, useful records, clear ownership, "
+            "and documented responsibilities for daily maintenance work."
+        )
+
+        with patch.object(all_in_one, "generate_page", return_value={
+                 "hero": original,
+                 "_full_page": original,
+                 "_word_count": len(original.split()),
+             }), \
+             patch.object(
+                 all_in_one,
+                 "repair_repeated_page_copy",
+                 side_effect=[{"hero": partial}, {"hero": repaired}],
+             ) as repair:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(repair.call_count, 2)
+        self.assertEqual(result["section_results"]["hero"], repaired)
         self.assertFalse(any(flag["code"] == "repeated_phrase" for flag in result["qa_flags"]))
 
     def test_page_copy_h1_is_replaced_with_meta_h1_before_qa(self):
