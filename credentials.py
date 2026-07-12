@@ -80,18 +80,19 @@ def load_active_gsc_credentials(sb, user_id: str) -> dict | None:
 
 def hydrate_job_settings(sb, user_id: str, settings: dict | None) -> dict:
     hydrated = strip_secret_fields(settings)
+    for legacy_key in (
+        "review_provider",
+        "review_model",
+        "review_api_key",
+        "brand_consistency_check",
+        "brand_consistency_threshold",
+    ):
+        hydrated.pop(legacy_key, None)
     credentials = load_user_credentials(sb, user_id)
     stored = credentials.get("provider_settings") or {}
     api_key = get_provider_api_key(stored, hydrated.get("provider") or stored.get("provider"))
     if api_key:
         hydrated["api_key"] = api_key
-    review_provider = hydrated.get("review_provider") or hydrated.get("provider") or stored.get("provider")
-    if review_provider == hydrated.get("provider"):
-        review_api_key = api_key
-    else:
-        review_api_key = get_provider_api_key(stored, review_provider)
-    if review_api_key:
-        hydrated["review_api_key"] = review_api_key
     for key in {"dfs_password", "jina_api_key"}:
         if stored.get(key):
             hydrated[key] = stored[key]

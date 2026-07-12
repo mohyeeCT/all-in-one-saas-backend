@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from google.auth.exceptions import RefreshError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from auth import get_current_user, get_supabase
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
@@ -28,8 +28,7 @@ from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
-    repair_faq_items, repair_meta_copy, review_output_quality, sanitise, score_brand_consistency,
+    generate_page, generate_faq, generate_faq_plan, generate_copy, generate_strategy_brief, sanitise,
     strategy_brief_issues, META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
     META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
 )
@@ -307,63 +306,6 @@ def _add_strategy_qa_flag(
     _add_qa_flag(flags, "strategy_brief_" + strategy_status, message, "strategy", severity="review")
     if issues:
         flags[-1]["details"] = issues[:6]
-
-
-def _build_editorial_outputs(
-    *,
-    gen_meta: bool,
-    gen_faqs: bool,
-    gen_page_copy: bool,
-    generated_title: str,
-    generated_description: str,
-    optimised_h1: str,
-    faq_items: list,
-    section_results: dict,
-) -> dict:
-    outputs = {}
-    if gen_meta and any((generated_title, generated_description, optimised_h1)):
-        outputs["meta"] = {
-            "title": generated_title or "",
-            "description": generated_description or "",
-            "h1_optimised": optimised_h1 or "",
-        }
-    if gen_faqs and faq_items:
-        outputs["faqs"] = faq_items
-    if gen_page_copy and section_results:
-        outputs["page_copy"] = {
-            key: value
-            for key, value in section_results.items()
-            if not str(key).startswith("_")
-        }
-    return outputs
-
-
-def _add_editorial_qa_flags(flags: list[dict], review: dict):
-    severity_by_code = {
-        "unsupported_claim": "review",
-        "strategy_misalignment": "review",
-        "generic_exaggeration": "warning",
-    }
-    for issue in (review or {}).get("issues", []):
-        if not isinstance(issue, dict):
-            continue
-        code = str(issue.get("code") or "").strip()
-        message = str(issue.get("message") or "").strip()
-        output = str(issue.get("output") or "").strip()
-        claim = str(issue.get("claim") or "").strip()
-        if not code or not message:
-            continue
-        _add_qa_flag(
-            flags,
-            code,
-            message,
-            output,
-            claim,
-            severity=severity_by_code.get(code, "review"),
-        )
-        section = str(issue.get("section") or "").strip()
-        if section:
-            flags[-1]["section"] = section
 
 
 def _normalise_similarity_text(text: str) -> list[str]:
@@ -825,6 +767,14 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
             _add_qa_flag(flags, "faq_question_missing_question_mark", "FAQ question does not end with a question mark.", output, severity="warning")
         if question and not answer:
             _add_qa_flag(flags, "faq_answer_missing", "FAQ question has no answer.", output, severity="review")
+        if not item.get("fact_ids"):
+            _add_qa_flag(
+                flags,
+                "faq_evidence_missing",
+                "FAQ answer is not bound to verified evidence and must not be published.",
+                output,
+                severity="review",
+            )
         combined = f"{question}\n{answer}"
         for topic in _FAQ_RISKY_TOPICS:
             if _contains_forbidden_phrase(combined, topic):
@@ -837,110 +787,6 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
                     severity="warning",
                 )
                 break
-
-
-def _meta_repair_issues(
-    generated_title: str,
-    generated_description: str,
-    optimised_h1: str,
-    input_h1: str,
-    brand_name: str,
-    business_type: str,
-    forbidden_phrases: list[str],
-) -> list[str]:
-    issues = []
-    if not str(generated_title or "").strip():
-        issues.append("Title is missing.")
-    if not str(generated_description or "").strip():
-        issues.append("Meta description is missing.")
-    if not str(optimised_h1 or "").strip():
-        issues.append("Optimised H1 is missing.")
-    title_length = len(str(generated_title or ""))
-    description_length = len(str(generated_description or ""))
-    if generated_title and not META_TITLE_PREFERRED_MIN <= title_length <= META_TITLE_PREFERRED_MAX:
-        issues.append(
-            f"Title is {title_length} characters; target "
-            f"{META_TITLE_PREFERRED_MIN} to {META_TITLE_PREFERRED_MAX}."
-        )
-    if generated_description and not META_DESCRIPTION_PREFERRED_MIN <= description_length <= META_DESCRIPTION_PREFERRED_MAX:
-        issues.append(
-            f"Meta description is {description_length} characters; target "
-            f"{META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX}."
-        )
-    if input_h1 and _normalise_phrase(generated_title) == _normalise_phrase(input_h1):
-        issues.append("Title duplicates the input H1.")
-    if brand_name and _contains_forbidden_phrase(optimised_h1, brand_name):
-        issues.append("Optimised H1 contains the brand name.")
-
-    outputs = {
-        "title": str(generated_title or ""),
-        "description": str(generated_description or ""),
-        "H1": str(optimised_h1 or ""),
-    }
-    for label, text in outputs.items():
-        if "!" in text:
-            issues.append(f"{label} contains an exclamation mark.")
-        for phrase in forbidden_phrases:
-            if _contains_forbidden_phrase(text, phrase):
-                issues.append(f'{label} contains forbidden phrase "{phrase}".')
-        if str(business_type or "").casefold() == "b2b":
-            for phrase in _B2B_CONSUMER_CTAS:
-                if _contains_forbidden_phrase(text, phrase):
-                    issues.append(f'{label} contains B2B-inappropriate CTA "{phrase}".')
-    return list(dict.fromkeys(issues))
-
-
-def _faq_repair_issues(
-    faq_items: list,
-    business_type: str,
-    forbidden_phrases: list[str],
-) -> list[str]:
-    issues = []
-    seen_questions = set()
-    for index, item in enumerate(faq_items or []):
-        if not isinstance(item, dict):
-            issues.append(f"FAQ {index + 1} is not a valid object.")
-            continue
-        question = str(item.get("question") or "").strip()
-        answer = str(item.get("answer") or "").strip()
-        normalised = _normalise_phrase(question.rstrip("?"))
-        if not question or not answer:
-            issues.append(f"FAQ {index + 1} is missing a question or answer.")
-        if question and not question.endswith("?"):
-            issues.append(f"FAQ {index + 1} question has no question mark.")
-        if normalised and normalised in seen_questions:
-            issues.append(f"FAQ {index + 1} duplicates an earlier question.")
-        seen_questions.add(normalised)
-        combined = f"{question}\n{answer}"
-        if "!" in combined:
-            issues.append(f"FAQ {index + 1} contains an exclamation mark.")
-        for phrase in forbidden_phrases:
-            if _contains_forbidden_phrase(combined, phrase):
-                issues.append(f'FAQ {index + 1} contains forbidden phrase "{phrase}".')
-        if str(business_type or "").casefold() == "b2b":
-            for phrase in _B2B_CONSUMER_CTAS:
-                if _contains_forbidden_phrase(combined, phrase):
-                    issues.append(f'FAQ {index + 1} contains B2B-inappropriate CTA "{phrase}".')
-    return list(dict.fromkeys(issues))
-
-
-def _page_repair_phrases(
-    page_copy_text: str,
-    repeated_phrases: list[str],
-    business_type: str,
-    forbidden_phrases: list[str],
-) -> list[str]:
-    phrases = [str(phrase).strip() for phrase in repeated_phrases if str(phrase).strip()]
-    if "!" in str(page_copy_text or ""):
-        phrases.append("!")
-    for phrase in forbidden_phrases:
-        if _contains_forbidden_phrase(page_copy_text, phrase):
-            phrases.append(phrase)
-    if str(business_type or "").casefold() == "b2b":
-        for phrase in _B2B_CONSUMER_CTAS:
-            if _contains_forbidden_phrase(page_copy_text, phrase):
-                phrases.append(phrase)
-    return list(dict.fromkeys(phrases))
 
 
 def _add_keyword_presence_flags(
@@ -1301,6 +1147,7 @@ def _collect_qa_flags(
     input_h1: str,
     primary_keyword: str,
     faq_items: list,
+    requested_faq_count: int = 0,
     section_results: dict,
     forbidden_phrases: list[str],
     template: dict | None = None,
@@ -1320,7 +1167,15 @@ def _collect_qa_flags(
             _add_qa_flag(flags, "meta_title_matches_h1", "Generated title matches the input H1.", "meta")
 
     if gen_faqs and not faq_items:
-        _add_qa_flag(flags, "faq_missing", "FAQs were requested but no FAQ items were generated.", "faq")
+        _add_qa_flag(flags, "faq_missing", "No evidence-bound FAQ items were generated.", "faq")
+    elif gen_faqs and requested_faq_count > 0 and len(faq_items) < requested_faq_count:
+        _add_qa_flag(
+            flags,
+            "faq_count_incomplete",
+            f"Only {len(faq_items)} of {requested_faq_count} requested FAQs passed evidence validation.",
+            "faq",
+            severity="review",
+        )
 
     page_copy_text = "\n\n".join(str(v) for k, v in (section_results or {}).items() if not str(k).startswith("_"))
     if gen_page_copy and not page_copy_text.strip():
@@ -1440,10 +1295,6 @@ def _process_single_row(
     provider     = settings.get("provider", "Claude")
     model        = settings.get("model") or None
     api_key      = settings.get("api_key", "")
-    review_provider = settings.get("review_provider") or provider
-    review_model = settings.get("review_model") or (model if review_provider == provider else None)
-    review_api_key = settings.get("review_api_key") or (api_key if review_provider == provider else "")
-    review_mode = "same_provider" if review_provider == provider else "cross_provider"
     brand_name   = settings.get("brand_name", "")
     business_type = settings.get("business_type", "general")
     min_volume   = int(settings.get("min_volume", 10))
@@ -1483,13 +1334,6 @@ def _process_single_row(
     run_diagnostics = {
         "provider": provider,
         "model": model or "",
-        "review": {
-            "provider": review_provider,
-            "model": review_model or "",
-            "mode": review_mode,
-            "editorial_status": "not_requested",
-            "brand_status": "not_requested",
-        },
         "gsc_auth_method": gsc_auth_method,
         "page_type": page_type,
         "template_key": template_key,
@@ -1827,45 +1671,6 @@ def _process_single_row(
             generated_title       = meta_result.get("title", "")
             generated_description = meta_result.get("description", "")
             optimised_h1          = meta_result.get("h1_optimised", "")
-            meta_issues = _meta_repair_issues(
-                generated_title,
-                generated_description,
-                optimised_h1,
-                input_h1_for_qa,
-                brand_name if include_brand else "",
-                business_type,
-                forbidden_phrase_list,
-            )
-            if meta_issues:
-                try:
-                    repaired_meta = repair_meta_copy(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        current={
-                            "title": generated_title,
-                            "description": generated_description,
-                            "h1_optimised": optimised_h1,
-                        },
-                        issues=meta_issues,
-                        url=url,
-                        keyword=primary_keyword,
-                        page_type=page_type,
-                        business_type=business_type,
-                        brand_name=brand_name if include_brand else "",
-                        input_h1=input_h1_for_qa,
-                        forbidden_phrases=forbidden_phrase_text,
-                        context="\n\n".join(meta_context_parts),
-                        brand_context=brand_context,
-                        strategy_brief=strategy_brief,
-                    )
-                    if all(str(repaired_meta.get(key) or "").strip() for key in ("title", "description", "h1_optimised")):
-                        generated_title = repaired_meta["title"]
-                        generated_description = repaired_meta["description"]
-                        optimised_h1 = repaired_meta["h1_optimised"]
-                        step("meta copy repaired")
-                except Exception as e:
-                    step("meta repair unavailable: " + str(e)[:60])
             # Use optimised H1 as page H1 if we didn't have one
             if not h1 and optimised_h1:
                 h1 = optimised_h1
@@ -1883,9 +1688,28 @@ def _process_single_row(
     if gen_faqs:
         step("generating FAQs...")
         try:
-            from utils.dfs import get_serp_data as _gsd
             ai_ov_for_faq = ai_overview
             paa_for_faq   = paa_questions
+
+            faq_plan = []
+            if strategy_status == "ready" and strategy_brief.get("verified_facts"):
+                faq_plan = generate_faq_plan(
+                    provider=provider,
+                    api_key=api_key,
+                    model=model,
+                    keyword=primary_keyword,
+                    page_type=page_type,
+                    business_type=business_type,
+                    brand_name=brand_name if include_brand else "",
+                    num_faqs=num_faqs,
+                    paa_items=paa_for_faq,
+                    ai_overview_raw=ai_ov_for_faq,
+                    strategy_brief=strategy_brief,
+                )
+            if faq_plan:
+                step("FAQ evidence plan ready: " + str(len(faq_plan)) + " questions")
+            else:
+                step("FAQ evidence plan unavailable; no ungrounded FAQs will be saved")
 
             faq_items = generate_faq(
                 provider=provider,
@@ -1904,34 +1728,11 @@ def _process_single_row(
                 page_context=page_context,
                 brand_profile=brand_profile,
                 strategy_brief=strategy_brief,
+                faq_plan=faq_plan,
             )
             faq_items, faqs_trimmed = _limit_faq_items(faq_items, num_faqs)
             if faqs_trimmed:
                 step("FAQs trimmed to requested count: " + str(len(faq_items)))
-            faq_issues = _faq_repair_issues(faq_items, business_type, forbidden_phrase_list)
-            if faq_issues:
-                try:
-                    repaired_faqs = repair_faq_items(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        faq_items=faq_items,
-                        issues=faq_issues,
-                        keyword=primary_keyword,
-                        page_type=page_type,
-                        business_type=business_type,
-                        brand_name=brand_name if include_brand else "",
-                        num_faqs=num_faqs,
-                        page_context=page_context,
-                        forbidden_phrases=forbidden_phrase_text,
-                        strategy_brief=strategy_brief,
-                    )
-                    repaired_faqs, _ = _limit_faq_items(repaired_faqs, num_faqs)
-                    if len(repaired_faqs) == num_faqs:
-                        faq_items = repaired_faqs
-                        step("FAQ quality issues repaired")
-                except Exception as e:
-                    step("FAQ repair unavailable: " + str(e)[:60])
             step("✓ FAQs: " + str(len(faq_items)) + " generated")
 
             # Build schema
@@ -1962,8 +1763,6 @@ def _process_single_row(
     section_results = {}
     full_page       = ""
     word_count      = 0
-    page_repair_attempts = 0
-    page_repair_failed = False
 
     if gen_page_copy and template:
         step("generating page copy (" + str(len(template["sections"])) + " sections)...")
@@ -2026,38 +1825,6 @@ def _process_single_row(
                 full_page = _assemble_full_page_copy(section_results, template)
                 word_count = len(full_page.split())
                 step("page copy H1 aligned to meta H1")
-            repeated_phrases = [
-                item["phrase"]
-                for item in _repeated_phrase_candidates(full_page or _full_page_copy_text(section_results))
-            ]
-            repair_phrases = _page_repair_phrases(
-                full_page or _full_page_copy_text(section_results),
-                repeated_phrases,
-                business_type,
-                forbidden_phrase_list,
-            )
-            if repair_phrases:
-                page_repair_attempts += 1
-                try:
-                    repaired_sections = repair_repeated_page_copy(
-                        section_results=section_results,
-                        repeated_phrases=repair_phrases,
-                        template=template,
-                        strategy_brief=strategy_brief,
-                        brand_name=brand_name,
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                    )
-                    if repaired_sections != section_results:
-                        section_results = repaired_sections
-                        section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
-                        full_page = _assemble_full_page_copy(section_results, template)
-                        word_count = len(full_page.split())
-                        step("page copy quality issues repaired")
-                except Exception as e:
-                    page_repair_failed = True
-                    step("page copy repetition repair unavailable: " + str(e)[:60])
             run_diagnostics["output_counts"]["sections"] = len(section_results)
             run_diagnostics["output_counts"]["word_count"] = word_count
             step("✓ page copy: " + str(word_count) + " words")
@@ -2067,82 +1834,18 @@ def _process_single_row(
             step("⚠ page copy failed: " + str(e)[:80])
 
     # ─────────────────────────────────────────────────────────────────────
-    # STEP 8 — Review assembled outputs against the evidence contract
+    # STEP 8 — Finalise generated output
     # ─────────────────────────────────────────────────────────────────────
     if gen_page_copy and section_results:
         section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
         full_page = _assemble_full_page_copy(section_results, template)
         word_count = len(full_page.split())
-        residual_phrases = _page_repair_phrases(
-            full_page,
-            [item["phrase"] for item in _repeated_phrase_candidates(full_page)],
-            business_type,
-            forbidden_phrase_list,
-        )
-        if residual_phrases and page_repair_attempts < 2 and not page_repair_failed:
-            page_repair_attempts += 1
-            try:
-                repaired_sections = repair_repeated_page_copy(
-                    section_results=section_results,
-                    repeated_phrases=residual_phrases,
-                    template=template,
-                    strategy_brief=strategy_brief,
-                    brand_name=brand_name,
-                    provider=provider,
-                    api_key=api_key,
-                    model=model,
-                )
-                if repaired_sections != section_results:
-                    section_results = repaired_sections
-                    section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
-                    full_page = _assemble_full_page_copy(section_results, template)
-                    word_count = len(full_page.split())
-                    step("page copy residual issues repaired")
-            except Exception as e:
-                step("page copy residual repair unavailable: " + str(e)[:60])
 
     if not input_h1_for_qa and optimised_h1:
         h1 = optimised_h1
     run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
     run_diagnostics["output_counts"]["sections"] = len(section_results)
     run_diagnostics["output_counts"]["word_count"] = word_count
-
-    editorial_review = {"issues": []}
-    editorial_review_status = "not_requested"
-    if strategy_status == "ready" and strategy_brief:
-        editorial_outputs = _build_editorial_outputs(
-            gen_meta=gen_meta,
-            gen_faqs=gen_faqs,
-            gen_page_copy=gen_page_copy,
-            generated_title=generated_title or "",
-            generated_description=generated_description or "",
-            optimised_h1=optimised_h1 or "",
-            faq_items=faq_items,
-            section_results=section_results,
-        )
-        if editorial_outputs:
-            step("reviewing evidence and strategy alignment...")
-            if not review_api_key:
-                editorial_review_status = "unavailable"
-                step("editorial review unavailable: reviewer credentials missing")
-            else:
-                try:
-                    editorial_review = review_output_quality(
-                        provider=review_provider,
-                        api_key=review_api_key,
-                        model=review_model,
-                        strategy_brief=strategy_brief,
-                        outputs=editorial_outputs,
-                        owned_page_evidence=scraped_page_content,
-                        client_evidence=explicit_client_brief,
-                    )
-                    editorial_review_status = "ready"
-                except Exception as e:
-                    editorial_review_status = "unavailable"
-                    step("editorial review unavailable: " + str(e)[:60])
-
-    run_diagnostics["output_counts"]["editorial_issues"] = len(editorial_review.get("issues") or [])
-    run_diagnostics["review"]["editorial_status"] = editorial_review_status
 
     # STEP 9 — Build combined docx
     docx_b64 = None
@@ -2188,6 +1891,7 @@ def _process_single_row(
         input_h1=input_h1_for_qa,
         primary_keyword=primary_keyword,
         faq_items=faq_items,
+        requested_faq_count=num_faqs,
         section_results=section_results,
         forbidden_phrases=forbidden_phrase_list,
         template=template,
@@ -2195,69 +1899,6 @@ def _process_single_row(
         business_type=business_type,
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
-    _add_editorial_qa_flags(qa_flags, editorial_review)
-    if editorial_review_status == "unavailable":
-        _add_qa_flag(
-            qa_flags,
-            "editorial_review_unavailable",
-            "Evidence and strategy review could not be completed.",
-            "editorial_review",
-            severity="review",
-        )
-    brand_consistency = {}
-    brand_consistency_status = "not_requested"
-    if settings.get("brand_consistency_check") and brand_profile:
-        review_outputs = {}
-        if gen_meta and (generated_title or generated_description or optimised_h1):
-            review_outputs["meta"] = "\n".join(
-                value for value in [generated_title or "", generated_description or "", optimised_h1 or ""] if value
-            )
-        if gen_faqs and faq_items:
-            review_outputs["faqs"] = "\n".join(
-                f"{item.get('question', '')}\n{item.get('answer', '')}"
-                for item in faq_items
-                if isinstance(item, dict)
-            )
-        if gen_page_copy and (full_page or section_results):
-            review_outputs["page_copy"] = full_page or "\n\n".join(str(v) for v in section_results.values())
-
-        if review_outputs:
-            if not review_api_key:
-                brand_consistency_status = "unavailable"
-            else:
-                try:
-                    brand_consistency = score_brand_consistency(
-                        provider=review_provider,
-                        api_key=review_api_key,
-                        model=review_model,
-                        brand_profile=brand_profile,
-                        strategy_brief=strategy_brief,
-                        outputs=review_outputs,
-                    )
-                    brand_consistency_status = "ready"
-                    brand_consistency["evaluation_mode"] = review_mode
-                    threshold = int(settings.get("brand_consistency_threshold", 70))
-                    if brand_consistency.get("score", 100) < threshold:
-                        _add_qa_flag(
-                            qa_flags,
-                            "brand_consistency_low",
-                            "Brand consistency score is below the review threshold.",
-                            "brand_consistency",
-                        )
-                        qa_flags[-1]["score"] = brand_consistency.get("score")
-                        qa_flags[-1]["reason"] = brand_consistency.get("reason", "")
-                except Exception:
-                    brand_consistency_status = "unavailable"
-                    brand_consistency = {}
-            if brand_consistency_status == "unavailable":
-                _add_qa_flag(
-                    qa_flags,
-                    "brand_consistency_unavailable",
-                    "Brand consistency review could not be completed.",
-                    "brand_consistency",
-                    severity="review",
-                )
-    run_diagnostics["review"]["brand_status"] = brand_consistency_status
 
     return {
         "url":                  url,
@@ -2286,15 +1927,6 @@ def _process_single_row(
         "strategy_brief":       strategy_brief,
         "strategy_status":      strategy_status,
         "strategy_issues":      strategy_issues,
-        "editorial_review":     editorial_review,
-        "editorial_review_status": editorial_review_status,
-        "brand_consistency":    brand_consistency,
-        "brand_consistency_status": brand_consistency_status,
-        "review_providers": {
-            "generation": provider,
-            "editorial_review": review_provider,
-            "brand_consistency": review_provider,
-        },
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
         "qa_flags":             qa_flags,
@@ -2572,9 +2204,6 @@ class AIOSettings(BaseModel):
     provider: str = "Claude"
     model: str = ""
     api_key: str = ""
-    review_provider: str = ""
-    review_model: str = ""
-    review_api_key: str = ""
     dfs_login: str = ""
     dfs_password: str = ""
     business_type: str = "general"
@@ -2590,8 +2219,6 @@ class AIOSettings(BaseModel):
     custom_template_text: str = ""
     client_brief: str = ""
     brand_profile_id: str = ""
-    brand_consistency_check: bool = False
-    brand_consistency_threshold: int = Field(default=70, ge=0, le=100)
     jina_api_key: str = ""
     use_gsc: bool = False
     site_url: str = ""

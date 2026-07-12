@@ -162,8 +162,7 @@ class ProviderRoutingTests(unittest.TestCase):
             return json.dumps([
                 {
                     "question": "What does the service include?",
-                    "answer": "It includes a clear, practical service.",
-                    "source": "generated",
+                    "claims": [{"text": "It includes implementation support.", "fact_ids": ["F1"]}],
                 }
             ])
 
@@ -183,96 +182,83 @@ class ProviderRoutingTests(unittest.TestCase):
             num_faqs=1,
             forbidden_phrases="banned phrase",
             page_context="Product page context.",
-            brand_profile={"words_to_avoid": "cheap", "tone": "Helpful"},
+            brand_profile={
+                "words_to_avoid": "cheap",
+                "brand_voice": "Plainspoken",
+                "tone": "Helpful",
+                "target_audience": "Unverified audience detail",
+                "usps": "Unverified product claim",
+            },
+            strategy_brief={
+                "search_intent": "Understand the service.",
+                "page_goal": "Explain the documented service.",
+                "faq_direction": "Answer service-fit questions.",
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "The service includes implementation support.",
+                    "source": "current_page",
+                }],
+                "supporting_attributes": ["Unverified supporting claim"],
+                "competitor_gaps": ["Unverified competitor claim"],
+            },
+            faq_plan=[{"question": "What does the service include?", "fact_ids": ["F1"]}],
         )
 
         self.assertEqual(result[0]["question"], "What does the service include?")
+        self.assertEqual(result[0]["answer"], "It includes implementation support.")
+        self.assertEqual(result[0]["fact_ids"], ["F1"])
         self.assertEqual(captured["max_tokens"], copy_gen.FAQ_MAX_TOKENS)
-        self.assertIn("UNSUPPORTED CLAIM RULES:", captured["prompt"])
-        self.assertIn("Do not use neutral fallback wording", captured["prompt"])
-        self.assertIn("Treat AI Overview and PAA as research signals, not proof", captured["prompt"])
-        self.assertIn("Match answer length to question complexity", captured["prompt"])
-        self.assertIn("Simple yes/no or definition questions: 1-2 direct sentences, about 20-45 words.", captured["prompt"])
-        self.assertIn("Vary question starter types across the FAQ set", captured["prompt"])
-        self.assertIn("Avoid using more than 2 questions with the same starter word", captured["prompt"])
-        self.assertIn("No AI Overview or PAA data is available for this keyword.", captured["prompt"])
-        self.assertIn("Never use these phrases: banned phrase, cheap", captured["prompt"])
-        self.assertIn("BRAND NAME NATURALNESS RULES:", captured["prompt"])
-        self.assertIn("MAIN KEYWORD NATURALNESS RULES:", captured["prompt"])
-        self.assertIn("Do not force the brand name into every FAQ", captured["prompt"])
-        self.assertIn("Do not force the keyword into every FAQ", captured["prompt"])
-        self.assertNotIn("Keep answers 40 to 80 words", captured["prompt"])
+        self.assertIn("APPROVED QUESTION AND EVIDENCE PLAN", captured["prompt"])
+        self.assertIn("Put each factual clause in its own claims object", captured["prompt"])
+        self.assertIn("Brand voice: Plainspoken", captured["prompt"])
+        self.assertIn("Tone: Helpful", captured["prompt"])
+        self.assertNotIn("Unverified audience detail", captured["prompt"])
+        self.assertNotIn("Unverified product claim", captured["prompt"])
+        self.assertNotIn("Unverified supporting claim", captured["prompt"])
+        self.assertNotIn("Unverified competitor claim", captured["prompt"])
 
-    def test_product_faq_prompt_limits_product_name_repetition(self):
+    def test_faq_plan_rejects_unverified_search_signal_fact_ids(self):
         captured = {}
 
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
             captured["prompt"] = prompt
             return json.dumps([
                 {
-                    "question": "How should shoppers compare this item?",
-                    "answer": "They should compare fit, use case, and supported details from the page.",
-                    "source": "generated",
-                }
+                    "question": "What is documented about the product?",
+                    "fact_ids": ["F1", "UNKNOWN"],
+                },
+                {
+                    "question": "How fast is delivery?",
+                    "fact_ids": ["UNKNOWN"],
+                },
             ])
 
         copy_gen.PROVIDER_FN["Test"] = fake_provider
 
-        copy_gen.generate_faq(
+        plan = copy_gen.generate_faq_plan(
             provider="Test",
             api_key="key",
-            keyword="fierce fruit raspberry puree",
+            keyword="documented product",
             page_type="product",
-            brand_name="Example",
             business_type="ecommerce",
-            h1="Fierce Fruit Raspberry Puree",
-            ai_overview_sections=[],
-            ai_overview_raw="",
-            paa_items=[],
-            num_faqs=1,
-            forbidden_phrases="",
-            page_context="Product details about a raspberry puree.",
+            brand_name="Example",
+            num_faqs=2,
+            paa_items=[{"question": "How fast is delivery?"}],
+            ai_overview_raw="Competitors advertise same-day delivery.",
+            strategy_brief={
+                "search_intent": "Understand the documented product.",
+                "faq_direction": "Answer product-fit questions.",
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "The product page documents the material.",
+                    "source": "current_page",
+                }],
+            },
         )
 
-        self.assertIn("PRODUCT NAME NATURALNESS RULES:", captured["prompt"])
-        self.assertIn("Use the product name 2 or 3 times max", captured["prompt"])
-        self.assertIn("Do not replace the full product name with half-name variations", captured["prompt"])
-
-    def test_collection_faq_prompt_blocks_inventory_specific_claims(self):
-        captured = {}
-
-        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured["prompt"] = prompt
-            return json.dumps([
-                {
-                    "question": "How should shoppers compare options?",
-                    "answer": "They should compare stable category fit and supported product details.",
-                    "source": "generated",
-                }
-            ])
-
-        copy_gen.PROVIDER_FN["Test"] = fake_provider
-
-        copy_gen.generate_faq(
-            provider="Test",
-            api_key="key",
-            keyword="chicken party appetizers",
-            page_type="collection",
-            brand_name="Example",
-            business_type="ecommerce",
-            h1="Chicken Party Appetizers",
-            ai_overview_sections=[],
-            ai_overview_raw="",
-            paa_items=[],
-            num_faqs=1,
-            forbidden_phrases="",
-            page_context="COLLECTION CONTEXT: category grid with prices, filters, and product cards.",
-        )
-
-        self.assertIn("ECOMMERCE COLLECTION FAQ RULES:", captured["prompt"])
-        self.assertIn("Do not mention exact prices", captured["prompt"])
-        self.assertIn("Do not mention exact product counts", captured["prompt"])
-        self.assertIn("Do not quote exact product names", captured["prompt"])
+        self.assertEqual(plan, [{"question": "What is documented about the product?", "fact_ids": ["F1"]}])
+        self.assertIn("Reject competitor-focused, generic, off-topic", captured["prompt"])
+        self.assertIn("Search signals are never evidence", captured["prompt"])
 
     def test_paa_answer_snippets_are_sentence_aware(self):
         answer = (
@@ -350,57 +336,44 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
 
-    def test_targeted_meta_and_faq_repairs_route_through_selected_provider(self):
-        prompts = []
-        responses = [
-            json.dumps({
-                "title": "Industrial Dosing Systems for Process Control",
-                "description": "Clear metadata description for industrial operations teams.",
-                "h1_optimised": "Industrial Dosing Systems",
-            }),
-            json.dumps([
-                {
-                    "question": "How do industrial dosing systems support process control?",
-                    "answer": "They help teams manage repeatable chemical handling.",
-                    "source": "generated",
-                },
-            ]),
-        ]
+    def test_faq_generation_discards_claims_with_unassigned_or_ungrounded_numbers(self):
+        def fake_provider(_api_key, _prompt, **_kwargs):
+            return json.dumps([{
+                "question": "What support is documented?",
+                "claims": [
+                    {"text": "The page documents implementation support.", "fact_ids": ["F1"]},
+                    {"text": "Support is available in 10 locations.", "fact_ids": ["F1"]},
+                    {"text": "Delivery takes 60 days.", "fact_ids": ["UNKNOWN"]},
+                ],
+            }])
 
-        def fake_provider(_api_key, prompt, **_kwargs):
-            prompts.append(prompt)
-            return responses.pop(0)
-
-        copy_gen.PROVIDER_FN["RepairTest"] = fake_provider
-        meta = copy_gen.repair_meta_copy(
-            provider="RepairTest",
+        copy_gen.PROVIDER_FN["EvidenceTest"] = fake_provider
+        result = copy_gen.generate_faq(
+            provider="EvidenceTest",
             api_key="key",
-            current={"title": "Bad!", "description": "Shop now!", "h1_optimised": "Example Services"},
-            issues=["Title contains an exclamation mark."],
-            url="https://example.com/service",
-            keyword="industrial dosing systems",
+            keyword="implementation support",
             page_type="service",
-            business_type="b2b",
             brand_name="Example",
-            input_h1="Current Services",
-        )
-        faqs = copy_gen.repair_faq_items(
-            provider="RepairTest",
-            api_key="key",
-            faq_items=[{"question": "Do you ship", "answer": ""}],
-            issues=["FAQ is incomplete."],
-            keyword="industrial dosing systems",
-            page_type="service",
             business_type="b2b",
-            brand_name="Example",
+            h1="Implementation Support",
+            ai_overview_sections=[],
+            ai_overview_raw="",
+            paa_items=[],
             num_faqs=1,
+            strategy_brief={
+                "verified_facts": [{
+                    "id": "F1",
+                    "fact": "The page documents implementation support.",
+                    "source": "current_page",
+                }],
+            },
+            faq_plan=[{"question": "What support is documented?", "fact_ids": ["F1"]}],
         )
 
-        self.assertEqual(meta["h1_optimised"], "Industrial Dosing Systems")
-        self.assertEqual(len(faqs), 1)
-        self.assertIn("Change only what is needed", prompts[0])
-        self.assertIn("Keep useful questions", prompts[1])
-        self.assertTrue(all("consumer CTAs" in prompt for prompt in prompts))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["answer"], "The page documents implementation support.")
+        self.assertNotIn("10 locations", result[0]["answer"])
+        self.assertNotIn("60 days", result[0]["answer"])
 
     def test_generate_strategy_brief_routes_through_provider_function(self):
         captured = {}
@@ -519,31 +492,12 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Every verified fact must include an exact supporting excerpt", captured["prompt"])
         self.assertIn("late-page-evidence", captured["prompt"])
 
-    def test_incomplete_strategy_brief_gets_one_bounded_repair(self):
-        responses = [
-            {"search_intent": "Commercial"},
-            {
-                "search_intent": "Commercial investigation",
-                "page_goal": "Help operations teams evaluate the service.",
-                "audience_need": "Clear evidence and delivery expectations.",
-                "primary_positioning": "Practical compliance support.",
-                "headline_direction": "Lead with practical compliance support.",
-                "meta_direction": "Use clear service language.",
-                "faq_direction": "Answer fit and process questions.",
-                "section_guidance": [
-                    {
-                        "section": "intro",
-                        "responsibility": "Frame the operational need.",
-                        "guidance": "Explain the service without hype.",
-                    },
-                ],
-            },
-        ]
+    def test_incomplete_strategy_brief_is_not_automatically_repaired(self):
         captured_prompts = []
 
         def fake_provider(_api_key, prompt, **_kwargs):
             captured_prompts.append(prompt)
-            return json.dumps(responses.pop(0))
+            return json.dumps({"search_intent": "Commercial"})
 
         copy_gen.PROVIDER_FN["StrategyRepairTest"] = fake_provider
         brief = copy_gen.generate_strategy_brief(
@@ -557,10 +511,10 @@ class ProviderRoutingTests(unittest.TestCase):
             template_sections=[{"name": "intro", "label": "Introduction"}],
         )
 
-        self.assertEqual(len(captured_prompts), 2)
-        self.assertIn("CORRECTION REQUIRED", captured_prompts[1])
-        self.assertEqual(brief["primary_positioning"], "Practical compliance support.")
-        self.assertEqual(copy_gen.strategy_brief_issues(brief, [{"name": "intro"}]), [])
+        self.assertEqual(len(captured_prompts), 1)
+        self.assertEqual(brief, {"search_intent": "Commercial"})
+        issues = copy_gen.strategy_brief_issues(brief, [{"name": "intro"}])
+        self.assertIn("Verified facts are missing for evidence-bound FAQs.", issues)
 
     def test_strategy_brief_rejects_unverified_and_mutable_profile_facts(self):
         brief = copy_gen._normalise_strategy_brief(
@@ -650,19 +604,26 @@ class ProviderRoutingTests(unittest.TestCase):
             include_headline_direction=True,
         )
         self.assertIn("The business has nine operating locations.", meta_strategy)
-        self.assertIn("The business has 10 locations.", meta_strategy)
+        self.assertNotIn("The business has 10 locations.", meta_strategy)
+        self.assertIn("Do not state an exact number of locations.", meta_strategy)
         self.assertIn("The business has nine operating locations.", page_strategy)
         self.assertNotIn("Detroit Burger Brawl Champion 2016.", page_strategy)
 
     def test_strategy_brief_is_added_to_meta_faq_and_page_prompts(self):
         strategy_brief = {
             "search_intent": "Commercial investigation",
+            "page_goal": "Help teams understand documented implementation support.",
             "primary_positioning": "Practical compliance support for regulated teams.",
             "supporting_attributes": ["Plainspoken guidance"],
             "headline_direction": "Lead with practical support for regulated teams.",
             "recommended_angle": "Lead with practical compliance experience.",
             "claims_to_avoid": ["Do not promise guaranteed certification."],
             "proof_points_to_use": ["Page-level proof for metadata and FAQs"],
+            "verified_facts": [{
+                "id": "F1",
+                "fact": "The service includes implementation support.",
+                "source": "current_page",
+            }],
             "meta_direction": "Mention compliance and implementation support.",
             "faq_direction": "Answer fit, process, and proof questions.",
             "section_guidance": [
@@ -727,8 +688,10 @@ class ProviderRoutingTests(unittest.TestCase):
             faq_capture["prompt"] = prompt
             return json.dumps([{
                 "question": "What does the service include?",
-                "answer": "It includes practical planning and implementation support.",
-                "source": "generated",
+                "claims": [{
+                    "text": "It includes implementation support.",
+                    "fact_ids": ["F1"],
+                }],
             }])
 
         copy_gen.PROVIDER_FN["Test"] = fake_faq_provider
@@ -746,18 +709,19 @@ class ProviderRoutingTests(unittest.TestCase):
             num_faqs=1,
             page_context="",
             strategy_brief=strategy_brief,
+            faq_plan=[{"question": "What does the service include?", "fact_ids": ["F1"]}],
         )
 
-        self.assertIn("STRATEGY BRIEF:", faq_capture["prompt"])
+        self.assertIn("FAQ STRATEGY:", faq_capture["prompt"])
         self.assertIn("Do not promise guaranteed certification.", faq_capture["prompt"])
-        self.assertIn("Practical compliance support for regulated teams.", faq_capture["prompt"])
-        self.assertIn("Page-level proof for metadata and FAQs", faq_capture["prompt"])
+        self.assertIn("The service includes implementation support.", faq_capture["prompt"])
         self.assertNotIn("Lead with practical support for regulated teams.", faq_capture["prompt"])
         self.assertIn("Answer fit, process, and proof questions.", faq_capture["prompt"])
         self.assertNotIn("Mention compliance and implementation support.", faq_capture["prompt"])
         self.assertNotIn("Lead with the compliance problem.", faq_capture["prompt"])
-        self.assertIn("Do not turn search-query wording into FAQ questions", faq_capture["prompt"])
-        self.assertIn("complete evidence allowlist for concrete brand claims", faq_capture["prompt"])
+        self.assertNotIn("Plainspoken guidance", faq_capture["prompt"])
+        self.assertNotIn("Page-level proof for metadata and FAQs", faq_capture["prompt"])
+        self.assertIn("Put each factual clause in its own claims object", faq_capture["prompt"])
 
         page_capture = {}
 
@@ -838,7 +802,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Do not invent claims.", prompt)
         self.assertIn("Keep metadata natural.", prompt)
         self.assertIn("late-field-marker", prompt)
-        self.assertLess(prompt.index("Claims to avoid"), prompt.index("Meta direction"))
+        self.assertLess(prompt.index("Output constraints"), prompt.index("Meta direction"))
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
@@ -999,133 +963,65 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("lead with the spec", prompt)
         self.assertIn("Treat the latest correction as highest priority", prompt)
 
-    def test_score_brand_consistency_routes_through_provider_function(self):
-        captured = {}
-
-        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured["api_key"] = api_key
-            captured["prompt"] = prompt
-            captured["max_tokens"] = max_tokens
-            captured["model"] = model
-            return json.dumps({
-                "score": 64,
-                "reason": "The copy is softer than the requested technical tone.",
-            })
-
-        copy_gen.PROVIDER_FN["Test"] = fake_provider
-
-        result = copy_gen.score_brand_consistency(
-            provider="Test",
-            api_key="key",
-            model="brand-review-model",
-            brand_profile={"tone_of_voice": "precise and technical", "words_to_avoid": "cheap"},
-            strategy_brief={
-                "verified_facts": [{
-                    "id": "F1",
-                    "fact": "WDIV Detroit named the business Best Burger.",
-                    "source": "current_page",
-                }],
-                "facts_to_avoid": ["An unverified review count."],
+    def test_strategy_prompt_redacts_forbidden_fact_values(self):
+        prompt = copy_gen.format_strategy_brief_for_prompt(
+            {
+                "primary_positioning": "An award-winning local burger destination.",
+                "facts_to_avoid": [
+                    "Franchise timelines beyond 60 days to confirm and 3-6 months to open.",
+                    "4.8 rating with over 3,000 Google reviews.",
+                ],
+                "claims_to_avoid": ["Do not make halal the sole positioning."],
+                "verified_facts": [{"id": "F1", "fact": "All meats are halal.", "source": "current_page"}],
             },
-            outputs={
-                "meta": "Industrial dosing systems for technical teams.",
-                "page_copy": "Helpful, friendly copy that sounds casual.",
+            output_type="page",
+            section_names=["hero"],
+        )
+
+        self.assertNotIn("60 days", prompt)
+        self.assertNotIn("3-6 months", prompt)
+        self.assertNotIn("4.8", prompt)
+        self.assertNotIn("3,000", prompt)
+        self.assertIn("Do not state any franchise approval or opening timeline", prompt)
+        self.assertIn("Do not state review counts or star ratings", prompt)
+        self.assertIn("Do not make halal the sole positioning", prompt)
+
+    def test_page_section_prompt_limits_brand_ctas_and_operational_assumptions(self):
+        prompt = copy_gen._build_section_prompt(
+            section={
+                "name": "differentiators",
+                "label": "Differentiators",
+                "purpose": "Explain verified differences.",
+                "word_count": [80, 120],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": "Use evidence.",
+            },
+            primary_keyword="",
+            supporting_keyword="",
+            lsi_keywords=[],
+            business_type="local",
+            brand_name="Taystee's",
+            h1="Award-Winning Burgers",
+            page_type="homepage",
+            paa_questions=[],
+            competitor_excerpts=[],
+            client_brief="",
+            previous_section_text="",
+            client_existing_content="",
+            strategy_brief={
+                "section_guidance": [{
+                    "section": "differentiators",
+                    "responsibility": "Explain verified differences.",
+                    "proof_points": ["All meats are halal and food is made to order."],
+                }],
             },
         )
 
-        self.assertEqual(result["score"], 64)
-        self.assertEqual(captured["api_key"], "key")
-        self.assertEqual(captured["model"], "brand-review-model")
-        self.assertEqual(captured["max_tokens"], copy_gen.DIAGNOSTIC_MAX_TOKENS)
-        self.assertIn("Return strict JSON", captured["prompt"])
-        self.assertIn("precise and technical", captured["prompt"])
-        self.assertIn("cheap", captured["prompt"])
-        self.assertIn("WDIV Detroit named the business Best Burger.", captured["prompt"])
-        self.assertIn("An unverified review count.", captured["prompt"])
-        self.assertIn("must not reduce the score", captured["prompt"])
-
-    def test_output_quality_review_uses_verified_evidence_and_ignores_keywords(self):
-        captured = {}
-
-        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured["prompt"] = prompt
-            captured["max_tokens"] = max_tokens
-            captured["model"] = model
-            return json.dumps({
-                "issues": [{
-                    "output": "page_copy",
-                    "section": "benefits",
-                    "code": "unsupported_claim",
-                    "message": "The copy adds an unsupported guarantee.",
-                    "claim": "Guaranteed results",
-                }]
-            })
-
-        copy_gen.PROVIDER_FN["Test"] = fake_provider
-        result = copy_gen.review_output_quality(
-            provider="Test",
-            api_key="key",
-            model="editorial-review-model",
-            strategy_brief={
-                "primary_positioning": "Practical support backed by documented experience.",
-                "verified_facts": [{
-                    "id": "F1",
-                    "fact": "The current page documents implementation support.",
-                    "source": "current_page",
-                }],
-                "facts_to_avoid": ["Guaranteed results"],
-            },
-            outputs={
-                "page_copy": {"benefits": "Guaranteed results for every client."},
-            },
-            owned_page_evidence="Our locations include Detroit, Ann Arbor, and Warren.",
-            client_evidence="The client brief confirms delivery is available.",
-        )
-
-        self.assertEqual(result["issues"][0]["code"], "unsupported_claim")
-        self.assertEqual(result["issues"][0]["section"], "benefits")
-        self.assertEqual(captured["model"], "editorial-review-model")
-        self.assertEqual(captured["max_tokens"], copy_gen.EDITORIAL_REVIEW_MAX_TOKENS)
-        self.assertIn("The current page documents implementation support.", captured["prompt"])
-        self.assertIn("Guaranteed results", captured["prompt"])
-        self.assertIn("Our locations include Detroit, Ann Arbor, and Warren.", captured["prompt"])
-        self.assertIn("The client brief confirms delivery is available.", captured["prompt"])
-        self.assertIn("curated but not exhaustive", captured["prompt"])
-        self.assertIn("Do not evaluate keyword selection, placement, or exact-match usage", captured["prompt"])
-
-    def test_gemini_review_uses_json_mode_and_current_flash_model(self):
-        with patch.object(
-            copy_gen,
-            "_call_gemini_json",
-            return_value='{"issues": []}',
-        ) as call_gemini_json:
-            result = copy_gen.review_output_quality(
-                provider="Gemini (free)",
-                api_key="gemini-key",
-                strategy_brief={"primary_positioning": "Clear local positioning."},
-                outputs={"meta": {"title": "Example title"}},
-            )
-
-        self.assertEqual(result, {"issues": []})
-        call_gemini_json.assert_called_once()
-        self.assertEqual(call_gemini_json.call_args.kwargs["model"], "gemini-3.5-flash")
-
-    def test_gemini_brand_review_uses_json_mode(self):
-        with patch.object(
-            copy_gen,
-            "_call_gemini_json",
-            return_value='{"score": 91, "reason": "Strong alignment."}',
-        ) as call_gemini_json:
-            result = copy_gen.score_brand_consistency(
-                provider="Gemini (free)",
-                api_key="gemini-key",
-                brand_profile={"tone_of_voice": "direct"},
-                outputs={"meta": "Direct copy."},
-            )
-
-        self.assertEqual(result["score"], 91)
-        call_gemini_json.assert_called_once()
-        self.assertEqual(call_gemini_json.call_args.kwargs["model"], "gemini-3.5-flash")
+        self.assertIn("Use the brand name no more than once in this section", prompt)
+        self.assertIn("Do not include a CTA in this section", prompt)
+        self.assertIn("calls, visits, walk-ins, wait times, heat lamps", prompt)
+        self.assertIn("only when an assigned proof point explicitly supports it", prompt)
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}

@@ -268,7 +268,7 @@ class CredentialSelectionTests(unittest.TestCase):
         self.assertNotIn("_gsc_service_account", hydrated)
         self.assertNotIn("attacker", repr(hydrated))
 
-    def test_hydration_loads_a_separate_reviewer_key(self):
+    def test_hydration_discards_legacy_reviewer_settings(self):
         tables = _tables("service_account")
         tables["user_credentials"][0]["provider_settings"] = {
             "provider": "Claude",
@@ -289,7 +289,9 @@ class CredentialSelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(hydrated["api_key"], "claude-runtime-secret")
-        self.assertEqual(hydrated["review_api_key"], "gemini-runtime-secret")
+        self.assertNotIn("review_provider", hydrated)
+        self.assertNotIn("review_api_key", hydrated)
+        self.assertNotIn("gemini-runtime-secret", repr(hydrated))
         self.assertNotIn("attacker-review-secret", repr(hydrated))
 
     def test_reconnect_marker_is_tenant_status_and_ciphertext_stale_safe(self):
@@ -367,11 +369,11 @@ class GscClientTests(unittest.TestCase):
 
 
 class RuntimePathTests(unittest.TestCase):
-    def test_aio_settings_preserve_brand_consistency_controls(self):
+    def test_aio_settings_ignore_removed_review_controls(self):
         settings = AIOSettings(brand_consistency_check=True, brand_consistency_threshold=82)
 
-        self.assertTrue(settings.brand_consistency_check)
-        self.assertEqual(settings.brand_consistency_threshold, 82)
+        self.assertNotIn("brand_consistency_check", settings.model_dump())
+        self.assertNotIn("brand_consistency_threshold", settings.model_dump())
 
     def test_initial_hydration_database_failure_returns_fixed_safe_503(self):
         private_detail = "postgres-password-and-host-private-detail"

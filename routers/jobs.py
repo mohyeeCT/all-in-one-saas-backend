@@ -858,9 +858,6 @@ def _rerun_single_section(
         )
         strategy_status = row_result.get("strategy_status") or ("ready" if strategy_brief else "unavailable")
         _add_strategy_qa_flag(qa_flags, strategy_status, row_result.get("strategy_issues") or [])
-        for existing_flag in row_result.get("qa_flags") or []:
-            if existing_flag.get("code") == "brand_consistency_low":
-                qa_flags.append(existing_flag)
         content_gap_summary = _build_content_gap_summary(
             row_result.get("competitor_section_map") or {},
             section_results,

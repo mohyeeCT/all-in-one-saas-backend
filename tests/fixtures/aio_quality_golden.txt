@@ -11,7 +11,8 @@
     "faq_items": [
       {
         "question": "What makes these burgers a popular Michigan choice?",
-        "answer": "The menu focuses on bold flavor and a satisfying local dining experience."
+        "answer": "The menu focuses on bold flavor and a satisfying local dining experience.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -40,7 +41,8 @@
     "faq_items": [
       {
         "question": "How can a team evaluate the right system?",
-        "answer": "Compare process requirements, maintenance access, and operating responsibilities before you buy today."
+        "answer": "Compare process requirements, maintenance access, and operating responsibilities before you buy today.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -64,7 +66,8 @@
     "faq_items": [
       {
         "question": "What does a technical review cover?",
-        "answer": "A review can examine crawl access, indexing signals, architecture, and implementation priorities."
+        "answer": "A review can examine crawl access, indexing signals, architecture, and implementation priorities.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -88,7 +91,8 @@
     "faq_items": [
       {
         "question": "What should I do when a plumbing problem starts?",
-        "answer": "Shut off the affected water supply when it is safe, then describe the issue clearly when requesting service."
+        "answer": "Shut off the affected water supply when it is safe, then describe the issue clearly when requesting service.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -115,7 +119,8 @@
     "faq_items": [
       {
         "question": "How should teams prepare for migration planning?",
-        "answer": "Teams should document dependencies, ownership, operational constraints, and the decisions that require stakeholder agreement."
+        "answer": "Teams should document dependencies, ownership, operational constraints, and the decisions that require stakeholder agreement.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -142,11 +147,13 @@
     "faq_items": [
       {
         "question": "What is the return policy?",
-        "answer": "The return policy explains the available options."
+        "answer": "The return policy explains the available options.",
+        "fact_ids": ["F1"]
       },
       {
         "question": "What is the return policy?",
-        "answer": "Review the return policy before choosing a kit."
+        "answer": "Review the return policy before choosing a kit.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -170,7 +177,8 @@
     "faq_items": [
       {
         "question": "What should operations teams evaluate first?",
-        "answer": "Teams should document workflows, constraints, dependencies, and the outcomes that matter to daily operations."
+        "answer": "Teams should document workflows, constraints, dependencies, and the outcomes that matter to daily operations.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {
@@ -198,7 +206,8 @@
     "faq_items": [
       {
         "question": "How does the platform support recurring reporting?",
-        "answer": "It gives teams a consistent place to organise dashboards and review performance."
+        "answer": "It gives teams a consistent place to organise dashboards and review performance.",
+        "fact_ids": ["F1"]
       }
     ],
     "section_results": {

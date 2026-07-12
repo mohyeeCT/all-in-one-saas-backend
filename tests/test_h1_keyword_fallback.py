@@ -172,6 +172,11 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                     "headline_direction": "Use a clear, natural headline.",
                     "meta_direction": "Summarise the page accurately.",
                     "faq_direction": "Answer relevant decision questions.",
+                    "verified_facts": [{
+                        "id": "F1",
+                        "fact": "The page documents its core service.",
+                        "source": "current_page",
+                    }],
                 },
             )
         )
@@ -180,31 +185,13 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             if isinstance(all_in_one.strategy_brief_issues, Mock)
             else patch.object(all_in_one, "strategy_brief_issues", return_value=[])
         )
-        meta_repair_patch = (
+        faq_plan_patch = (
             nullcontext()
-            if isinstance(all_in_one.repair_meta_copy, Mock)
+            if isinstance(all_in_one.generate_faq_plan, Mock)
             else patch.object(
                 all_in_one,
-                "repair_meta_copy",
-                side_effect=lambda **kwargs: kwargs["current"],
-            )
-        )
-        faq_repair_patch = (
-            nullcontext()
-            if isinstance(all_in_one.repair_faq_items, Mock)
-            else patch.object(
-                all_in_one,
-                "repair_faq_items",
-                side_effect=lambda **kwargs: kwargs["faq_items"],
-            )
-        )
-        editorial_review_patch = (
-            nullcontext()
-            if isinstance(all_in_one.review_output_quality, Mock)
-            else patch.object(
-                all_in_one,
-                "review_output_quality",
-                return_value={"issues": []},
+                "generate_faq_plan",
+                return_value=[{"question": "What does the page offer?", "fact_ids": ["F1"]}],
             )
         )
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
@@ -221,9 +208,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              scrape_url_patch, \
              strategy_patch, \
              strategy_issues_patch, \
-             meta_repair_patch, \
-             faq_repair_patch, \
-             editorial_review_patch, \
+             faq_plan_patch, \
              docx_patch:
             return all_in_one._process_single_row(
                 row=row,
@@ -529,6 +514,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         settings = {
             **_settings(),
             "gen_faqs": True,
+            "num_faqs": 1,
             "business_type": "service",
             "brand_name": "Example",
         }
@@ -550,8 +536,17 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         }
         with patch.object(
             all_in_one,
+            "generate_faq_plan",
+            return_value=[{"question": "What matters when choosing a dosing system?", "fact_ids": ["F1"]}],
+        ) as plan, patch.object(
+            all_in_one,
             "generate_faq",
-            return_value=[{"question": "What matters when choosing a dosing system?", "answer": "Accuracy matters.", "source": "ai_overview"}],
+            return_value=[{
+                "question": "What matters when choosing a dosing system?",
+                "answer": "Accuracy matters.",
+                "source": "current page",
+                "fact_ids": ["F1"],
+            }],
         ) as generate:
             result = self._process(
                 {
@@ -566,6 +561,8 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(plan.call_args.kwargs["paa_items"], serp_data["paa_items"])
+        self.assertEqual(plan.call_args.kwargs["ai_overview_raw"], "Structured AIO raw text.")
         self.assertEqual(generate.call_args.kwargs["ai_overview_sections"], ai_overview_sections)
         self.assertEqual(generate.call_args.kwargs["ai_overview_raw"], "Structured AIO raw text.")
 
@@ -652,31 +649,6 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         owned_scrape.assert_called_once_with("jina-key", "https://example.com/industrial-dosing")
         self.assertEqual(generate_strategy.call_args.kwargs["page_context"], "Owned page evidence.")
 
-    def test_meta_repair_uses_same_preferred_ranges_as_final_qa(self):
-        issues = all_in_one._meta_repair_issues(
-            generated_title="T" * 81,
-            generated_description="D" * 181,
-            optimised_h1="Natural service heading",
-            input_h1="",
-            brand_name="Example",
-            business_type="service",
-            forbidden_phrases=[],
-        )
-
-        self.assertIn("Title is 81 characters; target 50 to 80.", issues)
-        self.assertIn("Meta description is 181 characters; target 140 to 180.", issues)
-
-        in_range = all_in_one._meta_repair_issues(
-            generated_title="T" * 50,
-            generated_description="D" * 140,
-            optimised_h1="Natural service heading",
-            input_h1="",
-            brand_name="Example",
-            business_type="service",
-            forbidden_phrases=[],
-        )
-        self.assertFalse(any("target 50 to 80" in issue for issue in in_range))
-        self.assertFalse(any("target 140 to 180" in issue for issue in in_range))
 
     def test_meta_generation_receives_scraped_page_context(self):
         settings = {
@@ -719,61 +691,6 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("SCRAPED PAGE CONTENT:\nScraped page facts.", context)
         self.assertIn("CLIENT BRIEF:\nClient brief note.", context)
 
-    def test_meta_hard_rule_issues_are_repaired_before_page_generation(self):
-        settings = {
-            **_settings(),
-            "gen_meta": True,
-            "gen_page_copy": True,
-            "business_type": "b2b",
-            "brand_name": "Example",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-        repaired = {
-            "title": "Industrial Dosing Systems for Reliable Process Control",
-            "description": (
-                "Industrial facilities use reliable systems for accurate dosing, practical maintenance planning, "
-                "clearer process control, and dependable daily operations."
-            ),
-            "h1_optimised": "Industrial Dosing Systems for Process Control",
-        }
-
-        with patch.object(all_in_one, "generate_copy", return_value={
-            "title": "Example!",
-            "description": "Shop now!",
-            "h1_optimised": "Example Industrial Dosing Systems",
-        }), patch.object(all_in_one, "repair_meta_copy", return_value=repaired) as repair, patch.object(
-            all_in_one,
-            "generate_page",
-            return_value={
-                "hero": "# Old Heading\nIndustrial facilities rely on systems that improve dosing accuracy.",
-                "details": "## Systems for Industrial Dosing\nClear maintenance responsibilities support daily work.",
-                "_word_count": 18,
-            },
-        ):
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Current Process Control Services",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-            )
-
-        repair.assert_called_once()
-        self.assertEqual(result["generated_title"], repaired["title"])
-        self.assertEqual(result["optimised_h1"], repaired["h1_optimised"])
-        self.assertTrue(result["section_results"]["hero"].startswith("# Industrial Dosing Systems for Process Control"))
-        hard_codes = {"exclamation_mark_present", "b2b_consumer_cta", "brand_name_in_h1"}
-        self.assertFalse(hard_codes.intersection(flag["code"] for flag in result["qa_flags"]))
 
     def test_faq_output_is_trimmed_to_requested_count(self):
         settings = {
@@ -818,46 +735,6 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         schema = json.loads(result["faq_schema"])
         self.assertEqual(len(schema["mainEntity"]), 3)
 
-    def test_duplicate_or_incomplete_faqs_get_one_bounded_repair(self):
-        settings = {
-            **_settings(),
-            "gen_faqs": True,
-            "num_faqs": 2,
-            "business_type": "b2b",
-            "brand_name": "Example",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-        repaired = [
-            {"question": "How does industrial dosing support process control?", "answer": "It supports accurate, repeatable chemical handling.", "source": "generated"},
-            {"question": "What should facilities compare before choosing a system?", "answer": "Teams should compare process needs, maintenance access, and operating requirements.", "source": "generated"},
-        ]
-
-        with patch.object(all_in_one, "generate_faq", return_value=[
-            {"question": "Do you offer shipping", "answer": "Add to cart!"},
-            {"question": "Do you offer shipping", "answer": ""},
-        ]), patch.object(all_in_one, "repair_faq_items", return_value=repaired) as repair:
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "num_faqs": 2,
-                },
-                settings=settings,
-                ranked=ranked,
-            )
-
-        repair.assert_called_once()
-        self.assertEqual(result["faq_items"], repaired)
-        hard_codes = {"duplicate_faq_question", "faq_answer_missing", "exclamation_mark_present", "b2b_consumer_cta"}
-        self.assertFalse(hard_codes.intersection(flag["code"] for flag in result["qa_flags"]))
 
     def test_row_gets_review_flags_for_forbidden_phrase_and_missing_requested_output(self):
         settings = {
@@ -1065,7 +942,6 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         )
 
         with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
-             patch.object(all_in_one, "repair_repeated_page_copy", side_effect=RuntimeError("repair unavailable")), \
              patch.object(all_in_one, "generate_page", return_value={
                  "hero": page_copy,
                  "_word_count": len(page_copy.split()),
@@ -1087,256 +963,10 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(repeated_flag["phrase"], "gas station locations")
         self.assertEqual(repeated_flag["count"], 3)
 
-    def test_repeated_page_copy_is_repaired_before_final_qa(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "business_type": "service",
-            "brand_name": "Example",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-        repeated_copy = (
-            "# Industrial Dosing Systems\n"
-            "Gas station locations need reliable workflows. "
-            "The service helps gas station locations plan maintenance. "
-            "Clear records keep gas station locations coordinated."
-        )
-        repaired_copy = (
-            "# Industrial Dosing Systems\n"
-            "Reliable workflows help maintenance teams plan inspections and coordinate technicians. "
-            "Clear documentation records service needs before work begins. "
-            "Defined responsibilities reduce vague handoffs between site staff and specialists. "
-            "Routine schedules make urgent requests easier to prioritise without disrupting planned work. "
-            "Practical reporting also gives managers a consistent view of completed tasks, open actions, "
-            "parts requirements, and follow-up dates. This structured approach supports safer decisions, "
-            "more useful maintenance histories, and smoother daily operations across busy facilities."
-        )
 
-        with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
-             patch.object(all_in_one, "generate_page", return_value={
-                 "hero": repeated_copy,
-                 "_full_page": repeated_copy,
-                 "_word_count": len(repeated_copy.split()),
-             }), \
-             patch.object(all_in_one, "repair_repeated_page_copy", return_value={"hero": repaired_copy}) as repair:
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-            )
 
-        repair.assert_called_once()
-        self.assertEqual(result["section_results"]["hero"], repaired_copy)
-        self.assertFalse(any(flag["code"] == "repeated_phrase" for flag in result["qa_flags"]))
 
-    def test_editorial_review_flags_unsupported_claim_without_rewriting_output(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "business_type": "service",
-            "brand_name": "Example",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-        original = "# Industrial Dosing Systems\nLocal media vetted this service for every operations team."
-        review_result = {
-            "issues": [{
-                "output": "page_copy",
-                "section": "hero",
-                "code": "unsupported_claim",
-                "message": "The wording adds an unsupported endorsement.",
-                "claim": "Local media vetted this service",
-            }]
-        }
 
-        with patch.object(all_in_one, "generate_page", return_value={
-                 "hero": original,
-                 "_full_page": original,
-                 "_word_count": len(original.split()),
-             }), \
-             patch.object(
-                 all_in_one,
-                 "review_output_quality",
-                 return_value=review_result,
-             ) as review:
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-            )
-
-        review.assert_called_once()
-        self.assertEqual(result["section_results"]["hero"], original)
-        self.assertEqual(result["editorial_review"], review_result)
-        flag = next(flag for flag in result["qa_flags"] if flag["code"] == "unsupported_claim")
-        self.assertEqual(flag["section"], "hero")
-        self.assertEqual(result["status"], "review")
-
-    def test_editorial_review_uses_separate_provider_and_owned_page_evidence(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "business_type": "service",
-            "brand_name": "Example",
-            "review_provider": "Gemini (free)",
-            "review_model": "gemini-3.5-flash",
-            "review_api_key": "gemini-key",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-        owned_page = "Example serves Detroit, Ann Arbor, and Warren."
-
-        with patch.object(all_in_one, "scrape_page_context", return_value={
-                 "success": True,
-                 "content": owned_page,
-                 "error": "",
-             }), \
-             patch.object(all_in_one, "generate_page", return_value={
-                 "hero": "Industrial dosing systems for operations teams.",
-                 "_word_count": 6,
-             }), \
-             patch.object(all_in_one, "review_output_quality", return_value={"issues": []}) as review:
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-            )
-
-        review.assert_called_once()
-        self.assertEqual(review.call_args.kwargs["provider"], "Gemini (free)")
-        self.assertEqual(review.call_args.kwargs["model"], "gemini-3.5-flash")
-        self.assertEqual(review.call_args.kwargs["api_key"], "gemini-key")
-        self.assertIn(owned_page, review.call_args.kwargs["owned_page_evidence"])
-        self.assertEqual(result["editorial_review_status"], "ready")
-        self.assertEqual(result["review_providers"]["generation"], "Claude")
-        self.assertEqual(result["review_providers"]["editorial_review"], "Gemini (free)")
-
-    def test_editorial_review_failure_is_visible_in_qa(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "review_provider": "Gemini (free)",
-            "review_model": "gemini-3.5-flash",
-            "review_api_key": "gemini-key",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-
-        with patch.object(all_in_one, "generate_page", return_value={
-                 "hero": "Industrial dosing systems for operations teams.",
-                 "_word_count": 6,
-             }), \
-             patch.object(all_in_one, "review_output_quality", side_effect=ValueError("bad json")):
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-            )
-
-        self.assertEqual(result["editorial_review_status"], "unavailable")
-        self.assertIn("editorial_review_unavailable", [flag["code"] for flag in result["qa_flags"]])
-        self.assertEqual(result["status"], "review")
-
-    def test_page_repair_gets_one_bounded_residual_pass(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "business_type": "service",
-            "brand_name": "Example",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-        original = (
-            "# Industrial Dosing Systems\n"
-            "Gas station locations need planning. Gas station locations need records. "
-            "Gas station locations need clear ownership."
-        )
-        partial = (
-            "# Industrial Dosing Systems\n"
-            "Gas station locations need planning. Gas station locations need records. "
-            "Gas station locations also need clear ownership and documented responsibilities."
-        )
-        repaired = (
-            "# Industrial Dosing Systems\n"
-            "Operations teams need practical planning, useful records, clear ownership, "
-            "and documented responsibilities for daily maintenance work."
-        )
-
-        with patch.object(all_in_one, "generate_page", return_value={
-                 "hero": original,
-                 "_full_page": original,
-                 "_word_count": len(original.split()),
-             }), \
-             patch.object(
-                 all_in_one,
-                 "repair_repeated_page_copy",
-                 side_effect=[{"hero": partial}, {"hero": repaired}],
-             ) as repair:
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-            )
-
-        self.assertEqual(repair.call_count, 2)
-        self.assertEqual(result["section_results"]["hero"], repaired)
-        self.assertFalse(any(flag["code"] == "repeated_phrase" for flag in result["qa_flags"]))
 
     def test_page_copy_h1_is_replaced_with_meta_h1_before_qa(self):
         settings = {
@@ -1662,89 +1292,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["content_gap_summary"][0]["section"], "benefits")
         self.assertIn("warranty coverage", result["content_gap_summary"][0]["missing_topics"])
 
-    def test_optional_brand_consistency_check_flags_low_score(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "brand_consistency_check": True,
-            "business_type": "service",
-            "brand_name": "Example",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
 
-        with patch.object(all_in_one, "generate_page", return_value={
-                 "hero": "Industrial dosing systems help operations teams manage chemical dosing more clearly.",
-                 "_word_count": 10,
-             }), \
-             patch.object(all_in_one, "_collect_qa_flags", return_value=[]), \
-             patch.object(all_in_one, "score_brand_consistency", return_value={
-                 "score": 62,
-                 "reason": "The copy is more casual than the brand profile.",
-             }) as score_brand_consistency:
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-                brand_profile={"tone_of_voice": "precise and technical", "words_to_avoid": "cheap"},
-            )
-
-        score_brand_consistency.assert_called_once()
-        self.assertEqual(score_brand_consistency.call_args.kwargs["provider"], "Claude")
-        self.assertEqual(result["brand_consistency"]["score"], 62)
-        self.assertEqual(result["status"], "review")
-        self.assertIn("brand_consistency_low", [flag["code"] for flag in result["qa_flags"]])
-
-    def test_brand_review_failure_is_visible_in_qa(self):
-        settings = {
-            **_settings(),
-            "gen_page_copy": True,
-            "brand_consistency_check": True,
-            "review_provider": "Gemini (free)",
-            "review_model": "gemini-3.5-flash",
-            "review_api_key": "gemini-key",
-        }
-        ranked = [{
-            "keyword": "industrial dosing systems",
-            "volume": 100,
-            "difficulty": 20,
-            "score": 5.0,
-            "branded": False,
-        }]
-
-        with patch.object(all_in_one, "generate_page", return_value={
-                 "hero": "Industrial dosing systems for operations teams.",
-                 "_word_count": 6,
-             }), \
-             patch.object(all_in_one, "_collect_qa_flags", return_value=[]), \
-             patch.object(all_in_one, "score_brand_consistency", side_effect=RuntimeError("quota")):
-            result = self._process(
-                {
-                    "url": "https://example.com/industrial-dosing",
-                    "keyword": "",
-                    "page_type": "service",
-                    "h1": "Industrial Dosing Systems",
-                    "template_key": "service_page",
-                },
-                settings=settings,
-                ranked=ranked,
-                brand_profile={"tone_of_voice": "precise and technical"},
-            )
-
-        self.assertEqual(result["brand_consistency_status"], "unavailable")
-        self.assertIn("brand_consistency_unavailable", [flag["code"] for flag in result["qa_flags"]])
-        self.assertEqual(result["status"], "review")
 
     def test_page_copy_scrapes_use_saved_jina_key(self):
         settings = {
