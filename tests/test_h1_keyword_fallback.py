@@ -207,6 +207,13 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 return_value={"issues": []},
             )
         )
+        faq_plan_patch = (
+            nullcontext()
+            if hasattr(all_in_one, "generate_faq_plan") and isinstance(all_in_one.generate_faq_plan, Mock)
+            else patch.object(all_in_one, "generate_faq_plan", return_value=[])
+            if hasattr(all_in_one, "generate_faq_plan")
+            else nullcontext()
+        )
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -223,6 +230,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              strategy_issues_patch, \
              meta_repair_patch, \
              faq_repair_patch, \
+             faq_plan_patch, \
              editorial_review_patch, \
              docx_patch:
             return all_in_one._process_single_row(
@@ -1281,6 +1289,77 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(result["editorial_review_status"], "unavailable")
         self.assertIn("editorial_review_unavailable", [flag["code"] for flag in result["qa_flags"]])
         self.assertEqual(result["status"], "review")
+
+    def test_editorial_findings_repair_only_affected_outputs_then_rereview(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "gen_page_copy": True,
+            "review_provider": "Gemini (free)",
+            "review_model": "gemini-3.5-flash",
+            "review_api_key": "gemini-key",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        original_faqs = [{
+            "question": "How fast is implementation?",
+            "answer": "Implementation is guaranteed in 30 days.",
+            "source": "generated",
+            "fact_ids": ["F1"],
+        }]
+        repaired_faqs = [{
+            "question": "What implementation support is available?",
+            "answer": "The current page documents implementation support.",
+            "source": "verified facts",
+            "fact_ids": ["F1"],
+        }]
+        original_page = "# Industrial Dosing Systems\nGuaranteed results for every operations team."
+        repaired_page = "# Industrial Dosing Systems\nDocumented support for operations teams."
+        first_review = {
+            "issues": [
+                {"output": "faqs", "section": "", "code": "unsupported_claim", "message": "Remove the invented timeline.", "claim": "30 days"},
+                {"output": "page_copy", "section": "hero", "code": "unsupported_claim", "message": "Remove the guarantee.", "claim": "Guaranteed results"},
+            ],
+        }
+
+        with patch.object(all_in_one, "generate_strategy_brief", return_value={
+                 "primary_positioning": "Documented implementation support.",
+                 "verified_facts": [{"id": "F1", "fact": "The current page documents implementation support.", "source": "current_page"}],
+                 "section_guidance": [{"section": "hero", "responsibility": "Introduce the service.", "proof_points": ["The current page documents implementation support."]}],
+             }), \
+             patch.object(all_in_one, "strategy_brief_issues", return_value=[]), \
+             patch.object(all_in_one, "generate_faq_plan", return_value=[{"question": "What implementation support is available?", "fact_ids": ["F1"]}]), \
+             patch.object(all_in_one, "generate_faq", return_value=original_faqs), \
+             patch.object(all_in_one, "generate_page", return_value={"hero": original_page, "_full_page": original_page, "_word_count": 8}), \
+             patch.object(all_in_one, "review_output_quality", side_effect=[first_review, {"issues": []}]) as review, \
+             patch.object(all_in_one, "repair_faq_items", return_value=repaired_faqs) as repair_faqs, \
+             patch.object(all_in_one, "repair_editorial_page_sections", return_value={"hero": repaired_page}) as repair_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                    "num_faqs": 1,
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertEqual(review.call_count, 2)
+        repair_faqs.assert_called_once()
+        repair_page.assert_called_once()
+        self.assertEqual(result["faq_items"], repaired_faqs)
+        self.assertEqual(result["section_results"]["hero"], repaired_page)
+        self.assertEqual(result["editorial_review_status"], "ready")
+        self.assertEqual(result["run_diagnostics"]["output_counts"]["editorial_repairs"], 2)
+        self.assertFalse(any(flag["code"] == "unsupported_claim" for flag in result["qa_flags"]))
 
     def test_page_repair_gets_one_bounded_residual_pass(self):
         settings = {
