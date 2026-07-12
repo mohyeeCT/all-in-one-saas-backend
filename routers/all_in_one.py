@@ -28,8 +28,8 @@ from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_faq_plan, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
-    repair_editorial_page_sections, repair_faq_items, repair_meta_copy, review_output_quality, sanitise, score_brand_consistency,
+    generate_page, generate_faq, generate_copy, generate_strategy_brief, repair_repeated_page_copy,
+    repair_faq_items, repair_meta_copy, review_output_quality, sanitise, score_brand_consistency,
     strategy_brief_issues, META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
     META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
 )
@@ -894,15 +894,9 @@ def _faq_repair_issues(
     faq_items: list,
     business_type: str,
     forbidden_phrases: list[str],
-    strategy_brief: dict | None = None,
 ) -> list[str]:
     issues = []
     seen_questions = set()
-    verified_fact_ids = {
-        str(item.get("id") or "").strip()
-        for item in (strategy_brief or {}).get("verified_facts") or []
-        if isinstance(item, dict) and str(item.get("id") or "").strip()
-    }
     for index, item in enumerate(faq_items or []):
         if not isinstance(item, dict):
             issues.append(f"FAQ {index + 1} is not a valid object.")
@@ -927,12 +921,6 @@ def _faq_repair_issues(
             for phrase in _B2B_CONSUMER_CTAS:
                 if _contains_forbidden_phrase(combined, phrase):
                     issues.append(f'FAQ {index + 1} contains B2B-inappropriate CTA "{phrase}".')
-        if verified_fact_ids:
-            fact_ids = {str(value).strip() for value in item.get("fact_ids") or [] if str(value).strip()}
-            if not fact_ids:
-                issues.append(f"FAQ {index + 1} is missing verified fact IDs.")
-            elif not fact_ids.issubset(verified_fact_ids):
-                issues.append(f"FAQ {index + 1} references an unknown fact ID.")
     return list(dict.fromkeys(issues))
 
 
@@ -1899,26 +1887,6 @@ def _process_single_row(
             ai_ov_for_faq = ai_overview
             paa_for_faq   = paa_questions
 
-            faq_plan = []
-            if strategy_status == "ready" and strategy_brief.get("verified_facts"):
-                try:
-                    faq_plan = generate_faq_plan(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        keyword=primary_keyword,
-                        page_type=page_type,
-                        business_type=business_type,
-                        brand_name=brand_name if include_brand else "",
-                        num_faqs=num_faqs,
-                        paa_items=paa_for_faq,
-                        strategy_brief=strategy_brief,
-                    )
-                    if faq_plan:
-                        step("FAQ evidence plan ready")
-                except Exception as e:
-                    step("FAQ evidence plan unavailable: " + str(e)[:60])
-
             faq_items = generate_faq(
                 provider=provider,
                 api_key=api_key,
@@ -1936,17 +1904,11 @@ def _process_single_row(
                 page_context=page_context,
                 brand_profile=brand_profile,
                 strategy_brief=strategy_brief,
-                faq_plan=faq_plan,
             )
             faq_items, faqs_trimmed = _limit_faq_items(faq_items, num_faqs)
             if faqs_trimmed:
                 step("FAQs trimmed to requested count: " + str(len(faq_items)))
-            faq_issues = _faq_repair_issues(
-                faq_items,
-                business_type,
-                forbidden_phrase_list,
-                strategy_brief=strategy_brief if faq_plan else None,
-            )
+            faq_issues = _faq_repair_issues(faq_items, business_type, forbidden_phrase_list)
             if faq_issues:
                 try:
                     repaired_faqs = repair_faq_items(
@@ -2147,7 +2109,6 @@ def _process_single_row(
 
     editorial_review = {"issues": []}
     editorial_review_status = "not_requested"
-    editorial_repairs = 0
     if strategy_status == "ready" and strategy_brief:
         editorial_outputs = _build_editorial_outputs(
             gen_meta=gen_meta,
@@ -2176,131 +2137,11 @@ def _process_single_row(
                         client_evidence=explicit_client_brief,
                     )
                     editorial_review_status = "ready"
-
-                    review_issues = list(editorial_review.get("issues") or [])
-                    if review_issues:
-                        step("repairing targeted editorial issues...")
-                        meta_issues = [item for item in review_issues if item.get("output") == "meta"]
-                        faq_review_issues = [item for item in review_issues if item.get("output") == "faqs"]
-                        page_review_issues = [item for item in review_issues if item.get("output") == "page_copy"]
-
-                        if meta_issues and gen_meta:
-                            try:
-                                current_meta = {
-                                    "title": generated_title or "",
-                                    "description": generated_description or "",
-                                    "h1_optimised": optimised_h1 or "",
-                                }
-                                repaired_meta = repair_meta_copy(
-                                    provider=provider,
-                                    api_key=api_key,
-                                    model=model,
-                                    current=current_meta,
-                                    issues=[str(item.get("message") or item.get("claim") or "Resolve the editorial issue.") for item in meta_issues],
-                                    url=url,
-                                    keyword=primary_keyword,
-                                    page_type=page_type,
-                                    business_type=business_type,
-                                    brand_name=brand_name if include_brand else "",
-                                    input_h1=input_h1_for_qa,
-                                    forbidden_phrases=forbidden_phrase_text,
-                                    context=scraped_page_content,
-                                    brand_context=brand_context,
-                                    strategy_brief=strategy_brief,
-                                )
-                                if repaired_meta != current_meta and all(str(repaired_meta.get(key) or "").strip() for key in ("title", "description", "h1_optimised")):
-                                    generated_title = repaired_meta["title"]
-                                    generated_description = repaired_meta["description"]
-                                    optimised_h1 = repaired_meta["h1_optimised"]
-                                    editorial_repairs += 1
-                            except Exception as e:
-                                step("targeted meta repair unavailable: " + str(e)[:60])
-
-                        if faq_review_issues and gen_faqs and faq_items:
-                            try:
-                                repaired_faqs = repair_faq_items(
-                                    provider=provider,
-                                    api_key=api_key,
-                                    model=model,
-                                    faq_items=faq_items,
-                                    issues=[str(item.get("message") or item.get("claim") or "Resolve the editorial issue.") for item in faq_review_issues],
-                                    keyword=primary_keyword,
-                                    page_type=page_type,
-                                    business_type=business_type,
-                                    brand_name=brand_name if include_brand else "",
-                                    num_faqs=num_faqs,
-                                    page_context=page_context,
-                                    forbidden_phrases=forbidden_phrase_text,
-                                    strategy_brief=strategy_brief,
-                                )
-                                repaired_faqs, _ = _limit_faq_items(repaired_faqs, num_faqs)
-                                repaired_faq_issues = _faq_repair_issues(
-                                    repaired_faqs,
-                                    business_type,
-                                    forbidden_phrase_list,
-                                    strategy_brief=strategy_brief,
-                                )
-                                if not repaired_faq_issues and len(repaired_faqs) == num_faqs and repaired_faqs != faq_items:
-                                    faq_items = repaired_faqs
-                                    faq_schema, faq_script = _build_faq_schema(faq_items)
-                                    editorial_repairs += 1
-                            except Exception as e:
-                                step("targeted FAQ repair unavailable: " + str(e)[:60])
-
-                        if page_review_issues and gen_page_copy and section_results:
-                            try:
-                                repaired_sections = repair_editorial_page_sections(
-                                    provider=provider,
-                                    api_key=api_key,
-                                    model=model,
-                                    section_results=section_results,
-                                    issues=page_review_issues,
-                                    strategy_brief=strategy_brief,
-                                    brand_name=brand_name,
-                                )
-                                if repaired_sections != section_results:
-                                    section_results = repaired_sections
-                                    section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
-                                    full_page = _assemble_full_page_copy(section_results, template)
-                                    word_count = len(full_page.split())
-                                    editorial_repairs += 1
-                            except Exception as e:
-                                step("targeted page repair unavailable: " + str(e)[:60])
-
-                        if editorial_repairs:
-                            if gen_page_copy and section_results:
-                                section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
-                                full_page = _assemble_full_page_copy(section_results, template)
-                                word_count = len(full_page.split())
-                            repaired_outputs = _build_editorial_outputs(
-                                gen_meta=gen_meta,
-                                gen_faqs=gen_faqs,
-                                gen_page_copy=gen_page_copy,
-                                generated_title=generated_title or "",
-                                generated_description=generated_description or "",
-                                optimised_h1=optimised_h1 or "",
-                                faq_items=faq_items,
-                                section_results=section_results,
-                            )
-                            editorial_review = review_output_quality(
-                                provider=review_provider,
-                                api_key=review_api_key,
-                                model=review_model,
-                                strategy_brief=strategy_brief,
-                                outputs=repaired_outputs,
-                                owned_page_evidence=scraped_page_content,
-                                client_evidence=explicit_client_brief,
-                            )
-                            step("targeted editorial repairs verified")
                 except Exception as e:
                     editorial_review_status = "unavailable"
                     step("editorial review unavailable: " + str(e)[:60])
 
     run_diagnostics["output_counts"]["editorial_issues"] = len(editorial_review.get("issues") or [])
-    run_diagnostics["output_counts"]["editorial_repairs"] = editorial_repairs
-    run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
-    run_diagnostics["output_counts"]["sections"] = len(section_results)
-    run_diagnostics["output_counts"]["word_count"] = word_count
     run_diagnostics["review"]["editorial_status"] = editorial_review_status
 
     # STEP 9 — Build combined docx

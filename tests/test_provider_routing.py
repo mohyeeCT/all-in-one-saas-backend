@@ -11,17 +11,12 @@ from utils.templates import get_template
 class ProviderRoutingTests(unittest.TestCase):
     def setUp(self):
         self.original_provider = copy_gen.PROVIDER_FN.get("Test")
-        self.original_delay = copy_gen.PROVIDER_DELAY.get("Test")
 
     def tearDown(self):
         if self.original_provider is None:
             copy_gen.PROVIDER_FN.pop("Test", None)
         else:
             copy_gen.PROVIDER_FN["Test"] = self.original_provider
-        if self.original_delay is None:
-            copy_gen.PROVIDER_DELAY.pop("Test", None)
-        else:
-            copy_gen.PROVIDER_DELAY["Test"] = self.original_delay
 
     def test_openai_default_uses_current_gpt_5_model(self):
         self.assertEqual(copy_gen.DEFAULT_MODELS["OpenAI"], "gpt-5.5")
@@ -655,8 +650,7 @@ class ProviderRoutingTests(unittest.TestCase):
             include_headline_direction=True,
         )
         self.assertIn("The business has nine operating locations.", meta_strategy)
-        self.assertNotIn("The business has 10 locations.", meta_strategy)
-        self.assertIn("Do not state an exact number of locations.", meta_strategy)
+        self.assertIn("The business has 10 locations.", meta_strategy)
         self.assertIn("The business has nine operating locations.", page_strategy)
         self.assertNotIn("Detroit Burger Brawl Champion 2016.", page_strategy)
 
@@ -844,7 +838,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Do not invent claims.", prompt)
         self.assertIn("Keep metadata natural.", prompt)
         self.assertIn("late-field-marker", prompt)
-        self.assertLess(prompt.index("Output constraints"), prompt.index("Meta direction"))
+        self.assertLess(prompt.index("Claims to avoid"), prompt.index("Meta direction"))
 
     def test_generate_copy_extracts_json_from_wrapped_response(self):
         def fake_provider(api_key, prompt, max_tokens=1500, model=None):
@@ -1132,168 +1126,6 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result["score"], 91)
         call_gemini_json.assert_called_once()
         self.assertEqual(call_gemini_json.call_args.kwargs["model"], "gemini-3.5-flash")
-
-    def test_strategy_prompt_redacts_forbidden_fact_values(self):
-        prompt = copy_gen.format_strategy_brief_for_prompt(
-            {
-                "primary_positioning": "An award-winning local burger destination.",
-                "facts_to_avoid": [
-                    "Franchise timelines beyond 60 days to confirm and 3-6 months to open.",
-                    "4.8 rating with over 3,000 Google reviews.",
-                ],
-                "claims_to_avoid": ["Do not make halal the sole positioning."],
-                "verified_facts": [{"id": "F1", "fact": "All meats are halal.", "source": "current_page"}],
-            },
-            output_type="faq",
-        )
-
-        self.assertNotIn("60 days", prompt)
-        self.assertNotIn("3-6 months", prompt)
-        self.assertNotIn("4.8", prompt)
-        self.assertNotIn("3,000", prompt)
-        self.assertIn("Do not state any franchise approval or opening timeline", prompt)
-        self.assertIn("Do not state review counts or star ratings", prompt)
-        self.assertIn("Do not make halal the sole positioning", prompt)
-
-    def test_faq_plan_assigns_only_verified_fact_ids(self):
-        captured = {}
-
-        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured["prompt"] = prompt
-            return json.dumps([
-                {"question": "Are all meats halal?", "fact_ids": ["F1"]},
-                {"question": "Can customers order for pickup?", "fact_ids": ["F2"]},
-            ])
-
-        copy_gen.PROVIDER_FN["Test"] = fake_provider
-        plan = copy_gen.generate_faq_plan(
-            provider="Test",
-            api_key="key",
-            keyword="halal burgers",
-            page_type="homepage",
-            business_type="local",
-            brand_name="Example",
-            num_faqs=2,
-            paa_items=[{"question": "Does the restaurant deliver?", "answer": "Competitor snippet"}],
-            strategy_brief={
-                "faq_direction": "Answer practical visitor questions.",
-                "verified_facts": [
-                    {"id": "F1", "fact": "All meats are halal.", "source": "current_page"},
-                    {"id": "F2", "fact": "DoorDash pickup is available.", "source": "current_page"},
-                ],
-            },
-        )
-
-        self.assertEqual(plan[0]["fact_ids"], ["F1"])
-        self.assertEqual(plan[1]["fact_ids"], ["F2"])
-        self.assertIn("Does the restaurant deliver?", captured["prompt"])
-        self.assertNotIn("Competitor snippet", captured["prompt"])
-
-    def test_planned_faq_answers_exclude_raw_factual_context(self):
-        prompt = copy_gen._build_faq_prompt(
-            keyword="halal burgers",
-            page_type="homepage",
-            brand_name="Example",
-            business_type="local",
-            h1="Award-Winning Burgers",
-            ai_overview_sections=[],
-            ai_overview_raw="Research-only overview",
-            paa_items=[{"question": "Does it deliver?", "answer": "Research-only answer"}],
-            num_faqs=1,
-            forbidden_phrases="",
-            page_context="Unverified franchise timeline is 60 days.",
-            brand_profile={"tone": "friendly", "key_messages": "Unverified claim"},
-            strategy_brief={
-                "faq_direction": "Confirm halal food.",
-                "verified_facts": [{"id": "F1", "fact": "All meats are halal.", "source": "current_page"}],
-            },
-            faq_plan=[{"question": "Are all meats halal?", "fact_ids": ["F1"]}],
-        )
-
-        self.assertIn("Are all meats halal?", prompt)
-        self.assertIn("F1", prompt)
-        self.assertNotIn("60 days", prompt)
-        self.assertNotIn("Unverified claim", prompt)
-        self.assertNotIn("Research-only overview", prompt)
-        self.assertNotIn("Research-only answer", prompt)
-
-    def test_repetition_repair_matches_normalised_brand_punctuation(self):
-        captured = {}
-
-        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            captured["prompt"] = prompt
-            return json.dumps({"hero": "# Fresh Burgers\nAward-winning burgers made fresh."})
-
-        copy_gen.PROVIDER_FN["Test"] = fake_provider
-        repaired = copy_gen.repair_repeated_page_copy(
-            section_results={"hero": "# Fresh Burgers\nTaystee's serves Taystee's favorites."},
-            repeated_phrases=["taystee s"],
-            template={"sections": [{"name": "hero", "purpose": "Introduce the brand.", "word_count": [5, 20], "heading_level": "h1"}]},
-            strategy_brief={},
-            brand_name="Taystee's",
-            provider="Test",
-            api_key="key",
-        )
-
-        self.assertIn("hero", captured["prompt"])
-        self.assertEqual(repaired["hero"], "# Fresh Burgers\nAward-winning burgers made fresh.")
-
-    def test_page_generation_passes_proof_and_cta_ledger_to_later_sections(self):
-        prompts = []
-
-        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
-            prompts.append(prompt)
-            if len(prompts) == 1:
-                return "# Fresh Burgers\nTaystee's won a regional award. Stop by today."
-            return "## Menu\nFresh options made to order."
-
-        copy_gen.PROVIDER_FN["Test"] = fake_provider
-        copy_gen.PROVIDER_DELAY["Test"] = 0
-        copy_gen.generate_page(
-            template={"sections": [
-                {"name": "hero", "label": "Hero", "purpose": "Introduce the page.", "word_count": [5, 30], "keyword_slot": "none", "heading_level": "h1", "prompt_rules": "Lead clearly."},
-                {"name": "menu", "label": "Menu", "purpose": "Describe the menu.", "word_count": [5, 30], "keyword_slot": "none", "heading_level": "h2", "prompt_rules": "Stay factual."},
-            ]},
-            keyword_assignment={},
-            lsi_keywords={},
-            business_type="local",
-            brand_name="Taystee's",
-            h1="Fresh Burgers",
-            page_type="homepage",
-            paa_questions=[],
-            ai_overview="",
-            competitor_section_map={},
-            client_brief="",
-            client_existing_content="",
-            provider="Test",
-            api_key="key",
-            strategy_brief={"section_guidance": [
-                {"section": "hero", "proof_points": ["Won a regional award."]},
-                {"section": "menu", "proof_points": ["Food is made to order."]},
-            ]},
-        )
-
-        self.assertEqual(len(prompts), 2)
-        self.assertIn("Completed sections: hero", prompts[1])
-        self.assertIn("Won a regional award.", prompts[1])
-        self.assertIn("stop by", prompts[1])
-        self.assertIn("Brand-name mentions already used: 1", prompts[1])
-
-    def test_editorial_review_retries_malformed_json_once(self):
-        with patch.object(
-            copy_gen,
-            "_call_gemini_json",
-            side_effect=['{"issues":[', '{"issues": []}'],
-        ) as call_gemini_json:
-            result = copy_gen.review_output_quality(
-                provider="Gemini (free)",
-                api_key="gemini-key",
-                strategy_brief={"primary_positioning": "Clear local positioning."},
-                outputs={"meta": {"title": "Example title"}},
-            )
-
-        self.assertEqual(result, {"issues": []})
-        self.assertEqual(call_gemini_json.call_count, 2)
 
     def test_generate_faq_batch_routes_through_provider_function(self):
         captured = {}
