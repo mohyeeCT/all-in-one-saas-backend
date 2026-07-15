@@ -664,7 +664,15 @@ def _rerun_single_section(
     """
     import base64
     import traceback
-    from utils.copy_gen import _build_section_prompt, DEFAULT_MODELS, PROVIDER_FN, sanitise
+    from utils.copy_gen import (
+        _build_section_prompt,
+        _count_brand_mentions,
+        _page_brand_mention_budget,
+        DEFAULT_MODELS,
+        PROVIDER_FN,
+        sanitise,
+    )
+    from utils.adaptive_templates import adapt_template_for_generation
     from utils.templates import get_template
     from utils.dfs import get_serp_data
     from routers.all_in_one import (
@@ -674,6 +682,7 @@ def _rerun_single_section(
         _collect_qa_flags,
         _qa_status,
         _split_forbidden_phrases,
+        _template_for_page_copy,
     )
 
     try:
@@ -742,10 +751,22 @@ def _rerun_single_section(
 
         # ── 3. Template and section definition ────────────────────────────────
         template_key = stored_row.get("template_key") or settings.get("template_key", "service_page")
+        resolved_template_key = template_key
         try:
             template = get_template(template_key)
         except ValueError:
-            template = get_template("service_page")
+            resolved_template_key = "service_page"
+            template = get_template(resolved_template_key)
+
+        separate_faq_output = bool(stored_row.get("gen_faqs", settings.get("gen_faqs", True)))
+        template = _template_for_page_copy(template, separate_faq_output)
+        strategy_brief = row_result.get("strategy_brief") or {}
+        if row_result.get("adaptive_section_plan"):
+            template, _ = adapt_template_for_generation(
+                template,
+                resolved_template_key,
+                strategy_brief,
+            )
 
         section_def = next((s for s in template["sections"] if s["name"] == section_name), None)
         if not section_def:
@@ -760,7 +781,6 @@ def _rerun_single_section(
         h1 = row_result.get("h1") or overall_primary_keyword
         section_results = dict(row_result.get("section_results") or {})
         section_rerun_notes = dict(row_result.get("section_rerun_notes") or {})
-        strategy_brief = row_result.get("strategy_brief") or {}
         keyword_assignment = row_result.get("keyword_assignment") or {}
         section_assignment = keyword_assignment.get(section_name) or {}
         section_primary_keyword = section_assignment.get("primary") or overall_primary_keyword
@@ -777,6 +797,12 @@ def _rerun_single_section(
         ]
         new_note = str(reviewer_instruction or "").strip()
         reviewer_corrections = (existing_notes + ([new_note] if new_note else []))[-5:]
+        brand_mention_budget = _page_brand_mention_budget(len(template["sections"])) if brand_name else None
+        brand_mentions_used = sum(
+            _count_brand_mentions(text, brand_name)
+            for name, text in section_results.items()
+            if name != section_name
+        )
 
         # previous_section_text: all sections before target in template order
         section_order = [s["name"] for s in template["sections"]]
@@ -825,6 +851,8 @@ def _rerun_single_section(
             forbidden_phrases=forbidden_phrase_text,
             reviewer_corrections=reviewer_corrections,
             strategy_brief=strategy_brief,
+            brand_mentions_used=brand_mentions_used,
+            brand_mention_budget=brand_mention_budget,
         )
 
         raw = fn(api_key, prompt, model=model)

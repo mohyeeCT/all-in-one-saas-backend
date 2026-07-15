@@ -26,6 +26,7 @@ from utils.scraper import (
 )
 from utils.faq_scraper import scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
+from utils.adaptive_templates import adapt_template_for_generation
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
     generate_page, generate_faq, generate_faq_plan, generate_copy, generate_strategy_brief, sanitise,
@@ -1572,6 +1573,7 @@ def _process_single_row(
     kw_assignment = {}
     lsi_map = {}
     template = None
+    resolved_template_key = template_key
 
     if gen_page_copy:
         step("resolving template...")
@@ -1582,7 +1584,8 @@ def _process_single_row(
             try:
                 template = get_template(template_key)
             except ValueError:
-                template = get_template(default_template_key_for_page_type(page_type))
+                resolved_template_key = default_template_key_for_page_type(page_type)
+                template = get_template(resolved_template_key)
         template = _template_for_page_copy(template, bool(gen_faqs))
 
         kw_assignment = assign_keywords_to_sections(ranked, template["sections"])
@@ -1623,6 +1626,8 @@ def _process_single_row(
     strategy_brief = {}
     strategy_status = "not_requested"
     strategy_issues = []
+    adaptive_section_plan = []
+    adaptive_template_family = ""
     required_strategy_outputs = [
         output
         for output, enabled in (
@@ -1667,6 +1672,32 @@ def _process_single_row(
             strategy_status = "unavailable"
             strategy_issues = [str(e)[:160] or "Strategy generation failed."]
             step("strategy brief unavailable: " + str(e)[:60])
+
+    if gen_page_copy and template:
+        adaptive_key = "" if settings.get("custom_template_text", "").strip() else resolved_template_key
+        template, adaptive_section_plan = adapt_template_for_generation(
+            template,
+            adaptive_key,
+            strategy_brief,
+        )
+        adaptive_template_family = str(template.get("_adaptive_family") or "")
+        adaptive_mode_counts = {
+            mode: sum(1 for item in adaptive_section_plan if item.get("mode") == mode)
+            for mode in ("full", "compact", "omit")
+        }
+        run_diagnostics["adaptive_template"] = {
+            "family": adaptive_template_family,
+            "sections": adaptive_section_plan,
+        }
+        step(
+            "template plan: "
+            + str(adaptive_mode_counts["full"])
+            + " full, "
+            + str(adaptive_mode_counts["compact"])
+            + " compact, "
+            + str(adaptive_mode_counts["omit"])
+            + " omitted"
+        )
 
     generated_title = None
     generated_description = None
@@ -1959,6 +1990,8 @@ def _process_single_row(
         "strategy_brief":       strategy_brief,
         "strategy_status":      strategy_status,
         "strategy_issues":      strategy_issues,
+        "adaptive_template_family": adaptive_template_family,
+        "adaptive_section_plan": adaptive_section_plan,
         "competitor_urls":      competitor_urls_used,
         "docx_b64":             docx_b64,
         "qa_flags":             qa_flags,

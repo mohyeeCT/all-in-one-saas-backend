@@ -887,6 +887,61 @@ class RuntimePathTests(unittest.TestCase):
         self.assertNotIn(private_api_key, repr(final.payload))
         self.assertNotIn("_gsc_credentials", repr(final.payload))
 
+    def test_section_rerun_reuses_adaptive_range_and_pagewide_brand_budget(self):
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/page",
+                "page_type": "service",
+                "template_key": "service_page",
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "url": "https://example.com/page",
+                "primary_keyword": "technical seo",
+                "h1": "Technical SEO",
+                "section_results": {
+                    "hero": "CopyPilot CopyPilot CopyPilot CopyPilot CopyPilot",
+                    "process": "Existing process",
+                },
+                "strategy_brief": {
+                    "verified_facts": [{"id": "F1", "fact": "The process includes an audit."}],
+                    "section_guidance": [{
+                        "section": "process",
+                        "responsibility": "Explain the verified process.",
+                        "proof_points": ["The process includes an audit."],
+                    }],
+                },
+                "adaptive_section_plan": [{"section": "process", "mode": "compact"}],
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "api_key": "runtime-api-secret",
+            "dfs_login": "",
+            "provider": "Claude",
+            "brand_name": "CopyPilot",
+        }
+        provider = Mock(return_value="## Process\nA concise verified process.")
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
+            patch.object(meta, "_build_combined_docx", return_value=b"safe-docx") as build_docx,
+        ):
+            jobs._rerun_single_section("job-1", 0, "process", job, "user-1", sb)
+
+        prompt = provider.call_args.args[1]
+        self.assertIn("Word count guidance: Aim for 60 to 108 words", prompt)
+        self.assertIn("Adaptive section guidance", prompt)
+        self.assertIn("page-wide brand mention budget is already used", prompt)
+        generated_template = build_docx.call_args.kwargs["template"]
+        process_section = next(
+            section for section in generated_template["sections"] if section["name"] == "process"
+        )
+        self.assertEqual(process_section["word_count"], [60, 108])
+
     def test_section_rerun_uses_and_stores_reviewer_instruction(self):
         job = {
             **_stored_job(),

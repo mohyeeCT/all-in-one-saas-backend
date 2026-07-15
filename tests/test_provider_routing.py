@@ -1134,6 +1134,87 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("SECOND-SECTION-RAW-COPY", captured_prompts[2])
         self.assertNotIn("FIRST-SECTION-RAW-COPY", captured_prompts[2])
 
+    def test_generate_page_tracks_a_pagewide_brand_mention_budget(self):
+        captured_prompts = []
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured_prompts.append(prompt)
+            return "Example section copy."
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+        sections = [
+            {
+                "name": f"section_{index}",
+                "label": f"Section {index}",
+                "purpose": "Cover one distinct point.",
+                "word_count": [20, 40],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": "Write directly.",
+            }
+            for index in range(6)
+        ]
+
+        with patch.object(copy_gen.time, "sleep"):
+            copy_gen.generate_page(
+                template={"sections": sections},
+                keyword_assignment={},
+                lsi_keywords={},
+                business_type="service",
+                brand_name="Example",
+                h1="Example Service",
+                page_type="service",
+                paa_questions=[],
+                ai_overview="",
+                competitor_section_map={},
+                client_brief="",
+                client_existing_content="",
+                provider="Test",
+                api_key="key",
+            )
+
+        self.assertIn(
+            "Page-wide brand mention budget: 4 maximum; 0 used in earlier sections; 4 remain",
+            captured_prompts[0],
+        )
+        self.assertIn("page-wide brand mention budget is already used", captured_prompts[4])
+        self.assertIn("Do not repeat the brand name in this section", captured_prompts[5])
+
+    def test_section_prompt_applies_adaptive_quantity_guidance_without_weakening_contracts(self):
+        prompt = copy_gen._build_section_prompt(
+            section={
+                "name": "benefits",
+                "label": "Benefits",
+                "purpose": "Explain supported benefits.",
+                "word_count": [60, 110],
+                "keyword_slot": "supporting",
+                "heading_level": "h2",
+                "prompt_rules": "Write exactly 3 benefit blocks.",
+                "adaptive_mode": "compact",
+                "adaptive_instruction": (
+                    "Use compact mode. Fulfil the section responsibility in the fewest complete "
+                    "paragraphs or blocks supported by its owned proof points."
+                ),
+            },
+            primary_keyword="",
+            supporting_keyword="service benefits",
+            lsi_keywords=[],
+            business_type="service",
+            brand_name="Example",
+            h1="Example Service",
+            page_type="service",
+            paa_questions=[],
+            competitor_excerpts=[],
+            client_brief="",
+            previous_section_text="",
+            client_existing_content="",
+        )
+
+        self.assertIn("Adaptive section guidance", prompt)
+        self.assertIn("overrides only numeric quantity requirements", prompt)
+        self.assertIn("Evidence, format, keyword, and safety constraints remain binding", prompt)
+        self.assertIn("fewest complete paragraphs or blocks", prompt)
+
     def test_collection_template_uses_shorter_intro_and_single_guidance_section(self):
         template = get_template("collection_page")
         section_names = [section["name"] for section in template["sections"]]

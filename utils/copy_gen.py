@@ -696,12 +696,15 @@ def _build_section_prompt(
     reviewer_corrections: list[str] | None = None,
     strategy_brief: dict | None = None,
     brand_style_context: str = "",
+    brand_mentions_used: int = 0,
+    brand_mention_budget: int | None = None,
 ) -> str:
     section_name = str(section.get("name") or "").casefold()
     evidence_bound = bool(_verified_fact_map(strategy_brief))
     kw_slot = section.get("keyword_slot", "none")
     wc_min, wc_max = section.get("word_count", [150, 250])
     section_prompt_rules = _section_specific_prompt_rules(section.get("prompt_rules", ""))
+    adaptive_instruction = str(section.get("adaptive_instruction") or "").strip()
 
     if kw_slot == "primary":
         keyword_instruction = f"Include this keyword naturally: {primary_keyword}" if primary_keyword else ""
@@ -784,11 +787,37 @@ def _build_section_prompt(
     if forbidden_phrases and forbidden_phrases.strip():
         forbidden_block = f"- Never use these phrases: {forbidden_phrases.strip()}\n"
 
-    brand_rule = (
-        f"- If the brand name appears, use exact casing: {brand_name}. Use the brand name no more than once in this section.\n"
-        if brand_name
-        else "- No brand name required.\n"
-    )
+    if brand_name and brand_mention_budget is not None:
+        remaining_brand_mentions = max(0, brand_mention_budget - brand_mentions_used)
+        if remaining_brand_mentions:
+            brand_rule = (
+                f"- If the brand name appears, use exact casing: {brand_name}. "
+                "Use the brand name no more than once in this section, and only when it adds clarity.\n"
+                f"- Page-wide brand mention budget: {brand_mention_budget} maximum; "
+                f"{brand_mentions_used} used in earlier sections; {remaining_brand_mentions} remain.\n"
+            )
+        else:
+            brand_rule = (
+                f"- Use exact brand casing when referring to {brand_name}, but the page-wide brand "
+                "mention budget is already used. Do not repeat the brand name in this section. "
+                "Use a natural reference or pronoun where the meaning stays clear.\n"
+            )
+    elif brand_name:
+        brand_rule = (
+            f"- If the brand name appears, use exact casing: {brand_name}. "
+            "Use the brand name no more than once in this section.\n"
+        )
+    else:
+        brand_rule = "- No brand name required.\n"
+
+    adaptive_block = ""
+    if adaptive_instruction:
+        adaptive_block = (
+            "\nAdaptive section guidance:\n"
+            "- This guidance overrides only numeric quantity requirements in the section-specific "
+            "rules. Evidence, format, keyword, and safety constraints remain binding.\n"
+            f"- {adaptive_instruction}\n"
+        )
     cta_rule = (
         "- A CTA is allowed in this section, but it may mention only a contact, ordering, or visit method supported by this section's assigned proof points."
         if section_name in PAGE_CTA_SECTION_NAMES
@@ -821,6 +850,7 @@ Word count guidance: Aim for {wc_min} to {wc_max} words. Cover the section purpo
 
 Section-specific rules:
 {section_prompt_rules}
+{adaptive_block}
 
 Hard rules for all output:
 - Use calm, professional punctuation without em dashes or exclamation marks.
@@ -852,6 +882,17 @@ Hard rules for all output:
 {paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{outline_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
+
+
+def _page_brand_mention_budget(section_count: int) -> int:
+    return min(5, max(3, ((max(0, section_count) + 1) // 2) + 1))
+
+
+def _count_brand_mentions(text: str, brand_name: str) -> int:
+    if not text or not brand_name:
+        return 0
+    pattern = rf"(?<!\w){re.escape(brand_name)}(?!\w)"
+    return len(re.findall(pattern, text, flags=re.IGNORECASE))
 
 
 # ── Provider functions ────────────────────────────────────────────────────────
@@ -1043,6 +1084,8 @@ def generate_page(
     results = {}
     completed_section_outline = []
     previous_section_text = ""
+    brand_mention_budget = _page_brand_mention_budget(len(sections)) if brand_name else None
+    brand_mentions_used = 0
 
     for i, section in enumerate(sections):
         if progress_callback:
@@ -1076,6 +1119,8 @@ def generate_page(
             forbidden_phrases=forbidden_phrases,
             strategy_brief=strategy_brief,
             brand_style_context=brand_style_context,
+            brand_mentions_used=brand_mentions_used,
+            brand_mention_budget=brand_mention_budget,
         )
 
         try:
@@ -1090,6 +1135,7 @@ def generate_page(
         results[sec_name] = text
         completed_section_outline.append(section.get("label") or sec_name)
         previous_section_text = text
+        brand_mentions_used += _count_brand_mentions(text, brand_name)
 
         if i < len(sections) - 1:
             time.sleep(delay)

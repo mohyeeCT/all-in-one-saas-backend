@@ -416,6 +416,83 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertIn("faq", section_names)
         self.assertNotIn("support_notes", section_names)
 
+    def test_page_copy_adapts_sections_after_keyword_assignment_without_reassigning_keywords(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        keyword_assignment = {
+            "hero": {"primary": "industrial dosing systems", "supporting": ""},
+            "benefits": {"primary": "", "supporting": "dosing system benefits"},
+            "process": {"primary": "", "supporting": ""},
+            "social_proof": {"primary": "", "supporting": ""},
+        }
+        strategy_brief = {
+            "search_intent": "Commercial",
+            "page_goal": "Help readers evaluate the service.",
+            "primary_positioning": "Lead with accurate dosing control.",
+            "headline_direction": "Use a direct service headline.",
+            "verified_facts": [{"id": "F1", "fact": "The service includes dosing support."}],
+            "section_guidance": [
+                {
+                    "section": "benefits",
+                    "responsibility": "Explain supported benefits.",
+                    "proof_points": ["Proof one", "Proof two", "Proof three"],
+                },
+                {
+                    "section": "process",
+                    "responsibility": "Explain the verified process.",
+                    "proof_points": ["One process fact"],
+                },
+                {
+                    "section": "social_proof",
+                    "responsibility": "Use confirmed social proof only.",
+                    "proof_points": [],
+                },
+            ],
+        }
+
+        with patch.object(all_in_one, "assign_keywords_to_sections", return_value=keyword_assignment), \
+             patch.object(all_in_one, "generate_strategy_brief", return_value=strategy_brief), \
+             patch.object(all_in_one, "generate_page", return_value={
+                 "hero": "Industrial dosing systems " + " ".join(["copy"] * 120),
+                 "_full_page": "Industrial dosing systems " + " ".join(["copy"] * 120),
+                 "_word_count": 121,
+             }) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "industrial dosing systems",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        generated_template = generate_page.call_args.kwargs["template"]
+        generated_sections = {section["name"]: section for section in generated_template["sections"]}
+        plan = {item["section"]: item for item in result["adaptive_section_plan"]}
+
+        self.assertEqual(generate_page.call_args.kwargs["keyword_assignment"], keyword_assignment)
+        self.assertEqual(result["keyword_assignment"], keyword_assignment)
+        self.assertEqual(generated_sections["benefits"]["word_count"], [120, 190])
+        self.assertEqual(generated_sections["process"]["word_count"], [60, 108])
+        self.assertNotIn("social_proof", generated_sections)
+        self.assertEqual(plan["process"]["mode"], "compact")
+        self.assertEqual(plan["social_proof"]["mode"], "omit")
+        self.assertEqual(result["adaptive_template_family"], "lead_generation")
+
     def test_skips_when_h1_unavailable_and_gsc_disabled(self):
         for h1 in ("", "none", "NoNe"):
             with self.subTest(h1=h1):
