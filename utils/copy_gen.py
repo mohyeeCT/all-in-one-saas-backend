@@ -36,6 +36,14 @@ def sanitise(text: str, brand_name: str = "") -> str:
     return text
 
 
+def _section_specific_prompt_rules(value: str) -> str:
+    """Keep shared punctuation guidance out of per-template section rules."""
+    text = str(value or "")
+    for shared_rule in ("No em dashes", "No exclamation marks"):
+        text = re.sub(rf"(?i)(?:^|\s+){re.escape(shared_rule)}\.?", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 # ── Business type context ─────────────────────────────────────────────────────
 
 BUSINESS_TYPE_CONTEXT = {
@@ -577,6 +585,7 @@ def format_strategy_brief_for_prompt(
     elif output_type == "faq":
         field_order.extend(("verified_facts", "faq_direction", "proof_points_to_use"))
     elif output_type == "page":
+        field_order.append("primary_positioning")
         if include_headline_direction:
             field_order.append("headline_direction")
         field_order.append("section_guidance")
@@ -609,6 +618,8 @@ def format_strategy_brief_for_prompt(
         if not value:
             continue
         label = _STRATEGY_FIELD_LABELS[key]
+        if output_type == "page" and key == "primary_positioning":
+            label = "Page through-line (editorial direction, not evidence)"
         if key == "verified_facts" and isinstance(value, list):
             fact_lines = []
             for item in value[:12]:
@@ -627,10 +638,16 @@ def format_strategy_brief_for_prompt(
                     section = _clean_strategy_text(item.get("section"), 80)
                     if filter_sections and section.casefold() not in matching_sections:
                         continue
+                    responsibility = _clean_strategy_text(item.get("responsibility"), 300)
+                    guidance = _clean_strategy_text(item.get("guidance"), 400)
                     proof_points = _clean_strategy_list(item.get("proof_points"), max_items=4)
                     details = []
+                    if responsibility:
+                        details.append(f"  Responsibility: {responsibility}")
+                    if guidance:
+                        details.append(f"  Guidance: {guidance}")
                     if proof_points:
-                        details.append("  Owned proof points:")
+                        details.append("  Owned proof points (the only evidence allowed for concrete claims):")
                         details.extend(f"    - {proof_point}" for proof_point in proof_points)
                     if details:
                         section_lines.append(f"- Section: {section or 'Unspecified'}\n" + "\n".join(details))
@@ -639,7 +656,12 @@ def format_strategy_brief_for_prompt(
                     if text:
                         section_lines.append(f"- {text}")
             if section_lines:
-                lines.append(f"{label}:\n" + "\n".join(section_lines))
+                lines.append(
+                    "Section editorial direction (not evidence):\n"
+                    "Use responsibility and guidance for structure and emphasis only. "
+                    "They do not authorize factual claims.\n"
+                    + "\n".join(section_lines)
+                )
         elif isinstance(value, list):
             item_lines = [f"- {_clean_strategy_text(item, 300)}" for item in value[:6] if _clean_strategy_text(item, 300)]
             if item_lines:
@@ -668,6 +690,7 @@ def _build_section_prompt(
     client_brief: str,
     previous_section_text: str,
     client_existing_content: str,
+    completed_section_outline: list[str] | None = None,
     ai_overview: str = "",
     forbidden_phrases: str = "",
     reviewer_corrections: list[str] | None = None,
@@ -678,6 +701,7 @@ def _build_section_prompt(
     evidence_bound = bool(_verified_fact_map(strategy_brief))
     kw_slot = section.get("keyword_slot", "none")
     wc_min, wc_max = section.get("word_count", [150, 250])
+    section_prompt_rules = _section_specific_prompt_rules(section.get("prompt_rules", ""))
 
     if kw_slot == "primary":
         keyword_instruction = f"Include this keyword naturally: {primary_keyword}" if primary_keyword else ""
@@ -724,7 +748,22 @@ def _build_section_prompt(
 
     prev_block = ""
     if previous_section_text and previous_section_text.strip():
-        prev_block = f"\nEarlier page copy (for context and coherence, do not repeat):\n{previous_section_text[-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT:]}"
+        prev_block = (
+            "\nImmediately preceding section (use for continuity, without repeating it):\n"
+            f"{previous_section_text[-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT:]}"
+        )
+
+    outline_items = [
+        _clean_strategy_text(item, 120)
+        for item in (completed_section_outline or [])
+        if _clean_strategy_text(item, 120)
+    ]
+    outline_block = ""
+    if outline_items:
+        outline_block = (
+            "\nCompleted page outline (section labels only):\n"
+            + "\n".join(f"- {item}" for item in outline_items[:10])
+        )
 
     heading_instruction = ""
     heading_level = section.get("heading_level", "h2")
@@ -776,16 +815,15 @@ Brand name: {brand_name or 'Not specified'}
 Business context: {BUSINESS_TYPE_CONTEXT.get(business_type, BUSINESS_TYPE_CONTEXT['general'])}
 
 Section purpose: {section['purpose']}
-Word count target: {wc_min} to {wc_max} words. Stay within this range.
+Word count guidance: Aim for {wc_min} to {wc_max} words. Cover the section purpose completely, stay concise, and never add filler just to reach the minimum. Do not exceed {wc_max} words.
 {keyword_instruction}
 {heading_instruction}
 
 Section-specific rules:
-{section['prompt_rules']}
+{section_prompt_rules}
 
 Hard rules for all output:
-- Never use em dashes (use a comma or rewrite the sentence)
-- No exclamation marks
+- Use calm, professional punctuation without em dashes or exclamation marks.
 - No generic AI openings like 'In today's world', 'Great question', 'Finding the right', 'When it comes to', 'Choosing the right', 'Looking for', 'There are many', 'It can be difficult to', 'If you are searching for', 'Whether you need', or 'In the world of'
 {forbidden_block}
 - You may adjust word order, add small connecting words, or use a close grammatical variation when the exact keyword phrase would sound awkward.
@@ -811,7 +849,7 @@ Hard rules for all output:
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
 - Return only the section copy. No preamble, no notes, no explanations.
-{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{prev_block}{correction_block}"""
+{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{outline_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
 
@@ -1003,7 +1041,8 @@ def generate_page(
     delay = PROVIDER_DELAY.get(provider, 1.0)
     sections = template.get("sections", [])
     results = {}
-    previous_sections = []
+    completed_section_outline = []
+    previous_section_text = ""
 
     for i, section in enumerate(sections):
         if progress_callback:
@@ -1030,8 +1069,9 @@ def generate_page(
             paa_questions=paa_questions if sec_name == "faq" and not evidence_bound else [],
             competitor_excerpts=comp_excerpts,
             client_brief=client_brief,
-            previous_section_text="\n\n".join(previous_sections),
+            previous_section_text=previous_section_text,
             client_existing_content=client_existing_content if i == 0 and not evidence_bound else "",
+            completed_section_outline=completed_section_outline,
             ai_overview="" if evidence_bound else ai_overview,
             forbidden_phrases=forbidden_phrases,
             strategy_brief=strategy_brief,
@@ -1048,7 +1088,8 @@ def generate_page(
             text = f"[ERROR generating section '{section['label']}': {e}]"
 
         results[sec_name] = text
-        previous_sections.append(text)
+        completed_section_outline.append(section.get("label") or sec_name)
+        previous_section_text = text
 
         if i < len(sections) - 1:
             time.sleep(delay)

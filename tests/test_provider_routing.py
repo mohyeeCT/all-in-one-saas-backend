@@ -876,9 +876,15 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", page_capture["prompt"])
         self.assertIn("Do not promise guaranteed certification.", page_capture["prompt"])
-        self.assertNotIn("Frame the compliance problem.", page_capture["prompt"])
-        self.assertNotIn("Lead with the compliance problem.", page_capture["prompt"])
+        self.assertIn("Page through-line (editorial direction, not evidence)", page_capture["prompt"])
+        self.assertIn("Practical compliance support for regulated teams.", page_capture["prompt"])
+        self.assertIn("Section editorial direction (not evidence):", page_capture["prompt"])
+        self.assertIn("Responsibility: Frame the compliance problem.", page_capture["prompt"])
+        self.assertIn("Guidance: Lead with the compliance problem.", page_capture["prompt"])
+        self.assertIn("They do not authorize factual claims.", page_capture["prompt"])
         self.assertIn("ISO implementation experience", page_capture["prompt"])
+        self.assertNotIn("Explain the operational benefits.", page_capture["prompt"])
+        self.assertNotIn("Connect the service to lower operational risk.", page_capture["prompt"])
         self.assertNotIn("Documented implementation process", page_capture["prompt"])
         self.assertNotIn("Page-level proof for metadata and FAQs", page_capture["prompt"])
         self.assertNotIn("Lead with practical support for regulated teams.", page_capture["prompt"])
@@ -1058,6 +1064,76 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("If the brand name appears, use exact casing: Example", captured[0]["prompt"])
         self.assertNotIn("Brand name must appear exactly as:", captured[0]["prompt"])
 
+    def test_generate_page_passes_only_previous_section_text_with_completed_outline(self):
+        captured_prompts = []
+        generated_sections = [
+            "FIRST-SECTION-RAW-COPY",
+            "SECOND-SECTION-RAW-COPY",
+            "THIRD-SECTION-RAW-COPY",
+        ]
+
+        def fake_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured_prompts.append(prompt)
+            return generated_sections[len(captured_prompts) - 1]
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+        template_sections = [
+            {
+                "name": "intro",
+                "label": "Introduction",
+                "purpose": "Introduce the topic.",
+                "word_count": [20, 40],
+                "keyword_slot": "none",
+                "heading_level": "none",
+                "prompt_rules": "Write directly.",
+            },
+            {
+                "name": "benefits",
+                "label": "Benefits",
+                "purpose": "Explain the benefits.",
+                "word_count": [30, 50],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": "Be specific.",
+            },
+            {
+                "name": "process",
+                "label": "Process",
+                "purpose": "Explain the process.",
+                "word_count": [30, 50],
+                "keyword_slot": "none",
+                "heading_level": "h2",
+                "prompt_rules": "Be clear.",
+            },
+        ]
+
+        with patch.object(copy_gen.time, "sleep"):
+            copy_gen.generate_page(
+                template={"sections": template_sections},
+                keyword_assignment={},
+                lsi_keywords={},
+                business_type="service",
+                brand_name="Example",
+                h1="Example Service",
+                page_type="service",
+                paa_questions=[],
+                ai_overview="",
+                competitor_section_map={},
+                client_brief="",
+                client_existing_content="",
+                provider="Test",
+                api_key="key",
+            )
+
+        self.assertNotIn("Completed page outline", captured_prompts[0])
+        self.assertNotIn("Immediately preceding section", captured_prompts[0])
+        self.assertIn("- Introduction", captured_prompts[1])
+        self.assertIn("FIRST-SECTION-RAW-COPY", captured_prompts[1])
+        self.assertIn("- Introduction", captured_prompts[2])
+        self.assertIn("- Benefits", captured_prompts[2])
+        self.assertIn("SECOND-SECTION-RAW-COPY", captured_prompts[2])
+        self.assertNotIn("FIRST-SECTION-RAW-COPY", captured_prompts[2])
+
     def test_collection_template_uses_shorter_intro_and_single_guidance_section(self):
         template = get_template("collection_page")
         section_names = [section["name"] for section in template["sections"]]
@@ -1103,6 +1179,40 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Do not invent product groupings, package sizes, event scales", prompt)
         self.assertIn("Competitor context is topic inspiration, not proof of client facts", prompt)
         self.assertIn("Finding the right", prompt)
+
+    def test_section_prompt_centralises_punctuation_rules_and_discourages_padding(self):
+        prompt = copy_gen._build_section_prompt(
+            section={
+                "name": "intro",
+                "label": "Introduction",
+                "purpose": "Introduce the service.",
+                "word_count": [60, 100],
+                "keyword_slot": "none",
+                "heading_level": "none",
+                "prompt_rules": "Write directly. No em dashes. No exclamation marks.",
+            },
+            primary_keyword="",
+            supporting_keyword="",
+            lsi_keywords=[],
+            business_type="service",
+            brand_name="Example",
+            h1="Example Service",
+            page_type="service",
+            paa_questions=[],
+            competitor_excerpts=[],
+            client_brief="",
+            previous_section_text="",
+            client_existing_content="",
+        )
+
+        self.assertIn(
+            "Word count guidance: Aim for 60 to 100 words. Cover the section purpose completely, "
+            "stay concise, and never add filler just to reach the minimum. Do not exceed 100 words.",
+            prompt,
+        )
+        self.assertNotIn("Stay within this range", prompt)
+        self.assertEqual(prompt.casefold().count("em dashes"), 1)
+        self.assertEqual(prompt.casefold().count("exclamation marks"), 1)
 
     def test_build_section_prompt_includes_reviewer_corrections(self):
         prompt = copy_gen._build_section_prompt(

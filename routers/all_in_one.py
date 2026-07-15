@@ -845,10 +845,23 @@ def _add_section_word_count_flags(flags: list[dict], section_results: dict, temp
             continue
         target_min, target_max = target
         actual_words = _word_count_for_qa(str(text))
+        severe_min = int(target_min * 0.6)
         tolerated_min = int(target_min * 0.8)
         tolerated_max = int(target_max * 1.2)
 
-        if actual_words < tolerated_min:
+        if actual_words < severe_min:
+            flags.append({
+                "code": "section_word_count_below_target",
+                "message": f"Section '{section.get('label', section_name)}' is substantially shorter than the target range.",
+                "output": "page_copy",
+                "section": section_name,
+                "section_label": section.get("label", section_name),
+                "actual_words": actual_words,
+                "target_min": target_min,
+                "target_max": target_max,
+                "severity": "review",
+            })
+        elif actual_words < tolerated_min:
             flags.append({
                 "code": "section_word_count_below_target",
                 "message": f"Section '{section.get('label', section_name)}' is shorter than the target range.",
@@ -858,6 +871,7 @@ def _add_section_word_count_flags(flags: list[dict], section_results: dict, temp
                 "actual_words": actual_words,
                 "target_min": target_min,
                 "target_max": target_max,
+                "severity": "warning",
             })
         elif actual_words > tolerated_max:
             flags.append({
@@ -869,6 +883,7 @@ def _add_section_word_count_flags(flags: list[dict], section_results: dict, temp
                 "actual_words": actual_words,
                 "target_min": target_min,
                 "target_max": target_max,
+                "severity": "review",
             })
 
 

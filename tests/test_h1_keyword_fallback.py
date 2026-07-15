@@ -863,10 +863,31 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(by_section["hero"]["actual_words"], 2)
         self.assertEqual(by_section["hero"]["target_min"], 70)
         self.assertEqual(by_section["hero"]["target_max"], 120)
+        self.assertEqual(by_section["hero"]["severity"], "review")
         self.assertEqual(by_section["benefits"]["code"], "section_word_count_above_target")
         self.assertEqual(by_section["benefits"]["actual_words"], 310)
         self.assertEqual(by_section["benefits"]["target_min"], 120)
         self.assertEqual(by_section["benefits"]["target_max"], 190)
+        self.assertEqual(by_section["benefits"]["severity"], "review")
+
+    def test_moderately_short_page_section_is_warning_only(self):
+        flags = []
+        all_in_one._add_section_word_count_flags(
+            flags,
+            {"intro": " ".join(["concise"] * 45)},
+            {
+                "sections": [{
+                    "name": "intro",
+                    "label": "Introduction",
+                    "word_count": [60, 100],
+                }],
+            },
+        )
+
+        self.assertEqual(len(flags), 1)
+        self.assertEqual(flags[0]["code"], "section_word_count_below_target")
+        self.assertEqual(flags[0]["severity"], "warning")
+        self.assertEqual(all_in_one._qa_status(flags), "warning")
 
     def test_generic_openers_in_meta_and_page_copy_are_flagged(self):
         settings = {
