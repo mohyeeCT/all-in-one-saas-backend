@@ -586,6 +586,43 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertNotIn("Always mention compliance", brand_context)
         self.assertNotIn("tone_of_voice", brand_context)
 
+    def test_brand_profile_name_falls_back_when_manual_brand_name_is_empty(self):
+        settings = {
+            **_settings(),
+            "gen_meta": True,
+            "business_type": "service",
+            "brand_name": "",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        with patch.object(
+            all_in_one,
+            "generate_copy",
+            return_value={
+                "title": "Reliable Industrial Dosing Systems",
+                "description": "Learn about industrial dosing systems.",
+                "h1_optimised": "Industrial Dosing Systems",
+            },
+        ) as generate:
+            self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                },
+                settings=settings,
+                ranked=ranked,
+                brand_profile={"brand_name": "Profile Brand"},
+            )
+
+        self.assertEqual(generate.call_args.kwargs["brand_name"], "Profile Brand")
+
     def test_faq_generation_receives_structured_ai_overview_sections(self):
         settings = {
             **_settings(),
@@ -811,6 +848,39 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         ])
         schema = json.loads(result["faq_schema"])
         self.assertEqual(len(schema["mainEntity"]), 3)
+
+    def test_job_faq_count_applies_when_row_has_no_override(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "num_faqs": 7,
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        generated_faqs = [
+            {"question": f"Question {i}?", "answer": f"Answer {i}."}
+            for i in range(1, 8)
+        ]
+        row = all_in_one.AIORow(
+            url="https://example.com/industrial-dosing",
+            page_type="service",
+            h1="Industrial Dosing Systems",
+        ).model_dump()
+
+        with patch.object(all_in_one, "generate_strategy_brief", return_value={}), \
+             patch.object(all_in_one, "generate_faq", return_value=generated_faqs) as generate_faq:
+            result = self._process(row, settings=settings, ranked=ranked)
+
+        self.assertIsNone(row["num_faqs"])
+        self.assertEqual(generate_faq.call_args.kwargs["num_faqs"], 7)
+        self.assertEqual(result["faq_count"], 7)
 
 
     def test_row_gets_review_flags_for_forbidden_phrase_and_missing_requested_output(self):
@@ -1489,6 +1559,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertGreaterEqual(diagnostics["duration_ms"], 0)
         self.assertEqual(diagnostics["input_signal_counts"]["paa_questions"], 1)
         self.assertEqual(diagnostics["input_signal_counts"]["ai_overview_sections"], 1)
+        self.assertEqual(diagnostics["input_signal_counts"]["serp_organic"], 1)
+        self.assertEqual(diagnostics["input_signal_counts"]["competitor_candidates"], 1)
+        self.assertEqual(diagnostics["input_signal_counts"]["competitor_scrape_successes"], 0)
         self.assertEqual(diagnostics["output_counts"]["faq_items"], 1)
         self.assertEqual(diagnostics["output_counts"]["sections"], 1)
         self.assertEqual(diagnostics["generation_requested"], {"meta": True, "faqs": True, "page_copy": True})

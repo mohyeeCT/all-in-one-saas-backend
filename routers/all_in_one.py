@@ -1316,14 +1316,15 @@ def _process_single_row(
     gen_page_copy = row.get("gen_page_copy", settings.get("gen_page_copy", True))
     gen_meta      = row.get("gen_meta",      settings.get("gen_meta",      True))
     gen_faqs      = row.get("gen_faqs",      settings.get("gen_faqs",      True))
-    num_faqs      = int(row.get("num_faqs",  settings.get("num_faqs",      5)))
+    row_num_faqs  = row.get("num_faqs")
+    num_faqs      = int(settings.get("num_faqs", 5) if row_num_faqs is None else row_num_faqs)
 
     dfs_login    = settings["dfs_login"]
     dfs_password = settings["dfs_password"]
     provider     = settings.get("provider", "Claude")
     model        = settings.get("model") or None
     api_key      = settings.get("api_key", "")
-    brand_name   = settings.get("brand_name", "")
+    brand_name   = str(settings.get("brand_name") or (brand_profile or {}).get("brand_name") or "").strip()
     business_type = settings.get("business_type", "general")
     min_volume   = int(settings.get("min_volume", 10))
     location_code = int(settings.get("location_code", 2840))
@@ -1380,6 +1381,9 @@ def _process_single_row(
             "serp_organic": 0,
             "paa_questions": 0,
             "ai_overview_sections": 0,
+            "competitor_candidates": 0,
+            "competitor_scrape_successes": 0,
+            "competitor_rejected": 0,
             "competitors_scraped": 0,
             "page_context_chars": 0,
             "scraped_page_chars": 0,
@@ -1602,10 +1606,13 @@ def _process_single_row(
                         continue
                     if client_domain and client_domain in urlparse(comp_url).netloc:
                         continue
+                    run_diagnostics["input_signal_counts"]["competitor_candidates"] += 1
                     sc = scrape_url(comp_url, api_key=jina_key)
                     if not sc["success"]:
                         continue
+                    run_diagnostics["input_signal_counts"]["competitor_scrape_successes"] += 1
                     if not is_editorial_competitor(sc, page_type):
+                        run_diagnostics["input_signal_counts"]["competitor_rejected"] += 1
                         continue
                     sc["relevance"] = classify_competitor_relevance(sc, business_type, page_type)
                     sc["comp_url"]  = comp_url
@@ -1619,6 +1626,8 @@ def _process_single_row(
                 step("competitors: " + str(len(competitor_urls_used)) + " scraped")
             except Exception as e:
                 step("⚠ competitor scrape failed: " + str(e)[:60])
+        else:
+            step("competitors unavailable: no organic results")
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 5 — Generate strategy brief, then meta copy
@@ -2261,7 +2270,7 @@ class AIORow(BaseModel):
     gen_page_copy: bool = True
     gen_meta: bool = True
     gen_faqs: bool = True
-    num_faqs: int = 5
+    num_faqs: int | None = None
 
 
 class AIOSettings(BaseModel):

@@ -44,6 +44,13 @@ class DataForSeoErrorVisibilityTests(unittest.TestCase):
                 "result": [{
                     "items": [
                         {
+                            "type": "organic",
+                            "url": "https://example.com/beyond-burgers",
+                            "title": "Beyond Burgers",
+                            "description": "A guide to plant-based patties.",
+                            "rank_absolute": 2,
+                        },
+                        {
                             "type": "ai_overview",
                             "items": [{"text": "Beyond burgers are plant-based patties."}],
                         },
@@ -67,6 +74,12 @@ class DataForSeoErrorVisibilityTests(unittest.TestCase):
 
         post.assert_called_once()
         self.assertEqual(post.call_args.args[0], "serp/google/organic/live/advanced")
+        self.assertEqual(result["organic"], [{
+            "url": "https://example.com/beyond-burgers",
+            "title": "Beyond Burgers",
+            "description": "A guide to plant-based patties.",
+            "rank": 2,
+        }])
         self.assertTrue(result["ai_overview_present"])
         self.assertEqual(result["paa_questions"], ["What are beyond burgers?"])
         self.assertEqual(result["paa_items"][0]["answer"], "Plant-based burger patties.")

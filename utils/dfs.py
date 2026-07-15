@@ -359,10 +359,11 @@ def _extract_paa_answer(paa_el: dict) -> str:
 
 
 def get_serp_data(login: str, password: str, keyword: str, location_code: int = 2840, load_async_ai_overview: bool = True) -> dict:
-    """Single SERP call that returns both AI Overview and PAA data.
+    """Single SERP call that returns organic, AI Overview, and PAA data.
 
     Returns:
     {
+        "organic": [{"url": str, "title": str, "description": str, "rank": int}, ...],
         "ai_overview_present": bool,
         "ai_overview_sections": [{"title": str, "content": str}, ...],
         "ai_overview_raw": str,          # full concatenated AI overview text
@@ -371,6 +372,7 @@ def get_serp_data(login: str, password: str, keyword: str, location_code: int = 
     }
     """
     empty = {
+        "organic": [],
         "ai_overview_present": False,
         "ai_overview_async_only": False,
         "ai_overview_sections": [],
@@ -409,6 +411,7 @@ def get_serp_data(login: str, password: str, keyword: str, location_code: int = 
 
         ai_sections = []
         ai_raw_parts = []
+        organic = []
         paa_questions = []
         paa_items = []
         paa_raw_items = []
@@ -418,6 +421,17 @@ def get_serp_data(login: str, password: str, keyword: str, location_code: int = 
             for result_block in (task.get("result") or []):
                 for item in (result_block.get("items") or []):
                     item_type = item.get("type", "")
+
+                    # ── Organic results ──────────────────────────────────────
+                    if item_type == "organic":
+                        organic_url = item.get("url", "") or item.get("link", "")
+                        if organic_url:
+                            organic.append({
+                                "url": organic_url,
+                                "title": item.get("title", ""),
+                                "description": item.get("description", ""),
+                                "rank": item.get("rank_absolute", 99),
+                            })
 
                     # ── AI Overview ──────────────────────────────────────────
                     if item_type in ("ai_overview", "asynchronous_ai_overview"):
@@ -462,6 +476,7 @@ def get_serp_data(login: str, password: str, keyword: str, location_code: int = 
         ao_found = len(ai_sections) > 0
 
         result = {
+            "organic": organic,
             "ai_overview_present": ao_found,
             "ai_overview_async_only": async_ao_detected and not ao_found,
             "ai_overview_sections": ai_sections,
