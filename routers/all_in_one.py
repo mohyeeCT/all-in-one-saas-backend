@@ -2382,17 +2382,20 @@ def run_aio_job(
 
     # Brand profile
     brand_profile = None
+    client_profile_id = None
     if request.settings.brand_profile_id:
         try:
             bp = sb.table("brand_profiles").select("data").eq("id", request.settings.brand_profile_id).eq("user_id", user.id).execute()
             if bp.data:
                 brand_profile = bp.data[0].get("data") or {}
+                client_profile_id = request.settings.brand_profile_id
         except Exception:
             pass
 
     execute_active_job_write(lambda: sb.table("jobs").insert({
         "id":             job_id,
         "user_id":        user.id,
+        "client_profile_id": client_profile_id,
         "name":           request.name or f"All in One — {len(request.rows)} URLs",
         "tool":           "all-in-one",
         "status":         "pending",
