@@ -1,8 +1,9 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from google.auth.exceptions import RefreshError
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from auth import get_current_user, get_supabase
-from credentials import hydrate_job_settings, mark_gsc_reconnect_required, strip_secret_fields
+from credentials import hydrate_job_settings, load_user_credentials, mark_gsc_reconnect_required, strip_secret_fields
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
 
 router = APIRouter()
@@ -222,6 +223,7 @@ def cancel_job(job_id: str, user=Depends(get_current_user)):
 
 class RerunRequest(BaseModel):
     keyword_override: str = ""
+    scraper_override: Literal["", "firecrawl"] = ""
 
 
 class MultiRerunRequest(BaseModel):
@@ -313,10 +315,26 @@ def rerun_row(
     enforce_rate_limit(sb, user.id, "all-in-one", "row-rerun", 30)
 
     keyword_override = (body.keyword_override or "").strip() if body else ""
+    scraper_override = body.scraper_override if body else ""
+    if scraper_override == "firecrawl":
+        try:
+            credentials = load_user_credentials(sb, user.id)
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="Saved credentials are temporarily unavailable. Please try again.",
+            ) from None
+        if not (credentials.get("provider_settings") or {}).get("firecrawl_api_key"):
+            raise HTTPException(
+                status_code=400,
+                detail="Add a Firecrawl API key in Settings before rerunning this row.",
+            )
 
     step_msg = f"Re-running row {row_index + 1}"
     if keyword_override:
         step_msg += f' with keyword "{keyword_override}"'
+    if scraper_override == "firecrawl":
+        step_msg += " with Firecrawl"
     step_msg += "..."
 
     sb.table("jobs").update({
@@ -325,11 +343,30 @@ def rerun_row(
         "updated_at": "now()"
     }).eq("id", job_id).eq("user_id", user.id).execute()
 
-    background_tasks.add_task(_rerun_single_row, job_id, row_index, rows, settings, sb, keyword_override, user.id)
+    background_tasks.add_task(
+        _rerun_single_row,
+        job_id,
+        row_index,
+        rows,
+        settings,
+        sb,
+        keyword_override,
+        user.id,
+        scraper_override,
+    )
     return {"status": "rerunning"}
 
 
-def _rerun_single_row(job_id: str, row_index: int, rows: list, settings: dict, sb, keyword_override: str = "", user_id: str = ""):
+def _rerun_single_row(
+    job_id: str,
+    row_index: int,
+    rows: list,
+    settings: dict,
+    sb,
+    keyword_override: str = "",
+    user_id: str = "",
+    scraper_override: str = "",
+):
     """Background task to re-run one row and update its result in place."""
     try:
         settings = hydrate_job_settings(sb, user_id, settings)
@@ -400,6 +437,7 @@ def _rerun_single_row(job_id: str, row_index: int, rows: list, settings: dict, s
             user_id=user_id,
             brand_profile=brand_profile,
             gsc_auth_method=gsc_auth_method,
+            scraper_override=scraper_override,
         )
 
         # Update just this row's result in the existing results array

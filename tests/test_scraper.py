@@ -1,10 +1,78 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from utils import scraper
+import requests
+
+from utils import faq_scraper, scraper
 
 
 class ScraperTests(unittest.TestCase):
+    def test_owned_page_scraper_allows_slow_jina_render(self):
+        response = Mock(status_code=200)
+        response.text = (
+            "Title: Example Page\n\n"
+            "# Example Page\n\n"
+            "This page contains enough substantive content for the scraper to retain."
+        )
+        response.raise_for_status.return_value = None
+
+        with patch.object(faq_scraper.requests, "get", return_value=response) as get:
+            result = faq_scraper.scrape_page_context("jina-key", "https://example.com")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source"], "live")
+        self.assertEqual(get.call_args.kwargs["headers"]["X-Timeout"], "180")
+        self.assertEqual(get.call_args.kwargs["timeout"], 200)
+
+    def test_owned_page_scraper_uses_cached_fallback_after_timeout(self):
+        cached = Mock(status_code=200)
+        cached.text = (
+            "Title: Cached Page\n\n"
+            "# Cached Page\n\n"
+            "This cached snapshot contains enough useful page content for generation."
+        )
+        cached.raise_for_status.return_value = None
+
+        with patch.object(
+            faq_scraper.requests,
+            "get",
+            side_effect=[requests.exceptions.Timeout(), cached],
+        ) as get:
+            result = faq_scraper.scrape_page_context("jina-key", "https://example.com")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source"], "cached_fallback")
+        self.assertEqual(get.call_count, 2)
+        fallback = get.call_args_list[1]
+        self.assertEqual(fallback.kwargs["timeout"], 30)
+        self.assertNotIn("X-No-Cache", fallback.kwargs["headers"])
+        self.assertNotIn("X-Remove-Selector", fallback.kwargs["headers"])
+        self.assertNotIn("X-Timeout", fallback.kwargs["headers"])
+
+    def test_owned_page_firecrawl_uses_fresh_v2_scrape(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "success": True,
+            "data": {
+                "markdown": "# Example Page\n\nThis page contains enough substantive content for generation.",
+                "metadata": {"title": "Example Page"},
+            },
+        }
+
+        with patch.object(faq_scraper.requests, "post", return_value=response) as post:
+            result = faq_scraper.scrape_page_context_firecrawl(
+                "firecrawl-key",
+                "https://example.com",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source"], "firecrawl")
+        self.assertEqual(post.call_args.args[0], "https://api.firecrawl.dev/v2/scrape")
+        self.assertEqual(post.call_args.kwargs["timeout"], 135)
+        self.assertEqual(post.call_args.kwargs["json"]["timeout"], 120000)
+        self.assertEqual(post.call_args.kwargs["json"]["maxAge"], 0)
+        self.assertFalse(post.call_args.kwargs["json"]["storeInCache"])
+
     def test_scrape_url_sends_jina_authorization_when_api_key_is_provided(self):
         captured = {}
 
