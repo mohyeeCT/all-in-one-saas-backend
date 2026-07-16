@@ -28,7 +28,9 @@ class AioScrapingSettingsTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         jina.assert_not_called()
-        firecrawl.assert_called_once_with("firecrawl", "https://example.com")
+        firecrawl.assert_called_once_with("firecrawl", "https://example.com", mode="default")
+        self.assertEqual(result["requested_provider"], "firecrawl")
+        self.assertEqual(result["mode"], "default")
 
     def test_jina_failure_does_not_use_firecrawl_when_fallback_is_off(self):
         jina_failure = {"success": False, "error": "Jina failed", "source": "live"}
@@ -69,7 +71,29 @@ class AioScrapingSettingsTests(unittest.TestCase):
             )
 
         self.assertIs(result, firecrawl_success)
-        firecrawl.assert_called_once_with("firecrawl", "https://example.com")
+        firecrawl.assert_called_once_with("firecrawl", "https://example.com", mode="default")
+        self.assertTrue(result["fallback_used"])
+
+    def test_collection_page_uses_collection_aware_scraping(self):
+        with patch.object(
+            all_in_one,
+            "scrape_page_context",
+            return_value={"success": True, "content": "Collection context", "source": "live"},
+        ) as jina:
+            result = all_in_one._scrape_owned_page_for_settings(
+                {"scrape_provider": "jina", "jina_api_key": "jina"},
+                "https://example.com/collections/hats",
+                business_type="ecommerce",
+                page_type="collection",
+            )
+
+        jina.assert_called_once_with(
+            "jina",
+            "https://example.com/collections/hats",
+            mode="ecommerce_collection",
+        )
+        self.assertEqual(result["mode"], "ecommerce_collection")
+        self.assertEqual(result["cleaned_chars"], len("Collection context"))
 
 
 if __name__ == "__main__":

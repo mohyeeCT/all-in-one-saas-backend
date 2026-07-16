@@ -301,6 +301,47 @@ class ProviderRoutingTests(unittest.TestCase):
         )
         self.assertIn("Candidate questions: 5", captured["prompt"])
 
+    def test_faq_plan_does_not_reuse_one_fact_for_rephrased_questions(self):
+        captured = {}
+
+        def fake_provider(_api_key, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return json.dumps([
+                {"question": "What shipping threshold is documented?", "fact_ids": ["F1"]},
+                {"question": "When does free shipping apply?", "fact_ids": ["F1"]},
+                {"question": "Which cowboy hat styles are listed?", "fact_ids": ["F2"]},
+            ])
+
+        copy_gen.PROVIDER_FN["DiversityTest"] = fake_provider
+        plan = copy_gen.generate_faq_plan(
+            provider="DiversityTest",
+            api_key="key",
+            keyword="party cowboy hats",
+            page_type="collection",
+            business_type="ecommerce",
+            brand_name="Ultimate Party",
+            num_faqs=3,
+            paa_items=[],
+            ai_overview_raw="",
+            page_context="Products found: Pink Cowboy Hat, Light Up Cowboy Hat.",
+            strategy_brief={
+                "verified_facts": [
+                    {"id": "F1", "fact": "Free shipping applies above the documented threshold.", "source": "current_page"},
+                    {"id": "F2", "fact": "Pink and light-up cowboy hats are listed.", "source": "current_page"},
+                ],
+            },
+        )
+
+        self.assertEqual(
+            plan,
+            [
+                {"question": "What shipping threshold is documented?", "fact_ids": ["F1"]},
+                {"question": "Which cowboy hat styles are listed?", "fact_ids": ["F2"]},
+            ],
+        )
+        self.assertIn("Owned page topic context", captured["prompt"])
+        self.assertIn("Do not rephrase one idea several ways", captured["prompt"])
+
     def test_paa_answer_snippets_are_sentence_aware(self):
         answer = (
             "This first sentence should remain intact. "
@@ -1224,12 +1265,24 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(intro["name"], "category_intro")
         self.assertLessEqual(intro["word_count"][1], 120)
         self.assertIn("collection_guidance", section_names)
+        self.assertEqual(section_names, ["category_intro", "collection_guidance"])
         self.assertNotIn("buying_guide", section_names)
         self.assertNotIn("subcategory_overview", section_names)
         self.assertNotIn("brand_value", section_names)
         self.assertNotIn("How to Choose", section_labels)
         self.assertNotIn("What's in This Collection", section_labels)
         self.assertNotIn("Why Shop With Us", section_labels)
+
+    def test_collection_reference_normalisation_names_the_category(self):
+        text = copy_gen.normalise_collection_references(
+            "This collection includes several styles. Compare this category before choosing from this range.",
+            "party cowboy hats",
+        )
+
+        self.assertEqual(
+            text,
+            "The party cowboy hats collection includes several styles. Compare the party cowboy hats category before choosing from the party cowboy hats range.",
+        )
 
     def test_section_prompt_blocks_generic_collection_language_and_unsupported_facts(self):
         prompt = copy_gen._build_section_prompt(

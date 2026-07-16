@@ -36,6 +36,43 @@ def sanitise(text: str, brand_name: str = "") -> str:
     return text
 
 
+def normalise_collection_references(text: str, keyword: str) -> str:
+    """Replace generic collection references with the named target category."""
+    value = str(text or "")
+    subject = re.sub(r"^the\s+", "", " ".join(str(keyword or "").split()), flags=re.IGNORECASE)
+    if not value or not subject:
+        return value
+
+    for noun in ("collection", "category", "range"):
+        replacement = f"the {subject}" if re.search(rf"\b{noun}\b", subject, re.IGNORECASE) else f"the {subject} {noun}"
+
+        def replace(match: re.Match, named_reference: str = replacement) -> str:
+            return named_reference[:1].upper() + named_reference[1:] if match.group(0)[:1].isupper() else named_reference
+
+        value = re.sub(rf"\bthis {noun}\b", replace, value, flags=re.IGNORECASE)
+    return value
+
+
+def _normalise_strategy_collection_references(brief: dict, keyword: str) -> dict:
+    for field in (
+        "search_intent", "page_goal", "audience_need", "primary_positioning",
+        "headline_direction", "meta_direction", "faq_direction",
+    ):
+        if brief.get(field):
+            brief[field] = normalise_collection_references(brief[field], keyword)
+    brief["supporting_attributes"] = [
+        normalise_collection_references(item, keyword)
+        for item in brief.get("supporting_attributes") or []
+    ]
+    for section in brief.get("section_guidance") or []:
+        if not isinstance(section, dict):
+            continue
+        for field in ("responsibility", "guidance"):
+            if section.get(field):
+                section[field] = normalise_collection_references(section[field], keyword)
+    return brief
+
+
 def _section_specific_prompt_rules(value: str) -> str:
     """Keep shared punctuation guidance out of per-template section rules."""
     text = str(value or "")
@@ -1288,6 +1325,7 @@ def generate_faq_plan(
     paa_items: list,
     ai_overview_raw: str,
     strategy_brief: dict,
+    page_context: str = "",
     model: str = None,
 ) -> list[dict]:
     """Select useful questions and bind each one to approved evidence before writing."""
@@ -1318,6 +1356,7 @@ Candidate questions: {candidate_count}
 Search signals for topic discovery only:
 - AI Overview: {_clean_strategy_text(ai_overview_raw, 1200) or "Not available"}
 - People Also Ask: {json.dumps(signals, ensure_ascii=False)}
+- Owned page topic context: {_clean_strategy_text(page_context, 4000) or "Not available"}
 
 Rules:
 - Select questions a visitor to this exact page would genuinely ask.
@@ -1325,7 +1364,10 @@ Rules:
 - Reject competitor-focused, generic, off-topic, or merely available search signals.
 - Do not use FAQs as leftover space for unrelated page topics such as franchising, locations, ordering, or policies unless they directly serve the search intent and have assigned evidence.
 - Return exactly {candidate_count} distinct, natural candidate questions with varied starters. Extra candidates allow deterministic evidence checks to remove unsafe questions.
+- Cover different visitor intents when the evidence allows, such as product selection, visible attributes, fit, use, or comparison criteria. Do not rephrase one idea several ways.
 - Assign one to three verified fact IDs to every question.
+- Prefer one fact ID per question. Combine facts only when the answer genuinely requires both, so broad candidates do not consume evidence that could support a separate useful question.
+- Use each verified fact ID in no more than one candidate. Every retained question must have a distinct evidence basis.
 - Every answer must be fully supportable by the assigned facts alone.
 - Search signals are never evidence and must not add facts.
 - Do not plan comparisons unless verified facts support the comparison itself.
@@ -1343,28 +1385,31 @@ Rules:
     result = _parse_faq_json(raw)
     plan = []
     seen = set()
+    used_fact_ids = set()
     for item in result:
         if not isinstance(item, dict):
             continue
         question = sanitise(str(item.get("question") or ""), brand_name)
         question_key = _normalise_faq_question(question)
-        fact_ids = [
+        fact_ids = list(dict.fromkeys([
             str(value).strip()
             for value in item.get("fact_ids") or []
             if str(value).strip() in fact_map
-        ]
+        ]))[:3]
         evidence_text = " ".join(fact_map[fact_id]["fact"] for fact_id in fact_ids)
         if (
             not question_key
             or question_key in seen
             or not fact_ids
+            or any(fact_id in used_fact_ids for fact_id in fact_ids)
             or _uses_unsupported_scope(question, evidence_text)
         ):
             continue
         seen.add(question_key)
+        used_fact_ids.update(fact_ids)
         if not question.endswith("?"):
             question += "?"
-        plan.append({"question": question, "fact_ids": list(dict.fromkeys(fact_ids))[:3]})
+        plan.append({"question": question, "fact_ids": fact_ids})
         if len(plan) == num_faqs:
             break
     return plan
@@ -1909,6 +1954,7 @@ Page type: {page_type}
 Business type: {business_type}
 Brand name: {brand_name or "N/A"}
 Page H1: {h1 or "Not provided"}
+Requested outputs: {", ".join(required_outputs or []) or "Not specified"}
 
 {brand_context_block}
 
@@ -1937,6 +1983,7 @@ Rules:
 - Brand Profile facts about current operations or mutable details, including locations, ratings, reviews, menu, availability, ordering, delivery, certification, rewards, and timelines, are not verified unless the current page or explicit client brief confirms them.
 - Do not infer a number by counting a list. If a current count is not stated explicitly, omit it.
 - Every verified fact must include an exact supporting excerpt copied from current page context, the explicit client brief, or Brand Profile.
+- When FAQ output is requested, retain a diverse set of stable, page-relevant facts that can support different visitor questions. On collection pages, visible product names, filters, and explicitly stated attributes are useful evidence; do not let one mutable policy become the basis of the whole FAQ set.
 - AI Overview, PAA, competitor signals, niche context, tone guidance, and example copy are never evidence about this client.
 - Use competitors as gap/context signals only, not as proof about this client.
 - If proof is missing, say what kind of proof is needed instead of inventing it.
@@ -1950,6 +1997,8 @@ Rules:
 - Give the hero or first H1 section no more than one owned proof point.
 - Section guidance must not prescribe exact heading copy. Only headline_direction may direct the title or H1.
 - Keep the brief tactical and usable by copywriters.
+- FAQ direction must seek distinct questions supported by different verified facts, not several phrasings of one answer.
+- Name the product, service, topic, location, or category directly. Never use generic references such as "this page", "this collection", "this category", "this range", or "on this page" in positioning or section guidance.
 - Return only strict JSON.
 
 JSON schema:
@@ -1999,7 +2048,10 @@ JSON schema:
 
     raw = fn(api_key, prompt, **provider_options)
     result = _parse_json_object(raw, "Strategy brief response must be a JSON object")
-    return _normalise_strategy_brief(result, evidence_sources=evidence_sources)
+    brief = _normalise_strategy_brief(result, evidence_sources=evidence_sources)
+    if "collection" in (page_type or "").lower() or "category" in (page_type or "").lower():
+        brief = _normalise_strategy_collection_references(brief, keyword or h1)
+    return brief
 
 
 def generate_copy(provider: str, api_key: str, **kwargs) -> dict:

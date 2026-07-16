@@ -25,12 +25,13 @@ from utils.scraper import (
     scrape_url, map_competitor_sections,
     classify_competitor_relevance, is_editorial_competitor,
 )
-from utils.faq_scraper import scrape_page_context
+from utils.faq_scraper import is_ecommerce_collection_page, scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.adaptive_templates import adapt_template_for_generation
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
     generate_page, generate_faq, generate_faq_plan, generate_copy, generate_strategy_brief, sanitise,
+    normalise_collection_references,
     strategy_brief_issues, META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
     META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
 )
@@ -56,20 +57,40 @@ def _scrape_owned_page_for_settings(
     settings: dict,
     url: str,
     scraper_override: str = "",
+    business_type: str = "general",
+    page_type: str = "general",
 ) -> dict:
     firecrawl_key = settings.get("firecrawl_api_key", "")
-    if scraper_override == "firecrawl" or settings.get("scrape_provider", "jina") == "firecrawl":
-        from utils.faq_scraper import scrape_page_context_firecrawl
-        return scrape_page_context_firecrawl(firecrawl_key, url)
+    mode = "ecommerce_collection" if is_ecommerce_collection_page(business_type, page_type) else "default"
+    requested_provider = (
+        "firecrawl"
+        if scraper_override == "firecrawl" or settings.get("scrape_provider", "jina") == "firecrawl"
+        else "jina"
+    )
 
-    jina_result = scrape_page_context(settings.get("jina_api_key", ""), url)
+    def annotate(result: dict, fallback_used: bool = False) -> dict:
+        result["mode"] = result.get("mode") or mode
+        result["requested_provider"] = requested_provider
+        result["fallback_used"] = fallback_used or result.get("source") == "cached_fallback"
+        result["raw_chars"] = int(result.get("raw_chars") or 0)
+        result["cleaned_chars"] = int(result.get("cleaned_chars") or len(result.get("content") or ""))
+        return result
+
+    if requested_provider == "firecrawl":
+        from utils.faq_scraper import scrape_page_context_firecrawl
+        return annotate(scrape_page_context_firecrawl(firecrawl_key, url, mode=mode))
+
+    jina_result = annotate(scrape_page_context(settings.get("jina_api_key", ""), url, mode=mode))
     if jina_result.get("success") or not settings.get("firecrawl_fallback"):
         return jina_result
     if not firecrawl_key:
         return jina_result
 
     from utils.faq_scraper import scrape_page_context_firecrawl
-    firecrawl_result = scrape_page_context_firecrawl(firecrawl_key, url)
+    firecrawl_result = annotate(
+        scrape_page_context_firecrawl(firecrawl_key, url, mode=mode),
+        fallback_used=True,
+    )
     if not firecrawl_result.get("success"):
         firecrawl_result["error"] = f"Jina failed; {firecrawl_result.get('error') or 'Firecrawl could not scrape this page.'}"
     return firecrawl_result
@@ -431,6 +452,26 @@ def _add_generic_opener_flags(flags: list[dict], generated_description: str, sec
                 "section": section_name,
                 "phrase": opener,
             })
+
+
+def _add_generic_page_reference_flags(flags: list[dict], section_results: dict):
+    pattern = re.compile(
+        r"\b(?:this page|this collection|this category|this range|on this page)\b",
+        re.IGNORECASE,
+    )
+    for section_name, text in (section_results or {}).items():
+        if str(section_name).startswith("_"):
+            continue
+        match = pattern.search(str(text or ""))
+        if match:
+            _add_qa_flag(
+                flags,
+                "generic_page_reference",
+                f'Generic page reference found in section "{section_name}": "{match.group(0)}".',
+                "page_copy",
+                match.group(0),
+                severity="warning",
+            )
 
 
 def _extract_first_page_h1(section_results: dict) -> str:
@@ -796,6 +837,7 @@ def _add_keyword_placement_flags(
 
 def _add_faq_quality_flags(flags: list[dict], faq_items: list):
     seen_questions = set()
+    used_fact_ids = set()
     for index, item in enumerate(faq_items or []):
         if not isinstance(item, dict):
             continue
@@ -810,7 +852,12 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
             _add_qa_flag(flags, "faq_question_missing_question_mark", "FAQ question does not end with a question mark.", output, severity="warning")
         if question and not answer:
             _add_qa_flag(flags, "faq_answer_missing", "FAQ question has no answer.", output, severity="review")
-        if not item.get("fact_ids"):
+        fact_ids = tuple(dict.fromkeys(
+            str(value).strip()
+            for value in item.get("fact_ids") or []
+            if str(value).strip()
+        ))
+        if not fact_ids:
             _add_qa_flag(
                 flags,
                 "faq_evidence_missing",
@@ -818,6 +865,15 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
                 output,
                 severity="review",
             )
+        elif any(fact_id in used_fact_ids for fact_id in fact_ids):
+            _add_qa_flag(
+                flags,
+                "faq_evidence_reused",
+                "FAQ reuses evidence already assigned to another question and may repeat the same idea.",
+                output,
+                severity="review",
+            )
+        used_fact_ids.update(fact_ids)
         combined = f"{question}\n{answer}"
         for topic in _FAQ_RISKY_TOPICS:
             if _contains_forbidden_phrase(combined, topic):
@@ -923,44 +979,13 @@ def _template_for_page_copy(template: dict, separate_faq_output_enabled: bool) -
     if not separate_faq_output_enabled:
         return page_template
 
-    sections = page_template.get("sections") or []
-    used_names = {section.get("name", "") for section in sections}
     adjusted_sections = []
-
-    for section in sections:
+    for section in page_template.get("sections") or []:
         name = str(section.get("name", "")).lower()
         label = str(section.get("label", "")).lower()
         is_faq_section = "faq" in name or label == "frequently asked questions"
         if not is_faq_section:
             adjusted_sections.append(section)
-            continue
-
-        support_name = "support_notes"
-        suffix = 2
-        while support_name in used_names:
-            support_name = f"support_notes_{suffix}"
-            suffix += 1
-        used_names.add(support_name)
-
-        adjusted_sections.append({
-            **section,
-            "name": support_name,
-            "label": "Final Decision Notes",
-            "purpose": (
-                "Short non-Q&A support section that summarises practical decision points, "
-                "expectations, or next-step considerations without duplicating the separate FAQ output."
-            ),
-            "word_count": [80, 130],
-            "keyword_slot": "lsi",
-            "prompt_rules": (
-                "Write one compact support section, not a FAQ. "
-                "Do not use question headings, Q&A formatting, or 'Frequently Asked Questions'. "
-                "Summarise practical considerations that help the reader decide what to do next, using only the available page context, brief, SERP, or competitor signals. "
-                "Do not repeat the separate FAQ output. "
-                "Do not invent pricing, policies, product details, ratings, guarantees, availability, or claims. "
-                "Use the LSI keyword only if it reads naturally. No em dashes."
-            ),
-        })
 
     page_template["sections"] = adjusted_sections
     return page_template
@@ -1246,6 +1271,8 @@ def _collect_qa_flags(
         _add_generic_opener_flags(flags, generated_description or "", section_results if gen_page_copy else {})
     elif gen_page_copy:
         _add_generic_opener_flags(flags, "", section_results)
+    if gen_page_copy:
+        _add_generic_page_reference_flags(flags, section_results)
 
     if gen_meta and gen_page_copy:
         _add_h1_alignment_flag(flags, optimised_h1 or "", section_results)
@@ -1423,6 +1450,11 @@ def _process_single_row(
             "page_context_success": False,
             "page_context_source": "",
             "page_context_error": "",
+            "requested_provider": "",
+            "content_mode": "default",
+            "fallback_used": False,
+            "raw_response_chars": 0,
+            "retained_context_chars": 0,
             "client_existing_content_success": False,
         },
         "output_counts": {
@@ -1577,6 +1609,7 @@ def _process_single_row(
     # ─────────────────────────────────────────────────────────────────────
     page_context = ""
     scraped_page_content = ""
+    owned_page_scrape = {}
     if gen_faqs or gen_meta or gen_page_copy:
         if settings.get("scrape_pages", True) and _owned_page_scraper_available(settings, scraper_override):
             step("scraping page context...")
@@ -1585,8 +1618,18 @@ def _process_single_row(
                     settings,
                     url,
                     scraper_override=scraper_override,
+                    business_type=business_type,
+                    page_type=page_type,
                 )
+                owned_page_scrape = scrape_result
                 run_diagnostics["scrape"]["page_context_source"] = scrape_result.get("source") or ""
+                run_diagnostics["scrape"]["requested_provider"] = scrape_result.get("requested_provider") or ""
+                run_diagnostics["scrape"]["content_mode"] = scrape_result.get("mode") or "default"
+                run_diagnostics["scrape"]["fallback_used"] = bool(scrape_result.get("fallback_used"))
+                run_diagnostics["scrape"]["raw_response_chars"] = int(scrape_result.get("raw_chars") or 0)
+                run_diagnostics["scrape"]["retained_context_chars"] = int(
+                    scrape_result.get("cleaned_chars") or len(scrape_result.get("content") or "")
+                )
                 if scrape_result.get("success"):
                     scraped_page_content = scrape_result["content"]
                     page_context = scraped_page_content
@@ -1598,6 +1641,13 @@ def _process_single_row(
                     run_diagnostics["scrape"]["page_context_error"] = scrape_error
                     step("owned-page scrape unavailable: " + scrape_error[:60])
             except Exception as error:
+                owned_page_scrape = {
+                    "success": False,
+                    "error": str(error),
+                    "source": "",
+                    "requested_provider": settings.get("scrape_provider", "jina"),
+                    "mode": "ecommerce_collection" if is_ecommerce_collection_page(business_type, page_type) else "default",
+                }
                 run_diagnostics["scrape"]["page_context_error"] = str(error)
                 step("owned-page scrape unavailable: " + str(error)[:60])
 
@@ -1812,6 +1862,7 @@ def _process_single_row(
                     paa_items=paa_for_faq,
                     ai_overview_raw=ai_ov_for_faq,
                     strategy_brief=strategy_brief,
+                    page_context=scraped_page_content,
                 )
             if faq_plan:
                 step("FAQ evidence plan ready: " + str(len(faq_plan)) + " questions")
@@ -1926,6 +1977,11 @@ def _process_single_row(
                 brand_style_context=brand_style_context if evidence_contract_ready else "",
             )
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
+            if resolved_template_key == "collection_page":
+                section_results = {
+                    name: normalise_collection_references(text, primary_keyword or h1)
+                    for name, text in section_results.items()
+                }
             full_page       = page_result.get("_full_page", "")
             word_count      = page_result.get("_word_count", 0)
             section_results, h1_replaced = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
@@ -2008,6 +2064,25 @@ def _process_single_row(
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
 
+    if owned_page_scrape.get("success"):
+        source_labels = {
+            "live": "Jina live",
+            "cached_fallback": "Jina cached fallback",
+            "firecrawl": "Firecrawl",
+        }
+        scrape_status = "Success: " + source_labels.get(
+            str(owned_page_scrape.get("source") or ""),
+            str(owned_page_scrape.get("source") or "owned page"),
+        )
+    elif owned_page_scrape:
+        scrape_status = "Failed: " + str(
+            owned_page_scrape.get("error") or "No page context was retained."
+        )
+    elif settings.get("scrape_pages", True):
+        scrape_status = "Not available"
+    else:
+        scrape_status = "Disabled"
+
     return {
         "url":                  url,
         "h1":                   h1,
@@ -2035,6 +2110,8 @@ def _process_single_row(
         "strategy_brief":       strategy_brief,
         "strategy_status":      strategy_status,
         "strategy_issues":      strategy_issues,
+        "scrape_status":        scrape_status,
+        "page_context_preview": scraped_page_content,
         "adaptive_template_family": adaptive_template_family,
         "adaptive_section_plan": adaptive_section_plan,
         "competitor_urls":      competitor_urls_used,

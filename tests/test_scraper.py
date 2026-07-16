@@ -73,6 +73,33 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["json"]["maxAge"], 0)
         self.assertFalse(post.call_args.kwargs["json"]["storeInCache"])
 
+    def test_owned_page_collection_mode_preserves_products_prices_and_filters(self):
+        response = Mock(status_code=200)
+        response.text = (
+            "Title: Party Cowboy Hats\n\n"
+            "# Party Cowboy Hats\n\n"
+            "## Filters\nBrand\nUltimate Party\n\n"
+            "[Pink Cowboy Hat](https://example.com/products/pink-hat)\n$12.99\n\n"
+            "[Light Up Cowboy Hat](https://example.com/products/light-up-hat)\n$18.99\n"
+        )
+        response.raise_for_status.return_value = None
+
+        with patch.object(faq_scraper.requests, "get", return_value=response):
+            result = faq_scraper.scrape_page_context(
+                "jina-key",
+                "https://example.com/collections/cowboy-hats",
+                mode="ecommerce_collection",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mode"], "ecommerce_collection")
+        self.assertIn("Products found:", result["content"])
+        self.assertIn("Pink Cowboy Hat | $12.99", result["content"])
+        self.assertIn("Light Up Cowboy Hat | $18.99", result["content"])
+        self.assertIn("Filters found:", result["content"])
+        self.assertEqual(result["raw_chars"], len(response.text.strip()))
+        self.assertEqual(result["cleaned_chars"], len(result["content"]))
+
     def test_scrape_url_sends_jina_authorization_when_api_key_is_provided(self):
         captured = {}
 

@@ -1335,7 +1335,7 @@ TEMPLATES = {
     "collection_page": {
         "name": "Collection / Category Page",
         "page_type": "collection",
-        "description": "Ecommerce category page copy. Short SEO intro, compact purchase guidance, and FAQ. Balances search intent with practical buyer support. Optimised for CollectionPage schema.",
+        "description": "Ecommerce category page copy with a short SEO introduction and compact purchase guidance. Optimised for CollectionPage schema.",
         "sections": [
             {
                 "name": "category_intro",
@@ -1348,6 +1348,7 @@ TEMPLATES = {
                     "Write the category H1 and one concise intro paragraph of 2 to 3 sentences. "
                     "H1: clear, keyword-rich category name. Example: 'Women's Linen Blazers' or 'Industrial Safety Equipment'. "
                     "Intro paragraph: describe the category and the main shopper need. Include the primary keyword naturally in the first sentence when it fits. "
+                    "Name the category directly. Never write 'this collection', 'this category', or 'this range'. "
                     "Do not warm up. Do not write generic category filler. "
                     "Avoid promotional tone. This is editorial, not advertising. "
                     "No em dashes."
@@ -1366,24 +1367,6 @@ TEMPLATES = {
                     "Do not invent sizes, materials, product groups, shipping, returns, guarantees, pricing, availability, or use cases. "
                     "Do not use headings like 'How to Choose', 'What's in This Collection', or 'Why Shop With Us'. "
                     "Include the supporting keyword only if it reads naturally. "
-                    "No em dashes."
-                ),
-            },
-            {
-                "name": "faq",
-                "label": "Frequently Asked Questions",
-                "purpose": "Category-level FAQs. Common pre-purchase questions about this product type. Helps SEO via PAA visibility and reduces pre-purchase drop-off.",
-                "word_count": [200, 320],
-                "keyword_slot": "lsi",
-                "heading_level": "h2",
-                "prompt_rules": (
-                    "Write 4 to 5 FAQ items using PAA questions and common category-level purchase questions. "
-                    "Use topics like choosing between product types, size, compatibility, fit, care, delivery, returns, or price range only when those details are available in the context. "
-                    "If context is thin, use safer category-level questions about what the category is for, how shoppers can compare visible product attributes, and how to confirm details before buying. "
-                    "Do not invent product counts, materials, sizes, compatibility, care instructions, delivery policy, returns policy, price ranges, availability, or guarantees. "
-                    "Each answer: 2 to 3 direct sentences. "
-                    "Include LSI keywords naturally. "
-                    "Format: Question as H3, then answer paragraph. "
                     "No em dashes."
                 ),
             },

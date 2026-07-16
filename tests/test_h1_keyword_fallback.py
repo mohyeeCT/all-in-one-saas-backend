@@ -31,6 +31,7 @@ docx_export_stub.build_docx = lambda *args, **kwargs: b"docx"
 sys.modules.setdefault("utils.docx_export", docx_export_stub)
 
 from routers import all_in_one
+from utils.templates import TEMPLATES
 
 
 class _FakeQuery:
@@ -331,7 +332,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(generate_faq.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
         self.assertEqual(generate_page.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
 
-    def test_page_copy_replaces_template_faq_when_separate_faq_output_is_enabled(self):
+    def test_page_copy_removes_template_faq_when_separate_faq_output_is_enabled(self):
         settings = {
             **_settings(),
             "gen_faqs": True,
@@ -374,9 +375,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         section_names = [section["name"] for section in generate_page.call_args.kwargs["template"]["sections"]]
         section_labels = [section["label"] for section in generate_page.call_args.kwargs["template"]["sections"]]
         self.assertNotIn("faq", section_names)
-        self.assertIn("support_notes", section_names)
-        self.assertIn("Final Decision Notes", section_labels)
-        self.assertIn("support_notes", result["keyword_assignment"])
+        self.assertNotIn("support_notes", section_names)
+        self.assertNotIn("Final Decision Notes", section_labels)
+        self.assertNotIn("support_notes", result["keyword_assignment"])
         self.assertNotIn("faq", result["keyword_assignment"])
 
     def test_page_copy_keeps_template_faq_when_separate_faq_output_is_disabled(self):
@@ -415,6 +416,31 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         section_names = [section["name"] for section in generate_page.call_args.kwargs["template"]["sections"]]
         self.assertIn("faq", section_names)
         self.assertNotIn("support_notes", section_names)
+
+    def test_separate_faq_output_removes_embedded_faq_from_every_template(self):
+        templates_with_faq = 0
+        for template_key, template in TEMPLATES.items():
+            faq_sections = [
+                section
+                for section in template.get("sections") or []
+                if "faq" in str(section.get("name") or "").lower()
+                or str(section.get("label") or "").lower() == "frequently asked questions"
+            ]
+            if not faq_sections:
+                continue
+            templates_with_faq += 1
+            with self.subTest(template=template_key):
+                adjusted = all_in_one._template_for_page_copy(template, True)
+                names = [str(section.get("name") or "").lower() for section in adjusted["sections"]]
+                labels = [str(section.get("label") or "") for section in adjusted["sections"]]
+                self.assertFalse(any("faq" in name for name in names))
+                self.assertNotIn("Final Decision Notes", labels)
+                self.assertEqual(
+                    len(adjusted["sections"]),
+                    len(template["sections"]) - len(faq_sections),
+                )
+
+        self.assertGreater(templates_with_faq, 0)
 
     def test_page_copy_adapts_sections_after_keyword_assignment_without_reassigning_keywords(self):
         settings = {
@@ -759,7 +785,11 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 ranked=ranked,
             )
 
-        owned_scrape.assert_called_once_with("jina-key", "https://example.com/industrial-dosing")
+        owned_scrape.assert_called_once_with(
+            "jina-key",
+            "https://example.com/industrial-dosing",
+            mode="default",
+        )
         self.assertEqual(generate_strategy.call_args.kwargs["page_context"], "Owned page evidence.")
 
 
@@ -1287,12 +1317,12 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             input_h1="Current Services",
             primary_keyword="industrial dosing systems",
             faq_items=[
-                {"question": "Do you offer shipping", "answer": "Add to cart today!"},
-                {"question": "Do you offer shipping", "answer": "Shipping is available."},
+                {"question": "Do you offer shipping", "answer": "Add to cart today!", "fact_ids": ["F1"]},
+                {"question": "Do you offer shipping", "answer": "Shipping is available.", "fact_ids": ["F1"]},
             ],
             section_results={
                 "hero": "# Example Services\nGeneral operational support for facilities.",
-                "details": "## Capabilities\nTeams receive practical guidance for daily work.",
+                "details": "## Capabilities\nThis page gives teams practical guidance for daily work.",
             },
             forbidden_phrases=[],
             brand_name="Example",
@@ -1310,8 +1340,10 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "target_keyword_missing_from_first_100_words",
             "target_keyword_missing_from_h2",
             "duplicate_faq_question",
+            "faq_evidence_reused",
             "faq_question_missing_question_mark",
             "faq_risky_mutable_topic",
+            "generic_page_reference",
         }
         self.assertTrue(expected.issubset(by_code))
         self.assertEqual(by_code["b2b_consumer_cta"]["severity"], "review")
@@ -1340,6 +1372,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 {
                     "question": "How does the service support process control?",
                     "answer": "It helps operations teams plan maintenance and document routine work.",
+                    "fact_ids": ["F1"],
                 },
             ],
             section_results={
@@ -1364,8 +1397,10 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "target_keyword_missing_from_first_100_words",
             "target_keyword_missing_from_h2",
             "duplicate_faq_question",
+            "faq_evidence_reused",
             "faq_question_missing_question_mark",
             "faq_risky_mutable_topic",
+            "generic_page_reference",
         }
         self.assertFalse(new_codes.intersection(flag["code"] for flag in flags))
 
@@ -1528,7 +1563,13 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "ai_overview_raw": "Accuracy matters.",
         }
 
-        with patch.object(all_in_one, "scrape_page_context", return_value={"success": True, "content": "Scraped page context."}), \
+        with patch.object(all_in_one, "scrape_page_context", return_value={
+                 "success": True,
+                 "content": "Scraped page context.",
+                 "source": "live",
+                 "raw_chars": 100,
+                 "cleaned_chars": 21,
+             }), \
              patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
              patch.object(all_in_one, "generate_copy", return_value={
                  "title": "Industrial Dosing Systems",
@@ -1565,6 +1606,12 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(diagnostics["output_counts"]["faq_items"], 1)
         self.assertEqual(diagnostics["output_counts"]["sections"], 1)
         self.assertEqual(diagnostics["generation_requested"], {"meta": True, "faqs": True, "page_copy": True})
+        self.assertEqual(diagnostics["scrape"]["page_context_source"], "live")
+        self.assertEqual(diagnostics["scrape"]["requested_provider"], "jina")
+        self.assertEqual(diagnostics["scrape"]["raw_response_chars"], 100)
+        self.assertEqual(diagnostics["scrape"]["retained_context_chars"], 21)
+        self.assertEqual(result["scrape_status"], "Success: Jina live")
+        self.assertEqual(result["page_context_preview"], "Scraped page context.")
         self.assertNotIn("provider-secret", repr(diagnostics))
         self.assertNotIn("dfs-secret", repr(diagnostics))
         self.assertNotIn("jina-secret", repr(diagnostics))
