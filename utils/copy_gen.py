@@ -20,6 +20,11 @@ META_TITLE_PREFERRED_MIN = 50
 META_TITLE_PREFERRED_MAX = 80
 META_DESCRIPTION_PREFERRED_MIN = 140
 META_DESCRIPTION_PREFERRED_MAX = 180
+META_TITLE_TARGET_MIN = 50
+META_TITLE_TARGET_MAX = 70
+META_DESCRIPTION_TARGET_MIN = 145
+META_DESCRIPTION_TARGET_MAX = 170
+META_CANDIDATE_COUNT = 3
 PAGE_CTA_SECTION_NAMES = frozenset({"hero", "cta", "cta_close", "closing", "final_cta"})
 
 
@@ -112,6 +117,63 @@ BUSINESS_TYPE_CONTEXT = {
     "general": (
         "This page is for a general business. "
         "Tone: clear and professional. Adapt language to the page context."
+    ),
+}
+
+META_BUSINESS_TYPE_CONTEXT = {
+    "b2b": (
+        "Buyer: business decision-makers and evaluators.\n"
+        "Intent: understand the offer, compare fit and capabilities, and identify a credible next step.\n"
+        "Tone: professional, specific, and outcome-focused.\n"
+        "Title pattern: lead with the target service or capability, then a useful differentiator; add the brand only if space remains.\n"
+        "Description pattern: state the offer, the practical business value, and a professional next action.\n"
+        "Action guidance: prefer explore, compare, or learn. Use contact, consultation, demo, or quote language only when verified evidence supports that route.\n"
+        "Avoid: consumer shopping language, vague superlatives, and unsupported performance claims."
+    ),
+    "b2c": (
+        "Buyer: individual consumers seeking a clear solution or experience.\n"
+        "Intent: understand the offer, see its benefit, and decide what to do next.\n"
+        "Tone: clear, warm, and benefit-led.\n"
+        "Title pattern: lead with the target topic or offer, then the most useful stable benefit.\n"
+        "Description pattern: connect the offer to a visitor need and finish with a natural next action.\n"
+        "Action guidance: prefer explore, discover, compare, or find. Use purchase, booking, ordering, or visit language only when verified evidence supports it.\n"
+        "Avoid: empty enthusiasm, pressure language, and unsupported guarantees."
+    ),
+    "ecommerce": (
+        "Buyer: shoppers comparing products or categories.\n"
+        "Intent: identify relevant options, understand selection value, and move toward a purchase decision.\n"
+        "Tone: direct, useful, and product-focused.\n"
+        "Title pattern: lead with the target product or category, then a stable selection benefit or differentiator.\n"
+        "Description pattern: name what shoppers can find, clarify a stable benefit, and give a shopping-oriented next action.\n"
+        "Action guidance: browse, explore, compare, find, or choose are evidence-neutral. Use shop, order, price, stock, shipping, or availability language only when verified evidence supports it.\n"
+        "Avoid: volatile counts, inventory promises, unsupported discounts, and generic editorial wording."
+    ),
+    "service": (
+        "Buyer: people or teams seeking a specific service and evaluating provider fit.\n"
+        "Intent: understand the service, expected value, and the safest next step.\n"
+        "Tone: helpful, confident, and outcome-focused.\n"
+        "Title pattern: lead with the target service and meaningful location or qualifier, then a stable differentiator when useful.\n"
+        "Description pattern: explain what the service helps with, who it is for, and a clear next action.\n"
+        "Action guidance: explore or learn are evidence-neutral. Use contact, consultation, quote, book, schedule, or call language only when verified evidence supports it.\n"
+        "Avoid: unsupported outcomes, guarantees, service areas, response times, or contact methods."
+    ),
+    "local": (
+        "Buyer: local visitors looking for a relevant nearby product, service, or venue.\n"
+        "Intent: confirm relevance to the location and understand the next step.\n"
+        "Tone: accessible, specific, and locally relevant without overclaiming proximity.\n"
+        "Title pattern: lead with the target offer and verified location wording, then a stable benefit.\n"
+        "Description pattern: clarify the local offer and finish with an evidence-safe next action.\n"
+        "Action guidance: explore or find are evidence-neutral. Use visit, directions, call, order, or book language only when verified evidence supports it.\n"
+        "Avoid: inferred proximity, unverified service areas, hours, availability, or ordering methods."
+    ),
+    "general": (
+        "Buyer: visitors seeking a clear answer about the page topic.\n"
+        "Intent: understand the offer or information and identify a useful next step.\n"
+        "Tone: clear, specific, and professional.\n"
+        "Title pattern: lead with the target topic, then the clearest stable value.\n"
+        "Description pattern: explain the page value and finish with a natural evidence-safe action.\n"
+        "Action guidance: prefer explore, discover, compare, find, or learn.\n"
+        "Avoid: vague claims, unsupported specifics, and generic filler."
     ),
 }
 
@@ -615,7 +677,15 @@ def format_strategy_brief_for_prompt(
 
     field_order = []
     if output_type == "meta":
-        field_order.extend(("verified_facts", "headline_direction", "meta_direction", "proof_points_to_use"))
+        field_order.extend((
+            "primary_positioning",
+            "audience_need",
+            "supporting_attributes",
+            "verified_facts",
+            "headline_direction",
+            "meta_direction",
+            "proof_points_to_use",
+        ))
     elif output_type == "faq":
         field_order.extend(("verified_facts", "faq_direction", "proof_points_to_use"))
     elif output_type == "page":
@@ -654,6 +724,12 @@ def format_strategy_brief_for_prompt(
         label = _STRATEGY_FIELD_LABELS[key]
         if output_type == "page" and key == "primary_positioning":
             label = "Page through-line (editorial direction, not evidence)"
+        elif output_type == "meta" and key == "primary_positioning":
+            label = "Meta through-line (editorial direction, not evidence)"
+        elif output_type == "meta" and key == "audience_need":
+            label = "Audience need (editorial direction, not evidence)"
+        elif output_type == "meta" and key == "supporting_attributes":
+            label = "Supporting emphasis (editorial direction, not evidence; do not lead the title or H1)"
         if key == "verified_facts" and isinstance(value, list):
             fact_lines = []
             for item in value[:12]:
@@ -1774,6 +1850,7 @@ Rules:
 - Choose one primary positioning idea that leads the whole page. Supporting attributes may reinforce it but must not replace it in the title or H1.
 - Headline direction must describe the message hierarchy, not provide exact title or H1 copy.
 - Headline direction must preserve the core target-keyword topic and meaningful modifiers such as product type, service, category, and location. It may improve wording, but it must not steer the H1 away from the target query's subject.
+- Meta direction must define the title focus, the description's visitor value, and an evidence-safe next action appropriate to the business and page type. Specific contact, quote, booking, purchase, delivery, ordering, or visit actions require verified support.
 - Never instruct a section to preserve the current H1 or the exact target-keyword wording.
 - Give every section one distinct responsibility.
 - Select page-level proof with proof_fact_ids, using only IDs from verified_facts.
@@ -1806,7 +1883,7 @@ JSON schema:
   "proof_fact_ids": ["F1", "F2"],
   "claims_to_avoid": ["risky or unsupported claim", "..."],
   "competitor_gaps": ["gap or opportunity", "..."],
-  "meta_direction": "one sentence",
+  "meta_direction": "title focus, description value, and evidence-safe next action in one sentence",
   "faq_direction": "one sentence",
   "section_guidance": [
     {{
@@ -1839,6 +1916,159 @@ JSON schema:
     return brief
 
 
+_META_KEYWORD_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into",
+    "near", "of", "on", "or", "the", "to", "with", "your",
+})
+
+_META_ACTION_PHRASES = (
+    "explore", "browse", "compare", "discover", "find", "learn", "see", "view", "choose",
+    "shop", "order", "request", "contact", "book", "schedule", "call", "visit", "talk",
+    "get started", "get a quote", "get directions",
+)
+
+
+def _meta_token_root(token: str) -> str:
+    token = str(token or "").casefold()
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _meta_keyword_present(keyword: str, text: str) -> bool:
+    keyword_tokens = re.findall(r"[a-z0-9]+", str(keyword or "").casefold())
+    text_tokens = re.findall(r"[a-z0-9]+", str(text or "").casefold())
+    if not keyword_tokens or not text_tokens:
+        return False
+    if " ".join(keyword_tokens) in " ".join(text_tokens):
+        return True
+
+    meaningful = [
+        _meta_token_root(token)
+        for token in keyword_tokens
+        if len(token) > 2 and token not in _META_KEYWORD_STOPWORDS
+    ]
+    if not meaningful:
+        return False
+    text_roots = {_meta_token_root(token) for token in text_tokens}
+    matched = sum(1 for token in meaningful if token in text_roots)
+    required = len(meaningful) if len(meaningful) <= 3 else (len(meaningful) * 3 + 3) // 4
+    return matched >= required
+
+
+def _meta_contains_phrase(text: str, phrase: str) -> bool:
+    escaped = re.escape(str(phrase or "").strip())
+    return bool(escaped and re.search(rf"(?<!\w){escaped}(?!\w)", str(text or ""), re.IGNORECASE))
+
+
+def _meta_action_present(text: str) -> bool:
+    return any(_meta_contains_phrase(text, phrase) for phrase in _META_ACTION_PHRASES)
+
+
+def _meta_action_expected(business_type: str, page_type: str) -> bool:
+    business = str(business_type or "").casefold()
+    page = str(page_type or "").casefold()
+    return business in {"ecommerce", "service", "local"} or any(
+        term in page for term in ("service", "product", "collection", "category", "location", "landing")
+    )
+
+
+def _meta_length_score(length: int, target_min: int, target_max: int, preferred_min: int, preferred_max: int) -> int:
+    if target_min <= length <= target_max:
+        return 18
+    if preferred_min <= length <= preferred_max:
+        return 10
+    distance = preferred_min - length if length < preferred_min else length - preferred_max
+    return max(-20, 4 - (distance // 4))
+
+
+def _meta_forbidden_phrase_list(value) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        candidates = re.split(r"[\n,;]+", str(value or ""))
+    return [str(item).strip() for item in candidates if str(item).strip()]
+
+
+def _normalise_meta_candidate(candidate: dict, brand_name: str) -> dict:
+    return {
+        "title": sanitise(candidate.get("title", ""), brand_name),
+        "description": sanitise(candidate.get("description", ""), brand_name),
+        "h1_optimised": sanitise(candidate.get("h1_optimised", ""), brand_name),
+    }
+
+
+def _score_meta_candidate(
+    candidate: dict,
+    *,
+    keyword: str,
+    brand_name: str,
+    business_type: str,
+    page_type: str,
+    forbidden_phrases: list[str],
+) -> int:
+    title = candidate["title"]
+    description = candidate["description"]
+    h1 = candidate["h1_optimised"]
+    score = sum(5 if value else -100 for value in (title, description, h1))
+
+    score += 40 if _meta_keyword_present(keyword, title) else -30
+    score += 15 if _meta_keyword_present(keyword, description) else -8
+    score += 35 if _meta_keyword_present(keyword, h1) else -30
+    score += _meta_length_score(
+        len(title), META_TITLE_TARGET_MIN, META_TITLE_TARGET_MAX,
+        META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
+    )
+    score += _meta_length_score(
+        len(description), META_DESCRIPTION_TARGET_MIN, META_DESCRIPTION_TARGET_MAX,
+        META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
+    )
+
+    if _meta_action_expected(business_type, page_type):
+        score += 16 if _meta_action_present(description) else -12
+    if title.casefold() == h1.casefold() and title:
+        score -= 8
+    if brand_name and _meta_contains_phrase(h1, brand_name):
+        score -= 35
+    if "!" in f"{title}\n{description}\n{h1}":
+        score -= 20
+    for phrase in forbidden_phrases:
+        if any(_meta_contains_phrase(value, phrase) for value in (title, description, h1)):
+            score -= 40
+
+    if any(term in str(page_type or "").casefold() for term in ("collection", "category")):
+        if any(re.search(r"\b\d+\b", value) for value in (title, description, h1)):
+            score -= 35
+    return score
+
+
+def _select_meta_candidate(result: dict, **kwargs) -> dict:
+    raw_candidates = result.get("candidates")
+    if not isinstance(raw_candidates, list):
+        raw_candidates = [result]
+    candidates = [
+        _normalise_meta_candidate(candidate, kwargs.get("brand_name", ""))
+        for candidate in raw_candidates[:META_CANDIDATE_COUNT]
+        if isinstance(candidate, dict)
+    ]
+    if not candidates:
+        return _normalise_meta_candidate({}, kwargs.get("brand_name", ""))
+
+    scoring_options = {
+        "keyword": kwargs.get("keyword", ""),
+        "brand_name": kwargs.get("brand_name", ""),
+        "business_type": kwargs.get("business_type", "general"),
+        "page_type": kwargs.get("page_type", "general"),
+        "forbidden_phrases": _meta_forbidden_phrase_list(kwargs.get("forbidden_phrases", "")),
+    }
+    return max(
+        enumerate(candidates),
+        key=lambda item: (_score_meta_candidate(item[1], **scoring_options), -item[0]),
+    )[1]
+
+
 def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
     fn = PROVIDER_FN.get(provider)
     if not fn:
@@ -1847,6 +2077,11 @@ def generate_copy(provider: str, api_key: str, **kwargs) -> dict:
     resolved_model = kwargs.get("model") or DEFAULT_MODELS.get(provider)
     brand_context = kwargs.get("brand_context", "") or "BRAND CONTEXT:\nNone"
     strategy_block = format_strategy_brief_for_prompt(kwargs.get("strategy_brief"), output_type="meta")
+    business_type = str(kwargs.get("business_type", "general") or "general").casefold()
+    meta_business_context = META_BUSINESS_TYPE_CONTEXT.get(
+        business_type,
+        META_BUSINESS_TYPE_CONTEXT["general"],
+    )
     prompt = f"""Write SEO metadata for this page.
 
 URL: {kwargs.get("url", "")}
@@ -1858,16 +2093,25 @@ Current H1: {kwargs.get("h1", "") or "Not provided"}
 Forbidden phrases: {kwargs.get("forbidden_phrases", "") or "None"}
 Additional context: {kwargs.get("context", "") or "None"}
 
+META BUSINESS STRATEGY:
+{meta_business_context}
+
 {brand_context}
 {strategy_block}
 
 Rules:
+- Generate {META_CANDIDATE_COUNT} genuinely distinct metadata candidates so the strongest can be selected without another AI call.
 - Title should be {META_TITLE_PREFERRED_MIN} to {META_TITLE_PREFERRED_MAX} characters.
+- Prefer {META_TITLE_TARGET_MIN} to {META_TITLE_TARGET_MAX} characters for the strongest title.
 - Meta description should be {META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX} characters.
+- Prefer {META_DESCRIPTION_TARGET_MIN} to {META_DESCRIPTION_TARGET_MAX} characters for the strongest description.
 - H1 has no hard character limit but should aim for under 80 characters.
 - Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
 - The H1 must include the target keyword or a close grammatical variant that preserves its meaningful topic, modifier, and location terms. Reordering words and changing singular or plural forms is allowed when needed for natural language.
-- Include the target keyword naturally in the title and description where it fits, preferably near the start of the title.
+- Every title must include the target keyword or a close grammatical variant, preferably near the start. Do not let the brand or a broad benefit displace the target topic.
+- Every description must reinforce the target topic, communicate page-specific value, and end with a clear next action appropriate to the business and page type.
+- When a specific transaction or contact route is not verified, use an evidence-neutral action such as explore, compare, find, discover, or learn instead of inventing availability or functionality.
+- The brand may appear later in the title or description when useful, but it must not replace the target keyword, visitor value, or action.
 - Never use forbidden phrases, em dashes, or exclamation marks.
 - The H1 must not contain the brand name. The title or description may use it when appropriate.
 - On B2B pages, never use consumer CTAs such as "shop now", "add to cart", "grab yours", or "buy today".
@@ -1877,14 +2121,8 @@ Rules:
 - A list of locations does not establish proximity, regional coverage, or which location is closest.
 - On collection and category pages, never use exact product, result, SKU, variant, filter, inventory, price, or availability counts in the title, description, or H1. Use stable category language instead, even if a current count appears in the page context.
 - Do not copy awkward search-query syntax into the H1. Use a natural close variant while preserving the query's meaningful topic, modifier, and location terms.
-- Return only a JSON object with keys: title, description, h1_optimised.
+- Return only this JSON shape: {{"candidates":[{{"title":"...","description":"...","h1_optimised":"..."}},{{"title":"...","description":"...","h1_optimised":"..."}},{{"title":"...","description":"...","h1_optimised":"..."}}]}}.
 """
     raw = fn(api_key, prompt, max_tokens=META_MAX_TOKENS, model=resolved_model)
     result = _parse_json_object(raw, "Meta response must be a JSON object")
-
-    brand_name = kwargs.get("brand_name", "")
-    return {
-        "title": sanitise(result.get("title", ""), brand_name),
-        "description": sanitise(result.get("description", ""), brand_name),
-        "h1_optimised": sanitise(result.get("h1_optimised", ""), brand_name),
-    }
+    return _select_meta_candidate(result, **kwargs)

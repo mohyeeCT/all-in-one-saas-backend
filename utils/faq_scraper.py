@@ -67,6 +67,17 @@ _COLLECTION_NOISE_LINE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_JINA_DIAGNOSTIC_LINE_PATTERNS = re.compile(
+    r"^\s*(?:"
+    r"Warning:\s*This page contains iframe.*|"
+    r"Markdown Content:|"
+    r"Images:|"
+    r"Links/Buttons:|"
+    r"This page does not seem to contain any (?:images|buttons/links)\.?"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
 _PRICE_RE = re.compile(
     r"(?:[$\u00a3\u20ac]\s?\d[\d,.]*(?:\.\d{2})?|\d[\d,.]*(?:\.\d{2})?\s?(?:USD|GBP|EUR))"
 )
@@ -113,6 +124,17 @@ def _normalise_lines(text: str, noise_pattern: re.Pattern) -> list[str]:
         if line and not noise_pattern.match(line):
             lines.append(line)
     return lines
+
+
+def _strip_jina_diagnostics(text: str) -> tuple[str, bool]:
+    lines = []
+    removed = False
+    for line in text.splitlines():
+        if _JINA_DIAGNOSTIC_LINE_PATTERNS.match(line):
+            removed = True
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip(), removed
 
 
 def _extract_collection_products(lines: list[str], limit: int = 30) -> list[dict]:
@@ -228,11 +250,20 @@ def _process_reader_text(text: str, max_chars: int, mode: str = "default") -> di
         return _scrape_result("", "", 0, mode, "Jina returned empty content")
 
     raw_chars = len(text)
+    text, diagnostics_removed = _strip_jina_diagnostics(text)
+    diagnostic_error = "Jina returned diagnostics without substantive page content"
+    if not text:
+        return _scrape_result("", "", raw_chars, mode, diagnostic_error)
+
     if mode == "ecommerce_collection":
         content, title = _build_collection_context(text, max_chars)
         if not content or content == "COLLECTION CONTEXT":
             return _scrape_result(
-                "", title, raw_chars, mode, "No collection products, filters, or content found"
+                "",
+                title,
+                raw_chars,
+                mode,
+                diagnostic_error if diagnostics_removed else "No collection products, filters, or content found",
             )
         return _scrape_result(content, title, raw_chars, mode)
 
@@ -244,7 +275,13 @@ def _process_reader_text(text: str, max_chars: int, mode: str = "default") -> di
     lines = [line for line in text.splitlines() if not _NOISE_LINE_PATTERNS.match(line)]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     if not text:
-        return _scrape_result("", title, raw_chars, mode, "No content found after stripping boilerplate")
+        return _scrape_result(
+            "",
+            title,
+            raw_chars,
+            mode,
+            diagnostic_error if diagnostics_removed else "No content found after stripping boilerplate",
+        )
 
     result_paragraphs = []
     chars_used = 0
@@ -261,8 +298,24 @@ def _process_reader_text(text: str, max_chars: int, mode: str = "default") -> di
         last_period = truncated.rfind(".")
         content = truncated[:last_period + 1].strip() if last_period > max_chars * 0.5 else truncated.strip()
     if not content:
-        return _scrape_result("", title, raw_chars, mode, "No substantive content found after scoring")
+        return _scrape_result(
+            "",
+            title,
+            raw_chars,
+            mode,
+            diagnostic_error if diagnostics_removed else "No substantive content found after scoring",
+        )
     return _scrape_result(content, title, raw_chars, mode)
+
+
+def _request_live_without_selector(url: str, headers: dict):
+    recovery_headers = dict(headers)
+    recovery_headers.pop("X-Remove-Selector", None)
+    return requests.get(
+        f"{JINA_BASE}/{url}",
+        headers=recovery_headers,
+        timeout=_JINA_REQUEST_TIMEOUT_SECONDS,
+    )
 
 
 def _request_cached_snapshot(url: str, headers: dict):
@@ -295,6 +348,7 @@ def scrape_page_context(api_key: str, url: str, max_chars: int = 10000, mode: st
 
     response_source = "live"
     fallback_attempted = False
+    selector_recovery_attempted = False
     try:
         try:
             response = requests.get(
@@ -303,25 +357,35 @@ def scrape_page_context(api_key: str, url: str, max_chars: int = 10000, mode: st
                 timeout=_JINA_REQUEST_TIMEOUT_SECONDS,
             )
             if response.status_code in (400, 422):
-                headers.pop("X-Remove-Selector", None)
-                response = requests.get(
-                    f"{JINA_BASE}/{url}",
-                    headers=headers,
-                    timeout=_JINA_REQUEST_TIMEOUT_SECONDS,
-                )
+                selector_recovery_attempted = True
+                response_source = "live_selector_recovery"
+                response = _request_live_without_selector(url, headers)
         except requests.exceptions.Timeout:
             fallback_attempted = True
             response_source = "cached_fallback"
             response = _request_cached_snapshot(url, headers)
 
-        if response_source == "live" and 500 <= response.status_code < 600:
+        if response_source.startswith("live") and 500 <= response.status_code < 600:
             fallback_attempted = True
             response_source = "cached_fallback"
             response = _request_cached_snapshot(url, headers)
 
         response.raise_for_status()
         result = _process_reader_text(response.text, max_chars, mode)
-        if not result["success"] and response_source == "live":
+
+        if not result["success"] and response_source == "live" and not selector_recovery_attempted:
+            selector_recovery_attempted = True
+            try:
+                recovery_response = _request_live_without_selector(url, headers)
+                recovery_response.raise_for_status()
+                recovery_result = _process_reader_text(recovery_response.text, max_chars, mode)
+                if recovery_result["success"]:
+                    result = recovery_result
+                    response_source = "live_selector_recovery"
+            except requests.exceptions.RequestException:
+                pass
+
+        if not result["success"] and response_source.startswith("live"):
             fallback_attempted = True
             cached_response = _request_cached_snapshot(url, headers)
             cached_response.raise_for_status()

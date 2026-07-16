@@ -275,6 +275,9 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Meta description should be 140 to 180 characters.", captured["prompt"])
         self.assertIn("H1 has no hard character limit but should aim for under 80 characters.", captured["prompt"])
         self.assertIn("H1 must include the target keyword or a close grammatical variant", captured["prompt"])
+        self.assertIn("META BUSINESS STRATEGY:", captured["prompt"])
+        self.assertIn("Action guidance: explore or learn are evidence-neutral.", captured["prompt"])
+        self.assertIn("Generate 3 genuinely distinct metadata candidates", captured["prompt"])
         self.assertIn("never use exact product, result, SKU, variant, filter, inventory, price, or availability counts", captured["prompt"])
         self.assertIn("BRAND CONTEXT:", captured["prompt"])
         self.assertIn("- Voice: Plainspoken expert", captured["prompt"])
@@ -282,6 +285,51 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("- Target audience: Facilities managers", captured["prompt"])
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
         self.assertNotIn("Meta description maximum 155 characters", captured["prompt"])
+
+    def test_generate_copy_selects_strongest_candidate_without_second_provider_call(self):
+        calls = []
+
+        def fake_provider(_api_key, prompt, **_kwargs):
+            calls.append(prompt)
+            return json.dumps({"candidates": [
+                {
+                    "title": "18 Party Cowboy Hats for Every Celebration",
+                    "description": "Party cowboy hats for celebrations and costumes, with 18 styles to consider for the event.",
+                    "h1_optimised": "Party Cowboy Hats from Example",
+                },
+                {
+                    "title": "Party Cowboy Hats for Celebrations and Costumes",
+                    "description": (
+                        "Explore party cowboy hats for birthdays, themed events, costumes, and group celebrations. "
+                        "Compare styles and find an option that fits the occasion."
+                    ),
+                    "h1_optimised": "Party Cowboy Hats for Celebrations",
+                },
+                {
+                    "title": "Celebrate in Western Style",
+                    "description": "Discover fun accessories for parties and themed events, with options for different looks and occasions.",
+                    "h1_optimised": "Western Party Accessories",
+                },
+            ]})
+
+        copy_gen.PROVIDER_FN["Test"] = fake_provider
+        result = copy_gen.generate_copy(
+            provider="Test",
+            api_key="key",
+            url="https://example.com/party-cowboy-hats",
+            keyword="party cowboy hats",
+            page_type="collection",
+            brand_name="Example",
+            forbidden_phrases="",
+            context="",
+            business_type="ecommerce",
+            h1="Party Cowboy Hats",
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["title"], "Party Cowboy Hats for Celebrations and Costumes")
+        self.assertEqual(result["h1_optimised"], "Party Cowboy Hats for Celebrations")
+        self.assertNotIn("18", "\n".join(result.values()))
 
     def test_faq_generation_keeps_provider_answer_instead_of_deleting_clauses(self):
         def fake_provider(_api_key, _prompt, **_kwargs):
@@ -616,6 +664,7 @@ class ProviderRoutingTests(unittest.TestCase):
         strategy_brief = {
             "search_intent": "Commercial investigation",
             "page_goal": "Help teams understand documented implementation support.",
+            "audience_need": "Regulated teams need clear implementation guidance.",
             "primary_positioning": "Practical compliance support for regulated teams.",
             "supporting_attributes": ["Plainspoken guidance"],
             "headline_direction": "Lead with practical support for regulated teams.",
@@ -672,8 +721,12 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("STRATEGY BRIEF:", meta_capture["prompt"])
         self.assertIn("Do not promise guaranteed certification.", meta_capture["prompt"])
-        self.assertNotIn("Practical compliance support for regulated teams.", meta_capture["prompt"])
-        self.assertNotIn("Plainspoken guidance", meta_capture["prompt"])
+        self.assertIn("Meta through-line (editorial direction, not evidence)", meta_capture["prompt"])
+        self.assertIn("Practical compliance support for regulated teams.", meta_capture["prompt"])
+        self.assertIn("Audience need (editorial direction, not evidence)", meta_capture["prompt"])
+        self.assertIn("Regulated teams need clear implementation guidance.", meta_capture["prompt"])
+        self.assertIn("Supporting emphasis (editorial direction, not evidence", meta_capture["prompt"])
+        self.assertIn("Plainspoken guidance", meta_capture["prompt"])
         self.assertIn("Lead with practical support for regulated teams.", meta_capture["prompt"])
         self.assertIn("Page-level proof for metadata and FAQs", meta_capture["prompt"])
         self.assertIn("Mention compliance and implementation support.", meta_capture["prompt"])
@@ -786,15 +839,15 @@ class ProviderRoutingTests(unittest.TestCase):
         )
         self.assertIn("Lead with practical support for regulated teams.", h1_strategy)
 
-    def test_meta_strategy_prompt_excludes_broad_planning_fields(self):
+    def test_meta_strategy_prompt_includes_editorial_fields_but_excludes_competitor_gaps(self):
         strategy_brief = {
             "claims_to_avoid": ["Do not invent claims."],
             "meta_direction": "Keep metadata natural.",
-            "recommended_angle": "A" * 700,
-            "brand_positioning": "B" * 700,
+            "primary_positioning": "Lead with practical implementation support.",
+            "supporting_attributes": ["Plainspoken guidance"],
             "proof_points_to_use": ["P" * 300 for _ in range(6)],
             "page_goal": "G" * 700,
-            "audience_need": "N" * 700,
+            "audience_need": "Regulated teams need a clear next step.",
             "search_intent": "I" * 700,
             "competitor_gaps": ["late-field-marker"],
         }
@@ -803,9 +856,12 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("Do not invent claims.", prompt)
         self.assertIn("Keep metadata natural.", prompt)
+        self.assertIn("Meta through-line (editorial direction, not evidence)", prompt)
+        self.assertIn("Lead with practical implementation support.", prompt)
+        self.assertIn("Audience need (editorial direction, not evidence)", prompt)
+        self.assertIn("Regulated teams need a clear next step.", prompt)
+        self.assertIn("Plainspoken guidance", prompt)
         self.assertNotIn("late-field-marker", prompt)
-        self.assertNotIn("N" * 100, prompt)
-        self.assertNotIn("A" * 100, prompt)
         self.assertLess(prompt.index("Output constraints"), prompt.index("Meta direction"))
 
     def test_evidence_bound_page_omits_raw_research_without_deleting_generated_copy(self):

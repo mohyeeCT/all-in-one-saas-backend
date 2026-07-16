@@ -74,6 +74,25 @@ class AioScrapingSettingsTests(unittest.TestCase):
         firecrawl.assert_called_once_with("firecrawl", "https://example.com", mode="default")
         self.assertTrue(result["fallback_used"])
 
+    def test_jina_selector_recovery_is_reported_as_a_fallback(self):
+        with patch.object(
+            all_in_one,
+            "scrape_page_context",
+            return_value={
+                "success": True,
+                "content": "Recovered page context",
+                "source": "live_selector_recovery",
+            },
+        ):
+            result = all_in_one._scrape_owned_page_for_settings(
+                {"scrape_provider": "jina", "jina_api_key": "jina"},
+                "https://example.com",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual(result["source"], "live_selector_recovery")
+
     def test_collection_page_uses_collection_aware_scraping(self):
         with patch.object(
             all_in_one,

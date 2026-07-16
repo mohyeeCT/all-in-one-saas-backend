@@ -71,7 +71,10 @@ def _scrape_owned_page_for_settings(
     def annotate(result: dict, fallback_used: bool = False) -> dict:
         result["mode"] = result.get("mode") or mode
         result["requested_provider"] = requested_provider
-        result["fallback_used"] = fallback_used or result.get("source") == "cached_fallback"
+        result["fallback_used"] = fallback_used or result.get("source") in {
+            "cached_fallback",
+            "live_selector_recovery",
+        }
         result["raw_chars"] = int(result.get("raw_chars") or 0)
         result["cleaned_chars"] = int(result.get("cleaned_chars") or len(result.get("content") or ""))
         return result
@@ -144,6 +147,11 @@ _B2B_CONSUMER_CTAS = (
     "buy today",
     "buy now",
     "order yours",
+)
+_META_NEXT_ACTION_PHRASES = (
+    "explore", "browse", "compare", "discover", "find", "learn", "see", "view", "choose",
+    "shop", "order", "request", "contact", "book", "schedule", "call", "visit", "talk",
+    "get started", "get a quote", "get directions",
 )
 _FAQ_RISKY_TOPICS = (
     "shipping",
@@ -835,6 +843,62 @@ def _add_keyword_placement_flags(
         flags[-1]["keyword"] = keyword
 
 
+def _meta_next_action_expected(business_type: str, page_type: str) -> bool:
+    business = str(business_type or "").casefold()
+    page = str(page_type or "").casefold()
+    return business in {"ecommerce", "service", "local"} or any(
+        term in page for term in ("service", "product", "collection", "category", "location", "landing")
+    )
+
+
+def _add_meta_field_quality_flags(
+    flags: list[dict],
+    *,
+    gen_meta: bool,
+    primary_keyword: str,
+    generated_title: str,
+    generated_description: str,
+    business_type: str,
+    page_type: str,
+):
+    if not gen_meta:
+        return
+    keyword = str(primary_keyword or "").strip()
+    title = str(generated_title or "").strip()
+    description = str(generated_description or "").strip()
+
+    if keyword and title and not _qa_keyword_present(keyword, title):
+        _add_qa_flag(
+            flags,
+            "target_keyword_missing_from_meta_title",
+            "Target keyword or a close grammatical variant was not found in the meta title.",
+            "meta_title",
+            severity="warning",
+        )
+        flags[-1]["keyword"] = keyword
+    if keyword and description and not _qa_keyword_present(keyword, description):
+        _add_qa_flag(
+            flags,
+            "target_keyword_missing_from_meta_description",
+            "Target keyword or a close grammatical variant was not found in the meta description.",
+            "meta_description",
+            severity="warning",
+        )
+        flags[-1]["keyword"] = keyword
+    if (
+        description
+        and _meta_next_action_expected(business_type, page_type)
+        and not any(_contains_forbidden_phrase(description, phrase) for phrase in _META_NEXT_ACTION_PHRASES)
+    ):
+        _add_qa_flag(
+            flags,
+            "meta_description_missing_action",
+            "Meta description does not include a clear next action for this business or page type.",
+            "meta_description",
+            severity="warning",
+        )
+
+
 def _add_faq_quality_flags(flags: list[dict], faq_items: list):
     seen_questions = set()
     for index, item in enumerate(faq_items or []):
@@ -1221,6 +1285,7 @@ def _collect_qa_flags(
     template: dict | None = None,
     brand_name: str = "",
     business_type: str = "general",
+    page_type: str = "general",
 ) -> list[dict]:
     flags = []
 
@@ -1270,6 +1335,15 @@ def _collect_qa_flags(
         gen_page_copy=gen_page_copy,
         meta_text=meta_text,
         page_copy_text=page_copy_text,
+    )
+    _add_meta_field_quality_flags(
+        flags,
+        gen_meta=gen_meta,
+        primary_keyword=primary_keyword,
+        generated_title=generated_title,
+        generated_description=generated_description,
+        business_type=business_type,
+        page_type=page_type,
     )
     _add_keyword_placement_flags(
         flags,
@@ -2023,12 +2097,14 @@ def _process_single_row(
         template=template,
         brand_name=brand_name,
         business_type=business_type,
+        page_type=page_type,
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
 
     if owned_page_scrape.get("success"):
         source_labels = {
             "live": "Jina live",
+            "live_selector_recovery": "Jina live, selector recovery",
             "cached_fallback": "Jina cached fallback",
             "firecrawl": "Firecrawl",
         }

@@ -1342,6 +1342,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             forbidden_phrases=[],
             brand_name="Example",
             business_type="b2b",
+            page_type="service",
         )
 
         by_code = {flag["code"]: flag for flag in flags}
@@ -1351,6 +1352,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "brand_name_in_h1",
             "meta_title_outside_preferred_range",
             "meta_description_outside_preferred_range",
+            "target_keyword_missing_from_meta_title",
+            "target_keyword_missing_from_meta_description",
+            "meta_description_missing_action",
             "target_keyword_missing_from_h1",
             "target_keyword_missing_from_first_100_words",
             "target_keyword_missing_from_h2",
@@ -1364,11 +1368,12 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(by_code["b2b_consumer_cta"]["severity"], "review")
         self.assertEqual(by_code["target_keyword_missing_from_h1"]["severity"], "warning")
         self.assertEqual(by_code["meta_title_outside_preferred_range"]["severity"], "warning")
+        self.assertEqual(by_code["meta_description_missing_action"]["severity"], "warning")
 
     def test_new_quality_checks_do_not_flag_compliant_natural_variants(self):
         title = "Systems for Industrial Dosing in Reliable Facility Operations"
         description = (
-            "Industrial facilities use reliable systems for accurate dosing, practical maintenance planning, "
+            "Explore industrial dosing systems that support accurate dosing, practical maintenance planning, "
             "clearer process control, and dependable daily operations."
         )
         self.assertTrue(50 <= len(title) <= 80)
@@ -1399,6 +1404,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             forbidden_phrases=[],
             brand_name="Example",
             business_type="b2b",
+            page_type="service",
         )
 
         new_codes = {
@@ -1407,6 +1413,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "brand_name_in_h1",
             "meta_title_outside_preferred_range",
             "meta_description_outside_preferred_range",
+            "target_keyword_missing_from_meta_title",
+            "target_keyword_missing_from_meta_description",
+            "meta_description_missing_action",
             "target_keyword_missing_from_h1",
             "target_keyword_missing_from_first_100_words",
             "target_keyword_missing_from_h2",

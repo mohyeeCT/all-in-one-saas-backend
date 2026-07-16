@@ -49,6 +49,74 @@ class ScraperTests(unittest.TestCase):
         self.assertNotIn("X-Remove-Selector", fallback.kwargs["headers"])
         self.assertNotIn("X-Timeout", fallback.kwargs["headers"])
 
+    def test_owned_page_scraper_recovers_when_selector_removes_page_content(self):
+        diagnostic = Mock(status_code=200)
+        diagnostic.text = (
+            "Warning: This page contains iframe that are currently hidden, consider enabling iframe processing.\n\n"
+            "Images:\nThis page does not seem to contain any images.\n\n"
+            "Links/Buttons:\nThis page does not seem to contain any buttons/links."
+        )
+        diagnostic.raise_for_status.return_value = None
+
+        recovered = Mock(status_code=200)
+        recovered.text = (
+            "Title: Dhukka Law Firm\n\n"
+            "# Experienced Legal Representation\n\n"
+            "Dhukka Law Firm represents clients with substantive legal guidance and practical support."
+        )
+        recovered.raise_for_status.return_value = None
+
+        with patch.object(
+            faq_scraper.requests,
+            "get",
+            side_effect=[diagnostic, recovered],
+        ) as get:
+            result = faq_scraper.scrape_page_context(
+                "jina-key",
+                "https://www.dhukkalawfirm.com/",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source"], "live_selector_recovery")
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("X-Remove-Selector", get.call_args_list[0].kwargs["headers"])
+        recovery_headers = get.call_args_list[1].kwargs["headers"]
+        self.assertNotIn("X-Remove-Selector", recovery_headers)
+        self.assertEqual(recovery_headers["X-No-Cache"], "true")
+        self.assertEqual(recovery_headers["X-Timeout"], "180")
+
+    def test_owned_page_scraper_uses_cache_when_selector_recovery_is_still_diagnostic(self):
+        diagnostic = Mock(status_code=200)
+        diagnostic.text = (
+            "Warning: This page contains iframe that are currently hidden, consider enabling iframe processing.\n\n"
+            "Images:\nThis page does not seem to contain any images.\n\n"
+            "Links/Buttons:\nThis page does not seem to contain any buttons/links."
+        )
+        diagnostic.raise_for_status.return_value = None
+
+        cached = Mock(status_code=200)
+        cached.text = (
+            "Title: Cached Page\n\n"
+            "# Cached Page\n\n"
+            "This cached snapshot contains enough useful page content for generation."
+        )
+        cached.raise_for_status.return_value = None
+
+        with patch.object(
+            faq_scraper.requests,
+            "get",
+            side_effect=[diagnostic, diagnostic, cached],
+        ) as get:
+            result = faq_scraper.scrape_page_context("jina-key", "https://example.com")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source"], "cached_fallback")
+        self.assertEqual(get.call_count, 3)
+        cached_headers = get.call_args_list[2].kwargs["headers"]
+        self.assertNotIn("X-No-Cache", cached_headers)
+        self.assertNotIn("X-Remove-Selector", cached_headers)
+        self.assertNotIn("X-Timeout", cached_headers)
+
     def test_owned_page_firecrawl_uses_fresh_v2_scrape(self):
         response = Mock(status_code=200)
         response.json.return_value = {
