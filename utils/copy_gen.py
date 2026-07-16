@@ -2,6 +2,8 @@ import re
 import time
 import json
 
+from utils.templates import SHARED_SECTION_CRAFT_GUIDANCE
+
 
 SECTION_LSI_KEYWORD_LIMIT = 3
 SECTION_PAA_QUESTION_LIMIT = 5
@@ -961,6 +963,9 @@ Word count guidance: Aim for {wc_min} to {wc_max} words. Cover the section purpo
 Section-specific rules:
 {section_prompt_rules}
 {adaptive_block}
+
+Positive writing guidance:
+{SHARED_SECTION_CRAFT_GUIDANCE}
 
 Hard rules for all output:
 - Use calm, professional punctuation without em dashes or exclamation marks.

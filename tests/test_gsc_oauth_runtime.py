@@ -937,14 +937,14 @@ class RuntimePathTests(unittest.TestCase):
             jobs._rerun_single_section("job-1", 0, "process", job, "user-1", sb)
 
         prompt = provider.call_args.args[1]
-        self.assertIn("Word count guidance: Aim for 60 to 108 words", prompt)
+        self.assertIn("Word count guidance: Aim for 115 to 228 words", prompt)
         self.assertIn("Adaptive section guidance", prompt)
         self.assertIn("page-wide brand mention budget is already used", prompt)
         generated_template = build_docx.call_args.kwargs["template"]
         process_section = next(
             section for section in generated_template["sections"] if section["name"] == "process"
         )
-        self.assertEqual(process_section["word_count"], [60, 108])
+        self.assertEqual(process_section["word_count"], [115, 228])
 
     def test_section_rerun_uses_and_stores_reviewer_instruction(self):
         job = {

@@ -502,8 +502,8 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         self.assertEqual(generate_page.call_args.kwargs["keyword_assignment"], keyword_assignment)
         self.assertEqual(result["keyword_assignment"], keyword_assignment)
-        self.assertEqual(generated_sections["benefits"]["word_count"], [120, 190])
-        self.assertEqual(generated_sections["process"]["word_count"], [60, 108])
+        self.assertEqual(generated_sections["benefits"]["word_count"], [190, 320])
+        self.assertEqual(generated_sections["process"]["word_count"], [115, 228])
         self.assertNotIn("social_proof", generated_sections)
         self.assertEqual(plan["process"]["mode"], "compact")
         self.assertEqual(plan["social_proof"]["mode"], "omit")
@@ -1033,8 +1033,8 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
              patch.object(all_in_one, "generate_page", return_value={
                  "hero": "Too short.",
-                 "benefits": " ".join(["benefit"] * 310),
-                 "_word_count": 312,
+                 "benefits": " ".join(["benefit"] * 410),
+                 "_word_count": 412,
              }):
             result = self._process(
                 {
@@ -1053,13 +1053,13 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         by_section = {flag.get("section"): flag for flag in flags}
         self.assertEqual(by_section["hero"]["code"], "section_word_count_below_target")
         self.assertEqual(by_section["hero"]["actual_words"], 2)
-        self.assertEqual(by_section["hero"]["target_min"], 70)
-        self.assertEqual(by_section["hero"]["target_max"], 120)
+        self.assertEqual(by_section["hero"]["target_min"], 90)
+        self.assertEqual(by_section["hero"]["target_max"], 160)
         self.assertEqual(by_section["hero"]["severity"], "review")
         self.assertEqual(by_section["benefits"]["code"], "section_word_count_above_target")
-        self.assertEqual(by_section["benefits"]["actual_words"], 310)
-        self.assertEqual(by_section["benefits"]["target_min"], 120)
-        self.assertEqual(by_section["benefits"]["target_max"], 190)
+        self.assertEqual(by_section["benefits"]["actual_words"], 410)
+        self.assertEqual(by_section["benefits"]["target_min"], 190)
+        self.assertEqual(by_section["benefits"]["target_max"], 320)
         self.assertEqual(by_section["benefits"]["severity"], "review")
 
     def test_moderately_short_page_section_is_warning_only(self):

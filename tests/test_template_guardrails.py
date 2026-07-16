@@ -20,6 +20,10 @@ def _total_word_max(template_key: str) -> int:
     return sum(section["word_count"][1] for section in TEMPLATES[template_key]["sections"])
 
 
+def _total_word_min(template_key: str) -> int:
+    return sum(section["word_count"][0] for section in TEMPLATES[template_key]["sections"])
+
+
 def test_templates_do_not_ask_for_invented_placeholders_or_social_proof():
     text = _all_template_text()
 
@@ -36,11 +40,34 @@ def test_templates_do_not_ask_for_invented_placeholders_or_social_proof():
         assert phrase not in text
 
 
-def test_commercial_templates_use_tighter_default_word_ranges():
-    assert _total_word_max("homepage") <= 760
-    assert _total_word_max("service_page") <= 1350
-    assert _total_word_max("local_service_page") <= 1350
-    assert _total_word_max("product_page") <= 900
+def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
+    expected_totals = {
+        "blog_standard": (1700, 2690),
+        "blog_listicle": (1370, 2240),
+        "blog_howto": (1630, 2590),
+        "blog_comparison": (1690, 2660),
+        "case_study_b2b": (1450, 2320),
+        "glossary": (1210, 1920),
+        "homepage": (610, 1040),
+        "landing_page": (800, 1330),
+        "service_page": (1350, 2260),
+        "local_service_page": (1260, 2110),
+        "about_us": (1080, 1780),
+        "contact_us": (560, 920),
+        "product_page": (850, 1450),
+        "collection_page": (400, 700),
+    }
+
+    assert sum(len(template["sections"]) for template in TEMPLATES.values()) == 86
+    for template_key, expected in expected_totals.items():
+        assert (_total_word_min(template_key), _total_word_max(template_key)) == expected
+
+    for template in TEMPLATES.values():
+        for section in template["sections"]:
+            minimum, maximum = section["word_count"]
+            assert minimum >= 40
+            assert maximum > minimum
+            assert maximum - minimum >= 30
 
 
 def test_blog_template_labels_are_reader_intent_specific():

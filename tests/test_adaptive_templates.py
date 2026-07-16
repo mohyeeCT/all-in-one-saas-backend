@@ -100,9 +100,9 @@ def test_responsive_sections_scale_with_owned_proof():
     plan_by_section = _plan_by_section(plan)
 
     assert plan_by_section["benefits"]["mode"] == "full"
-    assert adapted_by_name["benefits"]["word_count"] == [120, 190]
+    assert adapted_by_name["benefits"]["word_count"] == [190, 320]
     assert plan_by_section["process"]["mode"] == "compact"
-    assert adapted_by_name["process"]["word_count"] == [60, 108]
+    assert adapted_by_name["process"]["word_count"] == [115, 228]
     assert "fewest complete paragraphs or blocks" in adapted_by_name["process"]["adaptive_instruction"]
 
 

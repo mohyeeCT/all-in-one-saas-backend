@@ -1157,14 +1157,17 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Evidence, format, keyword, and safety constraints remain binding", prompt)
         self.assertIn("fewest complete paragraphs or blocks", prompt)
 
-    def test_collection_template_uses_shorter_intro_and_single_guidance_section(self):
+    def test_collection_template_uses_expanded_intro_and_single_guidance_section(self):
         template = get_template("collection_page")
         section_names = [section["name"] for section in template["sections"]]
         section_labels = [section["label"] for section in template["sections"]]
         intro = template["sections"][0]
+        guidance = template["sections"][1]
 
         self.assertEqual(intro["name"], "category_intro")
-        self.assertLessEqual(intro["word_count"][1], 120)
+        self.assertEqual(intro["word_count"], [100, 180])
+        self.assertEqual(guidance["word_count"], [300, 520])
+        self.assertIn("under one H2", guidance["prompt_rules"])
         self.assertIn("collection_guidance", section_names)
         self.assertEqual(section_names, ["category_intro", "collection_guidance"])
         self.assertNotIn("buying_guide", section_names)
@@ -1248,6 +1251,10 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("Stay within this range", prompt)
         self.assertEqual(prompt.casefold().count("em dashes"), 1)
         self.assertEqual(prompt.casefold().count("exclamation marks"), 1)
+        self.assertEqual(prompt.count("Positive writing guidance:"), 1)
+        self.assertEqual(prompt.count(copy_gen.SHARED_SECTION_CRAFT_GUIDANCE), 1)
+        self.assertIn("Favor specific details from the provided context", prompt)
+        self.assertIn("Begin with the actual substance", prompt)
 
     def test_build_section_prompt_includes_reviewer_corrections(self):
         prompt = copy_gen._build_section_prompt(
