@@ -30,7 +30,7 @@ from utils.templates import get_template, get_templates_for_page_type, parse_cus
 from utils.adaptive_templates import adapt_template_for_generation
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
-    generate_page, generate_faq, generate_faq_plan, generate_copy, generate_strategy_brief, sanitise,
+    generate_page, generate_faq, generate_copy, generate_strategy_brief, sanitise,
     normalise_collection_references,
     strategy_brief_issues, META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
     META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
@@ -837,7 +837,6 @@ def _add_keyword_placement_flags(
 
 def _add_faq_quality_flags(flags: list[dict], faq_items: list):
     seen_questions = set()
-    used_fact_ids = set()
     for index, item in enumerate(faq_items or []):
         if not isinstance(item, dict):
             continue
@@ -852,28 +851,14 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
             _add_qa_flag(flags, "faq_question_missing_question_mark", "FAQ question does not end with a question mark.", output, severity="warning")
         if question and not answer:
             _add_qa_flag(flags, "faq_answer_missing", "FAQ question has no answer.", output, severity="review")
-        fact_ids = tuple(dict.fromkeys(
-            str(value).strip()
-            for value in item.get("fact_ids") or []
-            if str(value).strip()
-        ))
-        if not fact_ids:
+        elif len(answer.split()) < 15:
             _add_qa_flag(
                 flags,
-                "faq_evidence_missing",
-                "FAQ answer is not bound to verified evidence and must not be published.",
+                "faq_answer_very_short",
+                "FAQ answer is very short and may not fully answer the question.",
                 output,
-                severity="review",
+                severity="warning",
             )
-        elif any(fact_id in used_fact_ids for fact_id in fact_ids):
-            _add_qa_flag(
-                flags,
-                "faq_evidence_reused",
-                "FAQ reuses evidence already assigned to another question and may repeat the same idea.",
-                output,
-                severity="review",
-            )
-        used_fact_ids.update(fact_ids)
         combined = f"{question}\n{answer}"
         for topic in _FAQ_RISKY_TOPICS:
             if _contains_forbidden_phrase(combined, topic):
@@ -1250,12 +1235,12 @@ def _collect_qa_flags(
             _add_qa_flag(flags, "meta_title_matches_h1", "Generated title matches the input H1.", "meta")
 
     if gen_faqs and not faq_items:
-        _add_qa_flag(flags, "faq_missing", "No evidence-bound FAQ items were generated.", "faq")
+        _add_qa_flag(flags, "faq_missing", "FAQs were requested but no FAQ items were generated.", "faq")
     elif gen_faqs and requested_faq_count > 0 and len(faq_items) < requested_faq_count:
         _add_qa_flag(
             flags,
             "faq_count_incomplete",
-            f"Only {len(faq_items)} of {requested_faq_count} requested FAQs passed evidence validation.",
+            f"Only {len(faq_items)} of {requested_faq_count} requested FAQs were generated.",
             "faq",
             severity="review",
         )
@@ -1848,27 +1833,6 @@ def _process_single_row(
             ai_ov_for_faq = ai_overview
             paa_for_faq   = paa_questions
 
-            faq_plan = []
-            if strategy_status == "ready" and strategy_brief.get("verified_facts"):
-                faq_plan = generate_faq_plan(
-                    provider=provider,
-                    api_key=api_key,
-                    model=model,
-                    keyword=primary_keyword,
-                    page_type=page_type,
-                    business_type=business_type,
-                    brand_name=brand_name if include_brand else "",
-                    num_faqs=num_faqs,
-                    paa_items=paa_for_faq,
-                    ai_overview_raw=ai_ov_for_faq,
-                    strategy_brief=strategy_brief,
-                    page_context=scraped_page_content,
-                )
-            if faq_plan:
-                step("FAQ evidence plan ready: " + str(len(faq_plan)) + " questions")
-            else:
-                step("FAQ evidence plan unavailable; no ungrounded FAQs will be saved")
-
             faq_items = generate_faq(
                 provider=provider,
                 api_key=api_key,
@@ -1885,8 +1849,6 @@ def _process_single_row(
                 forbidden_phrases=forbidden_phrases,
                 page_context=page_context,
                 brand_profile=brand_profile,
-                strategy_brief=strategy_brief,
-                faq_plan=faq_plan,
             )
             faq_items, faqs_trimmed = _limit_faq_items(faq_items, num_faqs)
             if faqs_trimmed:

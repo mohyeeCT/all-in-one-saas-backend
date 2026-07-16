@@ -547,9 +547,6 @@ def strategy_brief_issues(
         issues.append("Meta direction is missing.")
     if "faq" in required and not values.get("faq_direction"):
         issues.append("FAQ direction is missing.")
-    if "faq" in required and not values.get("verified_facts"):
-        issues.append("Verified facts are missing for evidence-bound FAQs.")
-
     expected_sections = {
         _clean_strategy_text(section.get("name"), 80).casefold()
         for section in (template_sections or [])
@@ -1163,9 +1160,6 @@ def generate_page(
         try:
             raw = fn(api_key, prompt, max_tokens=PAGE_SECTION_MAX_TOKENS, model=resolved_model)
             text = sanitise(raw, brand_name)
-            if evidence_bound:
-                evidence_text = _section_evidence_text(strategy_brief, sec_name)
-                text = _filter_unsupported_scope_sentences(text, evidence_text, section.get("label", ""))
         except Exception as e:
             text = f"[ERROR generating section '{section['label']}': {e}]"
 
@@ -1203,218 +1197,6 @@ def _verified_fact_map(strategy_brief: dict | None) -> dict[str, dict]:
     return facts
 
 
-def _normalise_faq_question(value: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
-
-
-_SCOPE_REQUIREMENTS = (
-    (
-        r"\b(?:all (?:of )?(?:the )?(?:food|menu|items?|products?)|everything)\b",
-        r"\b(?:all (?:of )?(?:the )?(?:food|menu|items?|products?)|everything)\b",
-    ),
-    (r"\b(?:near|nearest|closest|nearby|minutes? away|short drive)\b", r"\b(?:near|nearest|closest|nearby|minutes? away|short drive)\b"),
-    (r"\b(?:across|throughout)\b", r"\b(?:across|throughout)\b"),
-    (r"\b(?:whenever|always|any time|every day|24/7)\b", r"\b(?:whenever|always|any time|every day|24/7)\b"),
-    (r"\bfamil(?:y|ies)\b", r"\bfamil(?:y|ies)\b"),
-    (r"\b(?:same kitchen standards|same standards)\b", r"\b(?:same kitchen standards|same standards)\b"),
-    (r"\b(?:better than|beats|unlike)\b", r"\b(?:better than|beats|unlike)\b"),
-)
-
-_PROMOTIONAL_INFERENCE_PATTERNS = (
-    r"\bkeeps? coming back\b",
-    r"\bdrive to on purpose\b",
-    r"\bdoes(?: not|n't) happen by accident\b",
-    r"\bone satisfied customer at a time\b",
-    r"\breal industry respect\b",
-    r"\bplan a trip around\b",
-    r"\bcraving hits\b",
-)
-
-
-def _uses_unsupported_scope(text: str, evidence_text: str) -> bool:
-    candidate = str(text or "").casefold()
-    evidence = str(evidence_text or "").casefold()
-    for trigger_pattern, evidence_pattern in _SCOPE_REQUIREMENTS:
-        if re.search(trigger_pattern, candidate) and not re.search(evidence_pattern, evidence):
-            return True
-    return any(
-        re.search(pattern, candidate) and not re.search(pattern, evidence)
-        for pattern in _PROMOTIONAL_INFERENCE_PATTERNS
-    )
-
-
-def _ensure_terminal_punctuation(text: str) -> str:
-    cleaned = " ".join(str(text or "").split())
-    if not cleaned:
-        return ""
-    if not re.search(r"[.?!]['\")\]]*$", cleaned):
-        cleaned += "."
-    return cleaned
-
-
-def _section_evidence_text(strategy_brief: dict | None, section_name: str) -> str:
-    target = _clean_strategy_text(section_name, 80).casefold()
-    for item in (strategy_brief or {}).get("section_guidance") or []:
-        if not isinstance(item, dict):
-            continue
-        if _clean_strategy_text(item.get("section"), 80).casefold() == target:
-            return " ".join(_clean_strategy_list(item.get("proof_points"), max_items=4))
-    return ""
-
-
-def _filter_unsupported_scope_sentences(text: str, evidence_text: str, section_label: str = "") -> str:
-    kept_lines = []
-    for line in str(text or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            if kept_lines and kept_lines[-1]:
-                kept_lines.append("")
-            continue
-        heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-        if heading_match:
-            if _uses_unsupported_scope(heading_match.group(2), evidence_text):
-                fallback = _clean_strategy_text(section_label, 100)
-                if fallback:
-                    kept_lines.append(f"{heading_match.group(1)} {fallback}")
-            else:
-                kept_lines.append(stripped)
-            continue
-        sentences = re.split(r"(?<=[.!?])\s+", stripped)
-        kept_sentences = [
-            sentence for sentence in sentences
-            if sentence and not _uses_unsupported_scope(sentence, evidence_text)
-        ]
-        if kept_sentences:
-            kept_lines.append(" ".join(kept_sentences))
-    return "\n".join(kept_lines).strip()
-
-
-def _format_faq_strategy_for_prompt(strategy_brief: dict | None) -> str:
-    brief = strategy_brief or {}
-    fact_map = _verified_fact_map(brief)
-    lines = []
-    constraints = _safe_output_constraints(brief)
-    if constraints:
-        lines.append("Output constraints:\n" + "\n".join(f"- {item}" for item in constraints))
-    if fact_map:
-        facts = [
-            {"id": fact_id, "fact": item["fact"], "source": item["source"]}
-            for fact_id, item in fact_map.items()
-        ]
-        lines.append("Verified facts:\n" + json.dumps(facts, ensure_ascii=False))
-    for key, label in (
-        ("faq_direction", "FAQ direction"),
-        ("search_intent", "Search intent"),
-        ("page_goal", "Page goal"),
-    ):
-        value = _clean_strategy_text(brief.get(key), 700)
-        if value:
-            lines.append(f"{label}: {value}")
-    return "FAQ STRATEGY:\n" + "\n".join(lines) if lines else ""
-
-
-def generate_faq_plan(
-    provider: str,
-    api_key: str,
-    *,
-    keyword: str,
-    page_type: str,
-    business_type: str,
-    brand_name: str,
-    num_faqs: int,
-    paa_items: list,
-    ai_overview_raw: str,
-    strategy_brief: dict,
-    page_context: str = "",
-    model: str = None,
-) -> list[dict]:
-    """Select useful questions and bind each one to approved evidence before writing."""
-    fn = PROVIDER_FN.get(provider)
-    if not fn:
-        raise ValueError(f"Unknown provider: {provider}")
-    fact_map = _verified_fact_map(strategy_brief)
-    if not fact_map or num_faqs <= 0:
-        return []
-
-    signals = []
-    for item in (paa_items or [])[:num_faqs + 5]:
-        question = item.get("question", "") if isinstance(item, dict) else str(item)
-        question = _clean_strategy_text(question, 220)
-        if question:
-            signals.append(question)
-    candidate_count = num_faqs + 3
-    prompt = f"""Plan factual FAQs for one specific page.
-
-Target keyword: {keyword}
-Page type: {page_type}
-Business type: {business_type}
-Brand name: {brand_name or "Not specified"}
-Candidate questions: {candidate_count}
-
-{_format_faq_strategy_for_prompt(strategy_brief)}
-
-Search signals for topic discovery only:
-- AI Overview: {_clean_strategy_text(ai_overview_raw, 1200) or "Not available"}
-- People Also Ask: {json.dumps(signals, ensure_ascii=False)}
-- Owned page topic context: {_clean_strategy_text(page_context, 4000) or "Not available"}
-
-Rules:
-- Select questions a visitor to this exact page would genuinely ask.
-- Prioritise the target search intent and useful decision-making information.
-- Reject competitor-focused, generic, off-topic, or merely available search signals.
-- Do not use FAQs as leftover space for unrelated page topics such as franchising, locations, ordering, or policies unless they directly serve the search intent and have assigned evidence.
-- Return exactly {candidate_count} distinct, natural candidate questions with varied starters. Extra candidates allow deterministic evidence checks to remove unsafe questions.
-- Cover different visitor intents when the evidence allows, such as product selection, visible attributes, fit, use, or comparison criteria. Do not rephrase one idea several ways.
-- Assign one to three verified fact IDs to every question.
-- Prefer one fact ID per question. Combine facts only when the answer genuinely requires both, so broad candidates do not consume evidence that could support a separate useful question.
-- Use each verified fact ID in no more than one candidate. Every retained question must have a distinct evidence basis.
-- Every answer must be fully supportable by the assigned facts alone.
-- Search signals are never evidence and must not add facts.
-- Do not plan comparisons unless verified facts support the comparison itself.
-- Do not plan questions about proximity, timelines, ratings, wait times, guarantees, availability, or operational practices unless an assigned fact explicitly supports them.
-- Do not broaden a category in a fact. For example, "all meats are halal" does not support "all food is halal."
-- A location list does not support "near," "nearest," "closest," "across," or "throughout" claims.
-- Return only a JSON array of objects with question and fact_ids keys.
-"""
-    raw = fn(
-        api_key,
-        prompt,
-        max_tokens=FAQ_MAX_TOKENS,
-        model=model or DEFAULT_MODELS.get(provider),
-    )
-    result = _parse_faq_json(raw)
-    plan = []
-    seen = set()
-    used_fact_ids = set()
-    for item in result:
-        if not isinstance(item, dict):
-            continue
-        question = sanitise(str(item.get("question") or ""), brand_name)
-        question_key = _normalise_faq_question(question)
-        fact_ids = list(dict.fromkeys([
-            str(value).strip()
-            for value in item.get("fact_ids") or []
-            if str(value).strip() in fact_map
-        ]))[:3]
-        evidence_text = " ".join(fact_map[fact_id]["fact"] for fact_id in fact_ids)
-        if (
-            not question_key
-            or question_key in seen
-            or not fact_ids
-            or any(fact_id in used_fact_ids for fact_id in fact_ids)
-            or _uses_unsupported_scope(question, evidence_text)
-        ):
-            continue
-        seen.add(question_key)
-        used_fact_ids.update(fact_ids)
-        if not question.endswith("?"):
-            question += "?"
-        plan.append({"question": question, "fact_ids": fact_ids})
-        if len(plan) == num_faqs:
-            break
-    return plan
-
-
 def _build_faq_prompt(
     keyword: str,
     page_type: str,
@@ -1427,62 +1209,114 @@ def _build_faq_prompt(
     num_faqs: int,
     forbidden_phrases: str,
     page_context: str,
+    used_question_patterns: list = None,
     brand_profile: dict = None,
-    strategy_brief: dict | None = None,
-    faq_plan: list[dict] | None = None,
 ) -> str:
-    del h1, ai_overview_sections, ai_overview_raw, paa_items, page_context
+    biz_ctx = _BIZ_CONTEXT_FAQ.get(business_type, _BIZ_CONTEXT_FAQ["general"])
     bp = brand_profile or {}
-    style_lines = []
-    if bp.get("brand_voice"):
-        style_lines.append(f"Brand voice: {bp['brand_voice']}")
-    if bp.get("tone"):
-        style_lines.append(f"Tone: {bp['tone']}")
     combined_forbidden = ", ".join(filter(None, [
         (forbidden_phrases or "").strip(),
         str(bp.get("words_to_avoid") or "").strip(),
     ]))
-    fact_map = _verified_fact_map(strategy_brief)
-    approved_plan = []
-    for item in faq_plan or []:
-        fact_ids = [fact_id for fact_id in item.get("fact_ids") or [] if fact_id in fact_map]
-        if item.get("question") and fact_ids:
-            approved_plan.append({
-                "question": item["question"],
-                "facts": [
-                    {"id": fact_id, **fact_map[fact_id]}
-                    for fact_id in fact_ids
-                ],
-            })
+    forbidden_line = f"Never use these phrases: {combined_forbidden}" if combined_forbidden else ""
+    collection_guardrail = (
+        _ECOMMERCE_COLLECTION_GUARDRAIL
+        if _is_ecommerce_collection_context(business_type, page_type, page_context)
+        else ""
+    )
+    bottom_funnel_guardrail = _bottom_funnel_product_guardrail(business_type, page_type)
+    product_name_guardrail = _product_name_naturalness_guardrail(page_type)
+    brand_name_guardrail = _brand_name_naturalness_guardrail(brand_name)
+    main_keyword_guardrail = _main_keyword_naturalness_guardrail(keyword)
 
-    return f"""Write evidence-bound FAQ answers for an approved question plan.
+    bp_lines = []
+    for key, label in (
+        ("brand_voice", "Brand voice"),
+        ("tone", "Tone"),
+        ("target_audience", "Target audience"),
+        ("usps", "Unique selling points"),
+        ("key_messages", "Key messages to reinforce"),
+        ("competitors", "Competitors (differentiate from)"),
+        ("products_services", "Products/services"),
+    ):
+        if bp.get(key):
+            bp_lines.append(f"{label}: {bp[key]}")
+    if bp.get("example_copy"):
+        bp_lines.append(f"Example copy to emulate in style (not content):\n{bp['example_copy']}")
+    brand_profile_block = ("BRAND CONTEXT:\n" + "\n".join(bp_lines)) if bp_lines else ""
+
+    paa_lines = []
+    for item in (paa_items or [])[:num_faqs + 3]:
+        question = item.get("question", "") if isinstance(item, dict) else str(item)
+        if question:
+            line = f"- Q: {question}"
+            if isinstance(item, dict) and item.get("answer"):
+                line += f" | Snippet: {_format_paa_answer_snippet(item['answer'])}"
+            paa_lines.append(line)
+
+    overview = ai_overview_raw or "\n".join(
+        str(section.get("content") or section.get("title") or "")
+        for section in (ai_overview_sections or [])
+        if isinstance(section, dict)
+    )
+    serp_fallback_block = _structured_no_serp_fallback(
+        ai_overview_sections or [], paa_items or [], ai_overview_raw
+    )
+    used_block = ""
+    if used_question_patterns:
+        patterns = "\n".join(f"- {pattern}" for pattern in used_question_patterns[:20])
+        used_block = (
+            "QUESTION PATTERNS USED ON OTHER PAGES IN THIS RUN (avoid repeating these where a more "
+            "specific question fits, without sacrificing relevance):\n" + patterns
+        )
+
+    return f"""You are an expert SEO copywriter writing FAQ content for a web page. Generate questions that real buyers or visitors would ask about THIS SPECIFIC PAGE, then answer them in a way that could rank in Google AI Overviews.
 
 Target keyword: {keyword}
 Page type: {page_type}
-Business type: {_BIZ_CONTEXT_FAQ.get(business_type, _BIZ_CONTEXT_FAQ["general"])}
+Business type context: {biz_ctx}
 Brand name: {brand_name or "N/A"}. When used, use exact casing.
-{chr(10).join(style_lines)}
-Forbidden phrases: {combined_forbidden or "None"}
+Page H1 (context only, do not copy verbatim): {h1 or "Not provided"}
+{forbidden_line}
+{brand_profile_block}
+{_UNSUPPORTED_CLAIM_GUARDRAIL}
+{collection_guardrail}
+{bottom_funnel_guardrail}
+{product_name_guardrail}
+{brand_name_guardrail}
+{main_keyword_guardrail}
 
-{_format_faq_strategy_for_prompt(strategy_brief)}
+PAGE CONTENT EXCERPT:
+---
+{page_context or "Not available"}
+---
 
-APPROVED QUESTION AND EVIDENCE PLAN:
-{json.dumps(approved_plan, ensure_ascii=False)}
+GOOGLE AI OVERVIEW:
+{overview or "Not available"}
+
+PEOPLE ALSO ASK:
+{chr(10).join(paa_lines) or "Not available"}
+
+{serp_fallback_block}
+{used_block}
 
 Rules:
-- Return the approved questions exactly and in the same order.
-- Write only claims directly supported by the fact IDs assigned to that question.
-- Put each factual clause in its own claims object with the supporting fact_ids.
-- Each claim must use one or more IDs assigned to that question. Never cite an unassigned ID.
-- Do not infer adjacent details such as proximity, speed, wait times, service methods, customer types, comparisons, guarantees, availability, recipes, counts, ratings, or operational practices.
-- Do not broaden the category or scope of a fact. "All meats" does not mean "all food," and a location list does not establish proximity or regional coverage.
-- Do not append promotional conclusions such as "whenever a craving hits," "keeps coming back," or "worth the drive" unless those exact ideas are supported by an assigned fact.
-- Do not use raw page content, search signals, competitor information, or unverified brand-profile details as evidence.
-- Lead with a direct answer. Keep simple answers short and let complex answers use multiple supported claims.
-- Never use forbidden phrases, em dashes, exclamation marks, or filler openers.
-- Return exactly {len(approved_plan) or num_faqs} objects as a JSON array in this shape:
-  {{"question":"exact approved question","claims":[{{"text":"one supported clause","fact_ids":["F1"]}}]}}
-- Return JSON only.
+- Generate exactly {num_faqs} distinct FAQ questions that are directly relevant to this page and target keyword.
+- Use AI Overview and PAA as research signals, but do not copy or mechanically rephrase their questions.
+- Cover different visitor needs. Do not loop around one idea or repeat the same answer with different wording.
+- Focus on what is specific and useful for this page rather than generic questions that apply to any business.
+- Vary question starters naturally and use no more than two questions with the same starter word.
+- Lead each answer with a direct, complete response in the first sentence.
+- Match answer length to complexity:
+  - Simple yes/no or definition questions: 20-45 words.
+  - Comparison, selection, fit, material, compatibility, or use-case questions: 45-80 words.
+  - Complex how, why, or process questions: 70-120 words when needed.
+  - Do not pad simple answers or cut complex answers before they are complete.
+- Do not invent client-specific facts. Use the owned-page excerpt and explicit brand context for factual brand claims; use AI Overview and PAA only to understand search intent and topic coverage.
+- Never use forbidden phrases, em dashes, exclamation marks, or filler openers such as "Great question", "Certainly", "Of course", or "Absolutely".
+- Return exactly {num_faqs} objects as a JSON array with question, answer, and source keys.
+- source must be "ai_overview", "paa", or "generated" according to the research signal that inspired the FAQ.
+- Return raw JSON only, with no preamble or markdown fences.
 """
 
 
@@ -1512,15 +1346,11 @@ def generate_faq(
     used_question_patterns: list = None,
     model: str = None,
     brand_profile: dict = None,
-    strategy_brief: dict | None = None,
-    faq_plan: list[dict] | None = None,
 ) -> list:
-    """Write FAQ answers and retain only claims bound to approved fact IDs."""
+    """Generate direct FAQ question-and-answer pairs using the selected provider."""
     fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
-    if not faq_plan or not _verified_fact_map(strategy_brief):
-        return []
 
     resolved_model = model or DEFAULT_MODELS.get(provider)
 
@@ -1536,70 +1366,23 @@ def generate_faq(
         num_faqs=num_faqs,
         forbidden_phrases=forbidden_phrases,
         page_context=page_context,
+        used_question_patterns=used_question_patterns,
         brand_profile=brand_profile,
-        strategy_brief=strategy_brief,
-        faq_plan=faq_plan,
     )
 
     raw = fn(api_key, prompt, max_tokens=FAQ_MAX_TOKENS, model=resolved_model)
     items = _parse_faq_json(raw)
 
-    fact_map = _verified_fact_map(strategy_brief)
-    plan_by_question = {
-        _normalise_faq_question(item.get("question")): item
-        for item in faq_plan
-        if item.get("question") and item.get("fact_ids")
-    }
-    generated_by_question = {}
+    sanitised = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        question_key = _normalise_faq_question(item.get("question"))
-        planned = plan_by_question.get(question_key)
-        if not planned or question_key in generated_by_question:
-            continue
-        allowed_ids = set(planned.get("fact_ids") or [])
-        claim_texts = []
-        used_ids = []
-        for claim in item.get("claims") or []:
-            if not isinstance(claim, dict):
-                continue
-            text = sanitise(str(claim.get("text") or ""), brand_name)
-            claim_ids = list(dict.fromkeys(
-                str(value).strip() for value in claim.get("fact_ids") or []
-            ))
-            if not text or not claim_ids or any(
-                fact_id not in allowed_ids or fact_id not in fact_map
-                for fact_id in claim_ids
-            ):
-                continue
-            evidence_text = " ".join(fact_map[fact_id]["fact"] for fact_id in claim_ids)
-            claim_numbers = set(re.findall(r"\b\d[\d.,-]*\b", text))
-            evidence_numbers = set(re.findall(r"\b\d[\d.,-]*\b", evidence_text))
-            if not claim_numbers.issubset(evidence_numbers):
-                continue
-            if _uses_unsupported_scope(text, evidence_text):
-                continue
-            claim_texts.append(_ensure_terminal_punctuation(text))
-            used_ids.extend(claim_ids)
-        if not claim_texts:
-            continue
-        source_names = sorted({
-            fact_map[fact_id]["source"].replace("_", " ")
-            for fact_id in used_ids
+        sanitised.append({
+            "question": sanitise(item.get("question", ""), brand_name),
+            "answer": sanitise(item.get("answer", ""), brand_name),
+            "source": item.get("source", "generated"),
         })
-        generated_by_question[question_key] = {
-            "question": planned["question"],
-            "answer": " ".join(claim_texts),
-            "source": ", ".join(source_names) or "verified evidence",
-            "fact_ids": list(dict.fromkeys(used_ids)),
-        }
-
-    return [
-        generated_by_question[key]
-        for key in plan_by_question
-        if key in generated_by_question
-    ]
+    return sanitised
 
 
 _last_batch_page_blocks: list = []  # stores per-page prompt blocks from last batch call
@@ -1982,6 +1765,7 @@ Rules:
 - If the current page conflicts with the Brand Profile, use the current page and place the conflicting profile claim in facts_to_avoid.
 - Brand Profile facts about current operations or mutable details, including locations, ratings, reviews, menu, availability, ordering, delivery, certification, rewards, and timelines, are not verified unless the current page or explicit client brief confirms them.
 - Do not infer a number by counting a list. If a current count is not stated explicitly, omit it.
+- On collection and category pages, exact product, result, SKU, variant, filter, inventory, price, and availability counts are volatile. Do not treat them as durable verified facts for titles, descriptions, H1s, or page claims, even when the current page states them; add them to facts_to_avoid instead.
 - Every verified fact must include an exact supporting excerpt copied from current page context, the explicit client brief, or Brand Profile.
 - When FAQ output is requested, retain a diverse set of stable, page-relevant facts that can support different visitor questions. On collection pages, visible product names, filters, and explicitly stated attributes are useful evidence; do not let one mutable policy become the basis of the whole FAQ set.
 - AI Overview, PAA, competitor signals, niche context, tone guidance, and example copy are never evidence about this client.
@@ -1989,6 +1773,7 @@ Rules:
 - If proof is missing, say what kind of proof is needed instead of inventing it.
 - Choose one primary positioning idea that leads the whole page. Supporting attributes may reinforce it but must not replace it in the title or H1.
 - Headline direction must describe the message hierarchy, not provide exact title or H1 copy.
+- Headline direction must preserve the core target-keyword topic and meaningful modifiers such as product type, service, category, and location. It may improve wording, but it must not steer the H1 away from the target query's subject.
 - Never instruct a section to preserve the current H1 or the exact target-keyword wording.
 - Give every section one distinct responsibility.
 - Select page-level proof with proof_fact_ids, using only IDs from verified_facts.
@@ -2081,15 +1866,17 @@ Rules:
 - Meta description should be {META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX} characters.
 - H1 has no hard character limit but should aim for under 80 characters.
 - Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
-- Include the target keyword naturally, ideally near the start where it fits.
+- The H1 must include the target keyword or a close grammatical variant that preserves its meaningful topic, modifier, and location terms. Reordering words and changing singular or plural forms is allowed when needed for natural language.
+- Include the target keyword naturally in the title and description where it fits, preferably near the start of the title.
 - Never use forbidden phrases, em dashes, or exclamation marks.
 - The H1 must not contain the brand name. The title or description may use it when appropriate.
 - On B2B pages, never use consumer CTAs such as "shop now", "add to cart", "grab yours", or "buy today".
-- Headline direction, verified facts, and output constraints are contract requirements and outrank exact keyword phrasing.
+- Headline direction shapes the message, but it must not replace or weaken the H1's target-keyword relevance.
 - Verified facts are the complete evidence allowlist for concrete brand claims. Do not infer adjacent details or use any fact listed as unverified or conflicting.
 - The target keyword, URL, search intent, and location words inside an award name are not evidence that the business operates in, serves, is near, or is a destination for that location.
 - A list of locations does not establish proximity, regional coverage, or which location is closest.
-- Do not turn search-query wording into an awkward H1; rewrite exact keywords into natural headline language when needed.
+- On collection and category pages, never use exact product, result, SKU, variant, filter, inventory, price, or availability counts in the title, description, or H1. Use stable category language instead, even if a current count appears in the page context.
+- Do not copy awkward search-query syntax into the H1. Use a natural close variant while preserving the query's meaningful topic, modifier, and location terms.
 - Return only a JSON object with keys: title, description, h1_optimised.
 """
     raw = fn(api_key, prompt, max_tokens=META_MAX_TOKENS, model=resolved_model)

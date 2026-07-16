@@ -11,8 +11,7 @@
     "faq_items": [
       {
         "question": "What makes these burgers a popular Michigan choice?",
-        "answer": "The menu focuses on bold flavor and a satisfying local dining experience.",
-        "fact_ids": ["F1"]
+        "answer": "The menu focuses on bold flavor and a satisfying local dining experience."
       }
     ],
     "section_results": {
@@ -20,14 +19,14 @@
       "menu": "## Michigan Favorites with Halal Burger Craft\nExplore familiar favorites built around flavor, choice, and an inviting local experience."
     },
     "forbidden_phrases": [],
-    "expected_codes": [],
+    "expected_codes": ["faq_answer_very_short"],
     "forbidden_codes": [
       "brand_name_in_h1",
       "target_keyword_missing_from_h1",
       "target_keyword_missing_from_first_100_words",
       "target_keyword_missing_from_h2"
     ],
-    "expected_status": "ok"
+    "expected_status": "warning"
   },
   {
     "name": "b2b_consumer_cta",

@@ -186,15 +186,6 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             if isinstance(all_in_one.strategy_brief_issues, Mock)
             else patch.object(all_in_one, "strategy_brief_issues", return_value=[])
         )
-        faq_plan_patch = (
-            nullcontext()
-            if isinstance(all_in_one.generate_faq_plan, Mock)
-            else patch.object(
-                all_in_one,
-                "generate_faq_plan",
-                return_value=[{"question": "What does the page offer?", "fact_ids": ["F1"]}],
-            )
-        )
         with patch.object(all_in_one, "get_niche_context", return_value=""), \
              patch.object(all_in_one, "get_ranked_keywords_for_url", return_value=[]), \
              patch.object(all_in_one, "get_search_volume", return_value={}), \
@@ -209,7 +200,6 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              scrape_url_patch, \
              strategy_patch, \
              strategy_issues_patch, \
-             faq_plan_patch, \
              docx_patch:
             return all_in_one._process_single_row(
                 row=row,
@@ -675,16 +665,11 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         }
         with patch.object(
             all_in_one,
-            "generate_faq_plan",
-            return_value=[{"question": "What matters when choosing a dosing system?", "fact_ids": ["F1"]}],
-        ) as plan, patch.object(
-            all_in_one,
             "generate_faq",
             return_value=[{
                 "question": "What matters when choosing a dosing system?",
-                "answer": "Accuracy matters.",
-                "source": "current page",
-                "fact_ids": ["F1"],
+                "answer": "Accuracy, maintenance needs, operating conditions, and process requirements all matter when comparing industrial dosing systems.",
+                "source": "generated",
             }],
         ) as generate:
             result = self._process(
@@ -700,10 +685,40 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(plan.call_args.kwargs["paa_items"], serp_data["paa_items"])
-        self.assertEqual(plan.call_args.kwargs["ai_overview_raw"], "Structured AIO raw text.")
+        self.assertEqual(generate.call_args.kwargs["paa_items"], serp_data["paa_items"])
         self.assertEqual(generate.call_args.kwargs["ai_overview_sections"], ai_overview_sections)
         self.assertEqual(generate.call_args.kwargs["ai_overview_raw"], "Structured AIO raw text.")
+
+    def test_faq_generation_is_not_blocked_by_an_incomplete_strategy_brief(self):
+        settings = {
+            **_settings(),
+            "gen_faqs": True,
+            "num_faqs": 1,
+            "business_type": "service",
+        }
+        faq_result = [{
+            "question": "How does this service support implementation?",
+            "answer": "The service helps teams understand implementation steps, responsibilities, and practical considerations before they begin the work.",
+            "source": "generated",
+        }]
+
+        with patch.object(all_in_one, "generate_strategy_brief", return_value={"search_intent": "Commercial"}), \
+             patch.object(all_in_one, "strategy_brief_issues", return_value=["Page goal is missing."]), \
+             patch.object(all_in_one, "generate_faq", return_value=faq_result) as generate:
+            result = self._process(
+                {
+                    "url": "https://example.com/service",
+                    "keyword": "implementation service",
+                    "page_type": "service",
+                    "h1": "Implementation Service",
+                },
+                settings=settings,
+            )
+
+        self.assertEqual(result["faq_items"], faq_result)
+        self.assertTrue(generate.called)
+        self.assertNotIn("strategy_brief", generate.call_args.kwargs)
+        self.assertNotIn("faq_plan", generate.call_args.kwargs)
 
     def test_page_copy_reuses_faq_page_scrape_for_existing_content(self):
         settings = {
@@ -1317,8 +1332,8 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             input_h1="Current Services",
             primary_keyword="industrial dosing systems",
             faq_items=[
-                {"question": "Do you offer shipping", "answer": "Add to cart today!", "fact_ids": ["F1"]},
-                {"question": "Do you offer shipping", "answer": "Shipping is available.", "fact_ids": ["F1"]},
+                {"question": "Do you offer shipping", "answer": "Add to cart today!"},
+                {"question": "Do you offer shipping", "answer": "Shipping is available."},
             ],
             section_results={
                 "hero": "# Example Services\nGeneral operational support for facilities.",
@@ -1340,7 +1355,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "target_keyword_missing_from_first_100_words",
             "target_keyword_missing_from_h2",
             "duplicate_faq_question",
-            "faq_evidence_reused",
+            "faq_answer_very_short",
             "faq_question_missing_question_mark",
             "faq_risky_mutable_topic",
             "generic_page_reference",
@@ -1371,8 +1386,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             faq_items=[
                 {
                     "question": "How does the service support process control?",
-                    "answer": "It helps operations teams plan maintenance and document routine work.",
-                    "fact_ids": ["F1"],
+                    "answer": "It helps operations teams plan maintenance, document routine work, and maintain clearer process responsibilities across facilities.",
                 },
             ],
             section_results={
@@ -1397,7 +1411,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             "target_keyword_missing_from_first_100_words",
             "target_keyword_missing_from_h2",
             "duplicate_faq_question",
-            "faq_evidence_reused",
+            "faq_answer_very_short",
             "faq_question_missing_question_mark",
             "faq_risky_mutable_topic",
             "generic_page_reference",
