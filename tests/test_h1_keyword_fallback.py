@@ -502,10 +502,10 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         self.assertEqual(generate_page.call_args.kwargs["keyword_assignment"], keyword_assignment)
         self.assertEqual(result["keyword_assignment"], keyword_assignment)
-        self.assertEqual(generated_sections["benefits"]["word_count"], [190, 320])
-        self.assertEqual(generated_sections["process"]["word_count"], [115, 228])
+        self.assertEqual(generated_sections["benefits"]["word_count"], [250, 430])
+        self.assertEqual(generated_sections["process"]["word_count"], [300, 500])
         self.assertNotIn("social_proof", generated_sections)
-        self.assertEqual(plan["process"]["mode"], "compact")
+        self.assertEqual(plan["process"]["mode"], "full")
         self.assertEqual(plan["social_proof"]["mode"], "omit")
         self.assertEqual(result["adaptive_template_family"], "lead_generation")
 
@@ -1033,8 +1033,8 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         with patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
              patch.object(all_in_one, "generate_page", return_value={
                  "hero": "Too short.",
-                 "benefits": " ".join(["benefit"] * 410),
-                 "_word_count": 412,
+                 "benefits": " ".join(["benefit"] * 530),
+                 "_word_count": 532,
              }):
             result = self._process(
                 {
@@ -1053,13 +1053,13 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         by_section = {flag.get("section"): flag for flag in flags}
         self.assertEqual(by_section["hero"]["code"], "section_word_count_below_target")
         self.assertEqual(by_section["hero"]["actual_words"], 2)
-        self.assertEqual(by_section["hero"]["target_min"], 90)
-        self.assertEqual(by_section["hero"]["target_max"], 160)
+        self.assertEqual(by_section["hero"]["target_min"], 120)
+        self.assertEqual(by_section["hero"]["target_max"], 220)
         self.assertEqual(by_section["hero"]["severity"], "review")
         self.assertEqual(by_section["benefits"]["code"], "section_word_count_above_target")
-        self.assertEqual(by_section["benefits"]["actual_words"], 410)
-        self.assertEqual(by_section["benefits"]["target_min"], 190)
-        self.assertEqual(by_section["benefits"]["target_max"], 320)
+        self.assertEqual(by_section["benefits"]["actual_words"], 530)
+        self.assertEqual(by_section["benefits"]["target_min"], 250)
+        self.assertEqual(by_section["benefits"]["target_max"], 430)
         self.assertEqual(by_section["benefits"]["severity"], "review")
 
     def test_moderately_short_page_section_is_warning_only(self):
@@ -1451,9 +1451,9 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
              patch.object(all_in_one, "map_competitor_sections", return_value={"benefits": ["Competitor says onboarding is fast."]}), \
              patch.object(all_in_one, "get_keyword_ideas", return_value=[{"keyword": "metering pump maintenance"}]), \
              patch.object(all_in_one, "generate_page", return_value={
-                 "hero": "Industrial dosing systems " + " ".join(["hero"] * 87),
-                 "benefits": " ".join(["benefit"] * 160),
-                 "_word_count": 250,
+                 "hero": "Industrial dosing systems " + " ".join(["hero"] * 127),
+                 "benefits": " ".join(["benefit"] * 260),
+                 "_word_count": 390,
              }):
             result = self._process(
                 {

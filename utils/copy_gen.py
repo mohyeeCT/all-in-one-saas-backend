@@ -956,7 +956,7 @@ Brand name: {brand_name or 'Not specified'}
 Business context: {BUSINESS_TYPE_CONTEXT.get(business_type, BUSINESS_TYPE_CONTEXT['general'])}
 
 Section purpose: {section['purpose']}
-Word count guidance: Aim for {wc_min} to {wc_max} words. Cover the section purpose completely, stay concise, and never add filler just to reach the minimum. Do not exceed {wc_max} words.
+Word count guidance: Develop this section to {wc_min} to {wc_max} words. Treat {wc_min} words as the expected depth when the available evidence supports it, and do not exceed {wc_max} words. Add useful explanation, distinctions, reader implications, and decision guidance grounded in the assigned proof. Never repeat or invent facts to reach the target.
 {keyword_instruction}
 {heading_instruction}
 

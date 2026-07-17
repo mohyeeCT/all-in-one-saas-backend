@@ -38,7 +38,7 @@ TEMPLATES = {
                 "name": "intro",
                 "label": "Introduction",
                 "purpose": "State the problem or question the reader has. Promise what this page answers. Hook without fluff.",
-                "word_count": [160, 240],
+                "word_count": [200, 320],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -53,7 +53,7 @@ TEMPLATES = {
                 "name": "context",
                 "label": "Why This Matters",
                 "purpose": "Establish the stakes and why this topic is relevant now. Sets up the body sections.",
-                "word_count": [220, 340],
+                "word_count": [280, 450],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -67,7 +67,7 @@ TEMPLATES = {
                 "name": "body_1",
                 "label": "What Readers Need to Know",
                 "purpose": "Answer the first major sub-question the reader has about this topic.",
-                "word_count": [280, 450],
+                "word_count": [360, 600],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -81,7 +81,7 @@ TEMPLATES = {
                 "name": "body_2",
                 "label": "How It Works",
                 "purpose": "Answer the second major sub-question. Build on body_1 without repeating it.",
-                "word_count": [280, 450],
+                "word_count": [360, 600],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -95,7 +95,7 @@ TEMPLATES = {
                 "name": "body_3",
                 "label": "Common Mistakes and Practical Considerations",
                 "purpose": "Address a third angle, common mistake, or practical consideration.",
-                "word_count": [280, 450],
+                "word_count": [360, 600],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -108,7 +108,7 @@ TEMPLATES = {
                 "name": "summary",
                 "label": "Key Takeaways",
                 "purpose": "Summarise the core points in scannable format. Re-hits primary keyword naturally.",
-                "word_count": [120, 180],
+                "word_count": [150, 240],
                 "keyword_slot": "primary",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -122,7 +122,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer 3 to 5 real questions readers have at this stage. Pulls from PAA data.",
-                "word_count": [280, 450],
+                "word_count": [350, 560],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -136,7 +136,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Next Steps",
                 "purpose": "Soft conversion. Business-type-aware. No hard-sell language.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -161,7 +161,7 @@ TEMPLATES = {
                 "name": "intro",
                 "label": "Introduction",
                 "purpose": "Frame what the list covers and why these items were chosen.",
-                "word_count": [150, 230],
+                "word_count": [190, 300],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -174,7 +174,7 @@ TEMPLATES = {
                 "name": "list_items",
                 "label": "The List",
                 "purpose": "The numbered items. Each item gets an H3, a 2 to 4 sentence description, and one concrete example.",
-                "word_count": [900, 1500],
+                "word_count": [1150, 1900],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -190,7 +190,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer 3 PAA questions related to the list topic.",
-                "word_count": [240, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -202,7 +202,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Next Steps",
                 "purpose": "Soft conversion close.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -222,7 +222,7 @@ TEMPLATES = {
                 "name": "intro",
                 "label": "Introduction",
                 "purpose": "State the end goal the reader is trying to achieve and what this guide covers.",
-                "word_count": [150, 230],
+                "word_count": [190, 300],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -235,7 +235,7 @@ TEMPLATES = {
                 "name": "prerequisites",
                 "label": "What You Need Before You Start",
                 "purpose": "Set expectations: tools, knowledge, or conditions needed.",
-                "word_count": [120, 190],
+                "word_count": [150, 250],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -248,7 +248,7 @@ TEMPLATES = {
                 "name": "steps",
                 "label": "Step-by-Step",
                 "purpose": "The numbered steps. Each step is an H3 with clear instruction and rationale.",
-                "word_count": [800, 1300],
+                "word_count": [1050, 1750],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -262,7 +262,7 @@ TEMPLATES = {
                 "name": "tips",
                 "label": "Tips and Common Mistakes",
                 "purpose": "Practical tips that save the reader time or prevent failure.",
-                "word_count": [240, 360],
+                "word_count": [300, 480],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -274,7 +274,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer PAA questions relevant to this how-to topic.",
-                "word_count": [240, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": "Write 3 FAQ items from PAA questions. 2 to 3 sentences per answer.",
@@ -283,7 +283,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Next Steps",
                 "purpose": "Soft conversion close.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": "Short closing with natural next action. Business-type-aware. No em dashes.",
@@ -301,7 +301,7 @@ TEMPLATES = {
                 "name": "intro",
                 "label": "Introduction",
                 "purpose": "Frame the comparison decision the reader is facing.",
-                "word_count": [150, 230],
+                "word_count": [190, 300],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -314,7 +314,7 @@ TEMPLATES = {
                 "name": "overview",
                 "label": "Quick Overview",
                 "purpose": "Brief summary of each option being compared. No verdict yet.",
-                "word_count": [220, 340],
+                "word_count": [280, 450],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -327,7 +327,7 @@ TEMPLATES = {
                 "name": "criteria_1",
                 "label": "Cost and Value",
                 "purpose": "Compare both options on the first key dimension.",
-                "word_count": [260, 420],
+                "word_count": [330, 550],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -341,7 +341,7 @@ TEMPLATES = {
                 "name": "criteria_2",
                 "label": "Ease of Use",
                 "purpose": "Compare both options on the second key dimension.",
-                "word_count": [260, 420],
+                "word_count": [330, 550],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": "Same rules as criteria_1. Different dimension.",
@@ -350,7 +350,7 @@ TEMPLATES = {
                 "name": "criteria_3",
                 "label": "Best Fit by Use Case",
                 "purpose": "Compare both options on the third key dimension.",
-                "word_count": [260, 420],
+                "word_count": [330, 550],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": "Same rules as criteria_1. Third distinct dimension.",
@@ -359,7 +359,7 @@ TEMPLATES = {
                 "name": "verdict",
                 "label": "Which Should You Choose?",
                 "purpose": "Give a clear recommendation with conditions. No fence-sitting.",
-                "word_count": [220, 320],
+                "word_count": [280, 430],
                 "keyword_slot": "primary",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -373,7 +373,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer 3 PAA questions about the comparison topic.",
-                "word_count": [240, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": "3 FAQ items from PAA questions. 2 to 3 sentences per answer.",
@@ -382,7 +382,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Next Steps",
                 "purpose": "Soft conversion close.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": "Short closing with natural next action. Business-type-aware. No em dashes.",
@@ -400,7 +400,7 @@ TEMPLATES = {
                 "name": "headline_snapshot",
                 "label": "Headline and Client Snapshot",
                 "purpose": "Evidence-first headline. Client snapshot box: industry, size, challenge tag, and confirmed outcome when provided.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -414,7 +414,7 @@ TEMPLATES = {
                 "name": "situation",
                 "label": "The Situation",
                 "purpose": "What the client's world looked like before. Sets context. Industry keywords go here.",
-                "word_count": [220, 340],
+                "word_count": [280, 460],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -428,7 +428,7 @@ TEMPLATES = {
                 "name": "trigger",
                 "label": "What Changed",
                 "purpose": "The trigger event that forced the client to act. Business and emotional logic.",
-                "word_count": [150, 240],
+                "word_count": [190, 320],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -441,7 +441,7 @@ TEMPLATES = {
                 "name": "barrier",
                 "label": "The Challenge",
                 "purpose": "What made solving this hard. The section buyers identify with most.",
-                "word_count": [180, 280],
+                "word_count": [230, 380],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -455,7 +455,7 @@ TEMPLATES = {
                 "name": "solution",
                 "label": "The Solution",
                 "purpose": "What was done and how. Product and service names go here naturally.",
-                "word_count": [300, 480],
+                "word_count": [380, 650],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -469,7 +469,7 @@ TEMPLATES = {
                 "name": "results",
                 "label": "The Results",
                 "purpose": "Metrics first, then narrative. Before/after framing.",
-                "word_count": [220, 340],
+                "word_count": [280, 460],
                 "keyword_slot": "primary",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -484,7 +484,7 @@ TEMPLATES = {
                 "name": "quote",
                 "label": "Client Takeaway",
                 "purpose": "Exact client quote when provided, otherwise a concise unquoted takeaway based only on confirmed details.",
-                "word_count": [40, 80],
+                "word_count": [50, 100],
                 "keyword_slot": "none",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -498,7 +498,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "2 to 3 questions buyers have at this stage of the funnel.",
-                "word_count": [180, 300],
+                "word_count": [230, 400],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -510,7 +510,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Work With Us",
                 "purpose": "Stage-aware CTA: demo, contact, or related case studies.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -532,7 +532,7 @@ TEMPLATES = {
                 "name": "definition",
                 "label": "Definition",
                 "purpose": "Clear, direct definition of the term. Primary keyword in first sentence.",
-                "word_count": [120, 190],
+                "word_count": [150, 250],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -545,7 +545,7 @@ TEMPLATES = {
                 "name": "expanded",
                 "label": "In More Detail",
                 "purpose": "Expand on the definition with context, nuance, or how it is used in practice.",
-                "word_count": [320, 500],
+                "word_count": [400, 680],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -558,7 +558,7 @@ TEMPLATES = {
                 "name": "examples",
                 "label": "Examples",
                 "purpose": "2 to 3 concrete real-world examples of the term in use.",
-                "word_count": [240, 400],
+                "word_count": [300, 520],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -570,7 +570,7 @@ TEMPLATES = {
                 "name": "related_terms",
                 "label": "Related Terms",
                 "purpose": "Brief definitions of 3 to 5 related terms. Internal link signals.",
-                "word_count": [220, 340],
+                "word_count": [280, 450],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -583,7 +583,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "3 PAA questions about this term.",
-                "word_count": [240, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": "3 FAQ items from PAA questions. 2 to 3 sentences per answer.",
@@ -592,7 +592,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Learn More",
                 "purpose": "Soft CTA pointing to related content or a conversion action.",
-                "word_count": [70, 110],
+                "word_count": [90, 140],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": "Short closing. Business-type-aware. No em dashes.",
@@ -610,7 +610,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Hero",
                 "purpose": "State immediately what the business does, who it serves, and what result they can expect. Primary keyword in H1. Single primary CTA.",
-                "word_count": [90, 160],
+                "word_count": [120, 220],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -627,7 +627,7 @@ TEMPLATES = {
                 "name": "trust_bar",
                 "label": "Social Proof Bar",
                 "purpose": "One short trust signal that immediately follows the hero. Shifts reader mindset from 'is this legit?' to 'this feels solid'.",
-                "word_count": [40, 70],
+                "word_count": [50, 90],
                 "keyword_slot": "none",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -642,7 +642,7 @@ TEMPLATES = {
                 "name": "services_overview",
                 "label": "What We Do",
                 "purpose": "Introduce core services briefly so visitors self-identify and move to the right place. Not a full services list. Opens the right doors.",
-                "word_count": [160, 260],
+                "word_count": [250, 450],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -658,7 +658,7 @@ TEMPLATES = {
                 "name": "differentiators",
                 "label": "Why Choose Us",
                 "purpose": "Three specific differentiators that separate this business from the obvious alternatives. Benefit-focused, not feature-focused.",
-                "word_count": [180, 300],
+                "word_count": [280, 500],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -674,7 +674,7 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "Client Results",
                 "purpose": "One or two specific social proof items. A testimonial or a result stat. Makes the differentiators credible.",
-                "word_count": [80, 140],
+                "word_count": [110, 200],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -690,7 +690,7 @@ TEMPLATES = {
                 "name": "cta_close",
                 "label": "Get Started",
                 "purpose": "Closing CTA section. Clear and low-friction. Guides the reader to the next step without pressure.",
-                "word_count": [60, 110],
+                "word_count": [80, 140],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -715,7 +715,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Landing Page Hero",
                 "purpose": "State what the page is about, who it helps, and why the visitor should keep reading. Primary keyword in H1 if natural.",
-                "word_count": [80, 140],
+                "word_count": [110, 200],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -730,7 +730,7 @@ TEMPLATES = {
                 "name": "value_context",
                 "label": "Why It Matters",
                 "purpose": "Explain the main value, outcome, or reason the page exists without over-selling.",
-                "word_count": [140, 230],
+                "word_count": [200, 340],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -745,7 +745,7 @@ TEMPLATES = {
                 "name": "decision_support",
                 "label": "What to Know Before You Decide",
                 "purpose": "Answer the practical considerations a visitor needs before taking the next step.",
-                "word_count": [180, 300],
+                "word_count": [260, 450],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -760,7 +760,7 @@ TEMPLATES = {
                 "name": "proof_or_context",
                 "label": "Useful Context",
                 "purpose": "Add proof, context, or clarification based only on confirmed details.",
-                "word_count": [100, 180],
+                "word_count": [150, 280],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -774,7 +774,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer common questions when a separate FAQ output is not enabled.",
-                "word_count": [240, 380],
+                "word_count": [330, 540],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -788,7 +788,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Next Step",
                 "purpose": "Close with a clear but low-pressure next step.",
-                "word_count": [60, 100],
+                "word_count": [80, 140],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -810,7 +810,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Service Hero",
                 "purpose": "Immediately communicate what the service is, who it is for, and the outcome. Keyword in H1. Primary CTA.",
-                "word_count": [90, 160],
+                "word_count": [120, 220],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -826,7 +826,7 @@ TEMPLATES = {
                 "name": "benefits",
                 "label": "Key Benefits",
                 "purpose": "Three key benefits that increase desire for the service by showing what the client walks away with.",
-                "word_count": [190, 320],
+                "word_count": [250, 430],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -842,7 +842,7 @@ TEMPLATES = {
                 "name": "pain_points",
                 "label": "The Problem",
                 "purpose": "Show you understand the reader's frustration before presenting the solution. The section readers identify with most.",
-                "word_count": [160, 260],
+                "word_count": [220, 380],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -859,7 +859,7 @@ TEMPLATES = {
                 "name": "solution",
                 "label": "How We Help",
                 "purpose": "Present the service as the direct solution to the pain points above. Specific about what is done, for whom, and how.",
-                "word_count": [240, 400],
+                "word_count": [320, 550],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -876,7 +876,7 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "Client Results",
                 "purpose": "Social proof immediately after the solution to validate the claims. Testimonials and/or case study excerpts.",
-                "word_count": [100, 180],
+                "word_count": [130, 240],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -891,7 +891,7 @@ TEMPLATES = {
                 "name": "process",
                 "label": "How It Works",
                 "purpose": "Walk the reader through what happens when they engage. Sets expectations, reduces hesitation, builds trust.",
-                "word_count": [230, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -907,7 +907,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Anticipate and address objections and lingering questions. Keyword-enriched FAQ section.",
-                "word_count": [280, 450],
+                "word_count": [360, 600],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -924,7 +924,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Get in Touch",
                 "purpose": "Final conversion section. Clear and frictionless. Business-type-aware CTA.",
-                "word_count": [60, 110],
+                "word_count": [80, 140],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -948,7 +948,7 @@ TEMPLATES = {
                 "name": "hero",
                 "label": "Local Hero",
                 "purpose": "Service and location in H1. Immediate clarity on what is offered, where, and to whom.",
-                "word_count": [90, 160],
+                "word_count": [120, 220],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -964,7 +964,7 @@ TEMPLATES = {
                 "name": "local_intro",
                 "label": "Serving [Location]",
                 "purpose": "Establish local presence and relevance. References the area, who is served, and what the service covers in this specific market.",
-                "word_count": [180, 300],
+                "word_count": [240, 420],
                 "keyword_slot": "primary",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -980,7 +980,7 @@ TEMPLATES = {
                 "name": "services_in_location",
                 "label": "Our Services in [Location]",
                 "purpose": "List the specific services offered in this location. Keyword-enriched service descriptions.",
-                "word_count": [240, 400],
+                "word_count": [320, 560],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -995,7 +995,7 @@ TEMPLATES = {
                 "name": "why_local",
                 "label": "Why Choose Us in [Location]",
                 "purpose": "Differentiators that are specifically relevant to serving this location. Local knowledge, coverage, response time, or area-specific experience.",
-                "word_count": [190, 300],
+                "word_count": [250, 430],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1012,7 +1012,7 @@ TEMPLATES = {
                 "name": "service_area",
                 "label": "Areas We Serve",
                 "purpose": "Define the service area coverage. Signals to Google which geographic queries this page is relevant for.",
-                "word_count": [120, 210],
+                "word_count": [160, 280],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1028,7 +1028,7 @@ TEMPLATES = {
                 "name": "local_social_proof",
                 "label": "What Local Clients Say",
                 "purpose": "Testimonials or results from clients in or near this location. Local social proof carries more weight for local purchase decisions.",
-                "word_count": [100, 180],
+                "word_count": [130, 240],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1042,7 +1042,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer common local questions including service area, availability, pricing, and local-specific concerns.",
-                "word_count": [280, 450],
+                "word_count": [360, 600],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1058,7 +1058,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Contact Us in [Location]",
                 "purpose": "Location-aware CTA. Makes contacting the local team feel easy and natural.",
-                "word_count": [60, 110],
+                "word_count": [80, 140],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1082,7 +1082,7 @@ TEMPLATES = {
                 "name": "reader_first",
                 "label": "Who This Is For",
                 "purpose": "Open with the reader's situation, not the company's story. Shows you understand what they are looking for before talking about yourself.",
-                "word_count": [150, 240],
+                "word_count": [190, 320],
                 "keyword_slot": "none",
                 "heading_level": "none",
                 "prompt_rules": (
@@ -1097,7 +1097,7 @@ TEMPLATES = {
                 "name": "company_story",
                 "label": "Our Story",
                 "purpose": "Company origin and background. Focused on what matters to clients: why this business exists, what drives it, and what it specialises in.",
-                "word_count": [280, 450],
+                "word_count": [360, 600],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1114,7 +1114,7 @@ TEMPLATES = {
                 "name": "mission_values",
                 "label": "How We Work",
                 "purpose": "Articulate the approach, values, or working philosophy that shapes every client engagement.",
-                "word_count": [240, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1130,7 +1130,7 @@ TEMPLATES = {
                 "name": "credibility",
                 "label": "Experience and Track Record",
                 "purpose": "Credential signals. Years in business, client count, industries served, notable achievements. Woven in naturally, not listed aggressively.",
-                "word_count": [180, 320],
+                "word_count": [230, 420],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1147,7 +1147,7 @@ TEMPLATES = {
                 "name": "team",
                 "label": "The Team",
                 "purpose": "Brief human element. Who is behind the business. Reinforces the personal connection.",
-                "word_count": [150, 260],
+                "word_count": [190, 340],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1163,7 +1163,7 @@ TEMPLATES = {
                 "name": "cta",
                 "label": "Work With Us",
                 "purpose": "A gentle, natural next step. Invites the right person to get in touch without pressure.",
-                "word_count": [80, 130],
+                "word_count": [100, 170],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1187,7 +1187,7 @@ TEMPLATES = {
                 "name": "intro",
                 "label": "Get in Touch",
                 "purpose": "Warm, approachable opener. Makes reaching out feel natural. Sets the tone for the conversation.",
-                "word_count": [80, 140],
+                "word_count": [100, 180],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -1203,7 +1203,7 @@ TEMPLATES = {
                 "name": "expectations",
                 "label": "What Happens Next",
                 "purpose": "Set expectations on response time and what the client should expect after reaching out. Reduces uncertainty.",
-                "word_count": [120, 200],
+                "word_count": [160, 270],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1219,7 +1219,7 @@ TEMPLATES = {
                 "name": "contact_methods",
                 "label": "Other Ways to Reach Us",
                 "purpose": "Alternative contact options for people who prefer not to use a form. Phone, email, office location, hours.",
-                "word_count": [120, 200],
+                "word_count": [160, 270],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1235,7 +1235,7 @@ TEMPLATES = {
                 "name": "pre_contact_faq",
                 "label": "Before You Get in Touch",
                 "purpose": "2 to 4 short FAQ items that answer the questions people have right before contacting. Reduces drop-off at the contact page.",
-                "word_count": [240, 380],
+                "word_count": [300, 500],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1260,7 +1260,7 @@ TEMPLATES = {
                 "name": "product_intro",
                 "label": "Product Introduction",
                 "purpose": "Product name as H1 with key attribute. Short benefit-led description: what it does for the customer and why it matters. Primary keyword in first sentence.",
-                "word_count": [90, 160],
+                "word_count": [120, 220],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -1276,7 +1276,7 @@ TEMPLATES = {
                 "name": "benefits_features",
                 "label": "Key Features and Benefits",
                 "purpose": "Benefit-led bullet list followed by technical specifications when available. Benefits first, specs second.",
-                "word_count": [250, 420],
+                "word_count": [330, 560],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1293,7 +1293,7 @@ TEMPLATES = {
                 "name": "use_cases",
                 "label": "Who It's For",
                 "purpose": "Help the shopper see themselves using this product. Use cases and ideal customer scenarios.",
-                "word_count": [150, 260],
+                "word_count": [200, 350],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1308,7 +1308,7 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "What Customers Say",
                 "purpose": "Customer review highlights. Social proof that validates product claims and builds purchase confidence.",
-                "word_count": [100, 180],
+                "word_count": [130, 240],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1323,7 +1323,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer real pre-purchase questions from customers. Pulls from PAA data. Reduces hesitation and return rates.",
-                "word_count": [260, 430],
+                "word_count": [340, 560],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1350,7 +1350,7 @@ TEMPLATES = {
                 "name": "category_intro",
                 "label": "Category Introduction",
                 "purpose": "Focused category description. Keyword in H1 and opening paragraph. Quickly tells shoppers what the category offers and why it matters.",
-                "word_count": [100, 180],
+                "word_count": [150, 260],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -1367,7 +1367,7 @@ TEMPLATES = {
                 "name": "collection_guidance",
                 "label": "Helpful Buying Notes",
                 "purpose": "A focused guidance section that develops useful selection criteria, available product angles, and brand value only when supported by the page or brief.",
-                "word_count": [300, 520],
+                "word_count": [500, 850],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (

@@ -86,7 +86,7 @@ def test_keyword_bearing_proof_section_compacts_instead_of_disappearing():
     assert "quote" not in adapted_by_name
 
 
-def test_responsive_sections_scale_with_owned_proof():
+def test_responsive_sections_preserve_one_proof_and_compact_zero_proof():
     template = TEMPLATES["service_page"]
     adapted, plan = adapt_template_for_generation(
         template,
@@ -94,16 +94,19 @@ def test_responsive_sections_scale_with_owned_proof():
         _strategy(
             ("benefits", ["Proof one", "Proof two", "Proof three"]),
             ("process", ["One verified process detail"]),
+            ("pain_points", []),
         ),
     )
     adapted_by_name = {section["name"]: section for section in adapted["sections"]}
     plan_by_section = _plan_by_section(plan)
 
     assert plan_by_section["benefits"]["mode"] == "full"
-    assert adapted_by_name["benefits"]["word_count"] == [190, 320]
-    assert plan_by_section["process"]["mode"] == "compact"
-    assert adapted_by_name["process"]["word_count"] == [115, 228]
-    assert "fewest complete paragraphs or blocks" in adapted_by_name["process"]["adaptive_instruction"]
+    assert adapted_by_name["benefits"]["word_count"] == [250, 430]
+    assert plan_by_section["process"]["mode"] == "full"
+    assert adapted_by_name["process"]["word_count"] == [300, 500]
+    assert plan_by_section["pain_points"]["mode"] == "compact"
+    assert adapted_by_name["pain_points"]["word_count"] == [154, 304]
+    assert "fewest complete paragraphs or blocks" in adapted_by_name["pain_points"]["adaptive_instruction"]
 
 
 def test_informational_templates_keep_structure_and_relax_only_fill_quotas():
@@ -189,9 +192,9 @@ def test_ecommerce_and_brand_families_use_the_same_evidence_rules():
     about_modes = _plan_by_section(about_plan)
 
     assert product["_adaptive_family"] == "ecommerce"
-    assert product_modes["benefits_features"]["mode"] == "compact"
+    assert product_modes["benefits_features"]["mode"] == "full"
     assert product_modes["social_proof"]["mode"] == "omit"
     assert about["_adaptive_family"] == "brand"
-    assert about_modes["company_story"]["mode"] == "compact"
+    assert about_modes["company_story"]["mode"] == "full"
     assert about_modes["mission_values"]["mode"] == "omit"
     assert about_modes["team"]["mode"] == "omit"

@@ -1165,8 +1165,8 @@ class ProviderRoutingTests(unittest.TestCase):
         guidance = template["sections"][1]
 
         self.assertEqual(intro["name"], "category_intro")
-        self.assertEqual(intro["word_count"], [100, 180])
-        self.assertEqual(guidance["word_count"], [300, 520])
+        self.assertEqual(intro["word_count"], [150, 260])
+        self.assertEqual(guidance["word_count"], [500, 850])
         self.assertIn("under one H2", guidance["prompt_rules"])
         self.assertIn("collection_guidance", section_names)
         self.assertEqual(section_names, ["category_intro", "collection_guidance"])
@@ -1244,10 +1244,11 @@ class ProviderRoutingTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "Word count guidance: Aim for 60 to 100 words. Cover the section purpose completely, "
-            "stay concise, and never add filler just to reach the minimum. Do not exceed 100 words.",
+            "Word count guidance: Develop this section to 60 to 100 words. Treat 60 words as the "
+            "expected depth when the available evidence supports it, and do not exceed 100 words.",
             prompt,
         )
+        self.assertIn("Never repeat or invent facts to reach the target", prompt)
         self.assertNotIn("Stay within this range", prompt)
         self.assertEqual(prompt.casefold().count("em dashes"), 1)
         self.assertEqual(prompt.casefold().count("exclamation marks"), 1)

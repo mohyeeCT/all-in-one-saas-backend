@@ -42,20 +42,20 @@ def test_templates_do_not_ask_for_invented_placeholders_or_social_proof():
 
 def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
     expected_totals = {
-        "blog_standard": (1700, 2690),
-        "blog_listicle": (1370, 2240),
-        "blog_howto": (1630, 2590),
-        "blog_comparison": (1690, 2660),
-        "case_study_b2b": (1450, 2320),
-        "glossary": (1210, 1920),
-        "homepage": (610, 1040),
-        "landing_page": (800, 1330),
-        "service_page": (1350, 2260),
-        "local_service_page": (1260, 2110),
-        "about_us": (1080, 1780),
-        "contact_us": (560, 920),
-        "product_page": (850, 1450),
-        "collection_page": (400, 700),
+        "blog_standard": (2160, 3540),
+        "blog_listicle": (1740, 2870),
+        "blog_howto": (2090, 3450),
+        "blog_comparison": (2140, 3500),
+        "case_study_b2b": (1840, 3110),
+        "glossary": (1520, 2540),
+        "homepage": (890, 1600),
+        "landing_page": (1130, 1950),
+        "service_page": (1780, 3060),
+        "local_service_page": (1660, 2890),
+        "about_us": (1370, 2350),
+        "contact_us": (720, 1220),
+        "product_page": (1120, 1930),
+        "collection_page": (650, 1110),
     }
 
     assert sum(len(template["sections"]) for template in TEMPLATES.values()) == 86

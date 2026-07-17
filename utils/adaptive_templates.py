@@ -144,8 +144,8 @@ def _compact_word_count(word_count) -> list[int]:
     except (TypeError, ValueError):
         return [150, 250]
 
-    compact_max = min(original_max, max(45, int(original_max * 0.6)))
-    compact_min = max(25, min(int(original_min * 0.5), compact_max - 20))
+    compact_max = min(original_max, max(60, int(original_max * 0.8)))
+    compact_min = max(35, min(int(original_min * 0.7), compact_max - 25))
     return [compact_min, compact_max]
 
 
@@ -190,9 +190,9 @@ def adapt_template_for_generation(
             else:
                 mode = "compact"
                 reason = "keyword_section_without_owned_proof"
-        elif section_name in responsive_sections and proof_count <= 1:
+        elif section_name in responsive_sections and proof_count == 0:
             mode = "compact"
-            reason = "limited_owned_proof"
+            reason = "no_owned_proof"
         elif section_name in responsive_sections:
             reason = "sufficient_owned_proof"
 
