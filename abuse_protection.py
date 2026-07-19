@@ -2,23 +2,83 @@ import logging
 import math
 
 from fastapi import HTTPException
+from safe_logging import log_safe_exception
 
+logger = logging.getLogger(__name__)
 
 ACTIVE_JOB_STATUSES = ("pending", "running", "cancelling")
 RATE_LIMIT_WINDOW_SECONDS = 600
 RATE_LIMIT_LABELS = {"job-create": "job creation", "row-rerun": "row rerun", "bulk-rerun": "bulk rerun", "section-rerun": "section rerun"}
+RATE_LIMIT_UNAVAILABLE_DETAIL = "Unable to verify request limits. Please try again."
 
 
 def enforce_rate_limit(sb, user_id: str, tool: str, action: str, limit: int):
     try:
         result = sb.rpc("check_rate_limit", {"p_user_id": user_id, "p_tool": tool, "p_action": action, "p_limit": limit, "p_window_seconds": RATE_LIMIT_WINDOW_SECONDS}).execute()
-    except Exception:
-        logging.exception("Rate-limit check failed open for %s/%s", tool, action)
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "aio.rate_limit.unavailable",
+            exc,
+            tool=tool,
+            action=action,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=RATE_LIMIT_UNAVAILABLE_DETAIL,
+        ) from exc
+
+    try:
+        data = result.data
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "aio.rate_limit.unreadable_data",
+            exc,
+            tool=tool,
+            action=action,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=RATE_LIMIT_UNAVAILABLE_DETAIL,
+        ) from exc
+
+    if isinstance(data, list):
+        row = data[0] if len(data) == 1 else None
+    else:
+        row = data
+    if not isinstance(row, dict) or not isinstance(row.get("allowed"), bool):
+        logger.error(
+            "Rate-limit verification returned an invalid contract for tool=%s action=%s",
+            tool,
+            action,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=RATE_LIMIT_UNAVAILABLE_DETAIL,
+        )
+    if row["allowed"]:
         return
-    row = result.data[0] if isinstance(result.data, list) and result.data else result.data
-    if not isinstance(row, dict) or row.get("allowed", True):
-        return
-    retry_after = max(1, math.ceil(float(row.get("retry_after_seconds") or 1)))
+
+    try:
+        raw_retry_after = row["retry_after_seconds"]
+        if isinstance(raw_retry_after, bool):
+            raise TypeError("retry_after_seconds must be numeric")
+        retry_after_value = float(raw_retry_after)
+        if not math.isfinite(retry_after_value) or retry_after_value <= 0:
+            raise ValueError("retry_after_seconds must be a positive finite number")
+        retry_after = max(1, math.ceil(retry_after_value))
+    except (KeyError, TypeError, ValueError):
+        logger.error(
+            "Rate-limit denial returned an invalid retry value for tool=%s action=%s",
+            tool,
+            action,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=RATE_LIMIT_UNAVAILABLE_DETAIL,
+        ) from None
+
     wait = f"{retry_after} seconds" if retry_after < 60 else f"{math.ceil(retry_after / 60)} minutes"
     raise HTTPException(status_code=429, detail=f"Too many {RATE_LIMIT_LABELS.get(action, 'request')} requests. Please wait {wait} before trying again.", headers={"Retry-After": str(retry_after)})
 

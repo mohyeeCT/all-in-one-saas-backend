@@ -1,6 +1,13 @@
 """Evidence-aware runtime section policies for AIO page generation."""
 
 from copy import deepcopy
+from types import MappingProxyType
+
+from utils.page_quality import (
+    ADAPTIVE_POLICY_VERSION,
+    PageQualityConfigurationError,
+    get_adaptive_policy,
+)
 
 
 ADAPTIVE_TEMPLATE_POLICIES = {
@@ -34,6 +41,9 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "trust_bar", "services_overview", "differentiators", "social_proof",
         }),
+        "claim_sensitive_sections": frozenset({
+            "services_overview", "differentiators",
+        }),
         "proof_only_sections": frozenset({"trust_bar", "social_proof"}),
     },
     "landing_page": {
@@ -41,6 +51,7 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "value_context", "decision_support", "proof_or_context", "support_notes",
         }),
+        "claim_sensitive_sections": frozenset({"proof_or_context"}),
         "proof_only_sections": frozenset(),
     },
     "service_page": {
@@ -48,6 +59,7 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "benefits", "pain_points", "solution", "social_proof", "process", "support_notes",
         }),
+        "claim_sensitive_sections": frozenset({"benefits", "solution", "process"}),
         "proof_only_sections": frozenset({"social_proof"}),
     },
     "local_service_page": {
@@ -56,6 +68,9 @@ ADAPTIVE_TEMPLATE_POLICIES = {
             "local_intro", "services_in_location", "why_local", "service_area",
             "local_social_proof", "support_notes",
         }),
+        "claim_sensitive_sections": frozenset({
+            "services_in_location", "why_local", "service_area",
+        }),
         "proof_only_sections": frozenset({"local_social_proof"}),
     },
     "product_page": {
@@ -63,6 +78,7 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "benefits_features", "use_cases", "social_proof", "support_notes",
         }),
+        "claim_sensitive_sections": frozenset({"benefits_features", "use_cases"}),
         "proof_only_sections": frozenset({"social_proof"}),
     },
     "collection_page": {
@@ -75,6 +91,7 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "company_story", "mission_values", "credibility", "team",
         }),
+        "claim_sensitive_sections": frozenset(),
         "proof_only_sections": frozenset({
             "company_story", "mission_values", "credibility", "team",
         }),
@@ -84,6 +101,7 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "expectations", "contact_methods", "pre_contact_faq",
         }),
+        "claim_sensitive_sections": frozenset({"contact_methods"}),
         "proof_only_sections": frozenset(),
     },
     "case_study_b2b": {
@@ -91,9 +109,34 @@ ADAPTIVE_TEMPLATE_POLICIES = {
         "responsive_sections": frozenset({
             "situation", "trigger", "barrier", "solution", "results", "quote", "support_notes",
         }),
+        "claim_sensitive_sections": frozenset({
+            "situation", "trigger", "barrier", "solution",
+        }),
         "proof_only_sections": frozenset({"results", "quote"}),
     },
 }
+
+_ADAPTIVE_TEMPLATE_POLICIES_BY_VERSION = MappingProxyType({
+    ADAPTIVE_POLICY_VERSION: MappingProxyType({
+        template_key: MappingProxyType(dict(template_policy))
+        for template_key, template_policy in ADAPTIVE_TEMPLATE_POLICIES.items()
+    }),
+})
+
+
+def _versioned_template_policy(
+    adaptive_policy_version: str,
+    template_key: str,
+):
+    get_adaptive_policy(adaptive_policy_version)
+    versioned_policies = _ADAPTIVE_TEMPLATE_POLICIES_BY_VERSION.get(
+        adaptive_policy_version
+    )
+    if versioned_policies is None:
+        raise PageQualityConfigurationError(
+            f'Adaptive template policy version "{adaptive_policy_version}" is unavailable'
+        )
+    return versioned_policies.get(template_key, MappingProxyType({}))
 
 
 _INFORMATIONAL_INSTRUCTION = (
@@ -155,14 +198,67 @@ def _base_instruction(family: str) -> str:
     return _FLEXIBLE_STRUCTURE_INSTRUCTION
 
 
+def depth_policy_for_section(
+    template_key: str,
+    section_name: str,
+    adaptive_policy_version: str,
+) -> str:
+    """Return a reviewed server-owned depth class for one template section."""
+    template_policy = _versioned_template_policy(
+        adaptive_policy_version,
+        template_key,
+    )
+    normalized_name = str(section_name or "").strip().casefold()
+    if normalized_name in template_policy.get("proof_only_sections", frozenset()):
+        return "proof_only"
+    if normalized_name in template_policy.get("claim_sensitive_sections", frozenset()):
+        return "claim_sensitive"
+    return "explanatory"
+
+
+def attach_depth_policies(
+    strategy_brief: dict | None,
+    template_key: str,
+    adaptive_policy_version: str,
+) -> dict:
+    """Attach reviewed depth classes after model-output normalization."""
+    get_adaptive_policy(adaptive_policy_version)
+    values = deepcopy(strategy_brief or {})
+    section_guidance = []
+    for item in values.get("section_guidance") or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_item = deepcopy(item)
+        normalized_item.pop("depth_policy", None)
+        normalized_item["depth_policy"] = depth_policy_for_section(
+            template_key,
+            normalized_item.get("section", ""),
+            adaptive_policy_version,
+        )
+        section_guidance.append(normalized_item)
+    if section_guidance:
+        values["section_guidance"] = section_guidance
+    return values
+
+
 def adapt_template_for_generation(
     template: dict,
     template_key: str,
     strategy_brief: dict | None,
+    adaptive_policy_version: str = "",
 ) -> tuple[dict, list[dict]]:
     """Apply conservative, evidence-aware runtime modes without mutating the registry."""
     adapted = deepcopy(template)
-    policy = ADAPTIVE_TEMPLATE_POLICIES.get(template_key, {})
+    versioned_policy = (
+        get_adaptive_policy(adaptive_policy_version)
+        if adaptive_policy_version
+        else None
+    )
+    policy = (
+        _versioned_template_policy(adaptive_policy_version, template_key)
+        if versioned_policy
+        else ADAPTIVE_TEMPLATE_POLICIES.get(template_key, {})
+    )
     family = policy.get("family", "custom")
     responsive_sections = policy.get("responsive_sections", frozenset())
     proof_only_sections = policy.get("proof_only_sections", frozenset())
@@ -176,13 +272,50 @@ def adapt_template_for_generation(
         keyword_slot = str(section.get("keyword_slot") or "none").casefold()
         contract = contracts.get(section_name)
         proof_count = _proof_point_count(contract)
+        if contract and contract.get("planned_heading"):
+            section["planned_heading"] = str(contract["planned_heading"])
+        if contract and contract.get("coverage_points"):
+            section["coverage_points"] = list(contract["coverage_points"])
         original_word_count = list(section.get("word_count") or [150, 250])
         mode = "full"
         reason = "original_structure"
         instruction = _base_instruction(family)
+        depth_policy = ""
+
+        if versioned_policy:
+            depth_policy = depth_policy_for_section(
+                template_key,
+                section_name,
+                adaptive_policy_version,
+            )
+            depth_instruction = versioned_policy.depth_policy(depth_policy).prompt_instruction
+            instruction = f"{instruction} {depth_instruction}".strip()
 
         if contract is None:
             reason = "no_section_contract"
+        elif (
+            versioned_policy
+            and depth_policy == "proof_only"
+            and proof_count == 0
+        ):
+            if keyword_slot == "none":
+                mode = "omit"
+                reason = "no_owned_proof"
+            else:
+                mode = "compact"
+                reason = "keyword_section_without_owned_proof"
+        elif (
+            versioned_policy
+            and depth_policy == "claim_sensitive"
+            and proof_count == 0
+        ):
+            reason = "unsupported_claim_areas"
+        elif versioned_policy:
+            reason = (
+                "safe_explanatory_depth"
+                if depth_policy == "explanatory"
+                else "sufficient_owned_proof"
+            )
         elif section_name in proof_only_sections and proof_count == 0:
             if keyword_slot == "none":
                 mode = "omit"
@@ -197,7 +330,7 @@ def adapt_template_for_generation(
             reason = "sufficient_owned_proof"
 
         if mode == "omit":
-            plan.append({
+            plan_item = {
                 "section": section.get("name", ""),
                 "label": section.get("label", ""),
                 "mode": mode,
@@ -205,17 +338,30 @@ def adapt_template_for_generation(
                 "proof_point_count": proof_count,
                 "original_word_count": original_word_count,
                 "word_count": None,
-            })
+            }
+            if versioned_policy:
+                plan_item.update({
+                    "depth_policy": depth_policy,
+                    "adaptive_policy_version": adaptive_policy_version,
+                })
+            plan.append(plan_item)
             continue
 
         if mode == "compact":
             section["word_count"] = _compact_word_count(original_word_count)
-            instruction = _COMPACT_INSTRUCTION
+            instruction = (
+                f"{_COMPACT_INSTRUCTION} {instruction}".strip()
+                if versioned_policy
+                else _COMPACT_INSTRUCTION
+            )
 
         section["adaptive_mode"] = mode
         section["adaptive_instruction"] = instruction
+        if depth_policy:
+            section["depth_policy"] = depth_policy
+            section["adaptive_policy_version"] = adaptive_policy_version
         adapted_sections.append(section)
-        plan.append({
+        plan_item = {
             "section": section.get("name", ""),
             "label": section.get("label", ""),
             "mode": mode,
@@ -223,7 +369,13 @@ def adapt_template_for_generation(
             "proof_point_count": proof_count,
             "original_word_count": original_word_count,
             "word_count": list(section.get("word_count") or original_word_count),
-        })
+        }
+        if versioned_policy:
+            plan_item.update({
+                "depth_policy": depth_policy,
+                "adaptive_policy_version": adaptive_policy_version,
+            })
+        plan.append(plan_item)
 
     adapted["sections"] = adapted_sections
     adapted["_adaptive_family"] = family

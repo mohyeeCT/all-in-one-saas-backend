@@ -17,6 +17,11 @@ from credentials import (
 from routers.all_in_one import AIOJobRequest, AIORow, AIOSettings
 from routers import all_in_one, jobs
 from utils import gsc
+from utils.owned_page import (
+    OWNED_PAGE_MAPPING_VERSION,
+    SOURCE_ASSET_MANIFEST_VERSION,
+)
+from utils.page_quality import ADAPTIVE_POLICY_VERSION, PAGE_QUALITY_POLICY_VERSION
 
 meta = all_in_one
 
@@ -404,6 +409,67 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(raised.exception.detail, CREDENTIALS_ERROR)
         self.assertNotIn(private_detail, repr(raised.exception))
 
+    def test_meta_faq_only_run_does_not_persist_page_copy_quality_versions(self):
+        sb = _Supabase()
+        background = _BackgroundTasks()
+        request = AIOJobRequest(
+            name="Meta and FAQ only",
+            rows=[
+                AIORow(
+                    url="not-a-valid-target",
+                    gen_page_copy=True,
+                    gen_meta=False,
+                    gen_faqs=False,
+                ),
+                AIORow(
+                    url="https://example.com/page",
+                    gen_page_copy=False,
+                    gen_meta=True,
+                    gen_faqs=True,
+                ),
+            ],
+            settings=AIOSettings(
+                page_copy_guidance_profile_id="conversion",
+            ),
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+                clear=False,
+            ),
+            patch.object(meta, "enforce_job_start"),
+            patch.object(meta, "enforce_rate_limit"),
+            patch.object(
+                meta,
+                "execute_active_job_write",
+                side_effect=lambda write, _tool: write(),
+            ),
+            patch.object(
+                meta,
+                "hydrate_job_settings",
+                return_value=_runtime_settings(),
+            ),
+        ):
+            meta.run_aio_job(
+                request,
+                background,
+                user=SimpleNamespace(id="user-1"),
+                sb=sb,
+            )
+
+        persisted_settings = next(
+            query.payload["settings"]
+            for query in sb.executed
+            if query.table == "jobs" and query.operation == "insert"
+        )
+        self.assertNotIn("page_copy_guidance_profile_id", persisted_settings)
+        self.assertNotIn("page_copy_guidance", persisted_settings)
+        self.assertNotIn("page_quality_policy_version", persisted_settings)
+        self.assertNotIn("adaptive_policy_version", persisted_settings)
+        self.assertNotIn("owned_page_mapping_version", persisted_settings)
+
     def test_core_job_helpers_require_tenant_and_wrong_tenant_cannot_read_or_mutate(self):
         for function in (meta._is_cancelled, meta._update_job, meta._process_single_row):
             with self.subTest(function=function.__name__):
@@ -475,6 +541,68 @@ class RuntimePathTests(unittest.TestCase):
                     function(**kwargs, user=SimpleNamespace(id="user-1"), sb=sb)
                 kickoff = [query for query in sb.executed if query.operation == "update"][-1]
                 self.assertEqual(kickoff.filters, [("id", "job-1"), ("user_id", "user-1")])
+
+    def test_invalid_v1_versions_fail_before_any_rerun_is_scheduled(self):
+        invalid_settings = {
+            "provider": "Claude",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "page_copy_guidance": {"id": "balanced", "version": "1"},
+        }
+        cases = (
+            (
+                jobs.rerun_row,
+                {
+                    "job_id": "job-1",
+                    "row_index": 0,
+                    "body": jobs.RerunRequest(),
+                },
+            ),
+            (
+                jobs.rerun_rows,
+                {
+                    "job_id": "job-1",
+                    "body": jobs.MultiRerunRequest(row_indices=[0]),
+                },
+            ),
+            (
+                jobs.rerun_section,
+                {
+                    "job_id": "job-1",
+                    "body": jobs.RerunSectionRequest(
+                        row_index=0,
+                        section_name="hero",
+                    ),
+                },
+            ),
+        )
+
+        for function, kwargs in cases:
+            with self.subTest(function=function.__name__):
+                background = _BackgroundTasks()
+                job = {
+                    **_stored_job(),
+                    "settings": invalid_settings,
+                    "results": [{
+                        "section_results": {"hero": "# Existing hero"},
+                    }],
+                }
+                sb = _Supabase({"jobs": [job]})
+
+                with self.assertRaises(HTTPException) as raised:
+                    function(
+                        **kwargs,
+                        background_tasks=background,
+                        user=SimpleNamespace(id="user-1"),
+                        sb=sb,
+                    )
+
+                self.assertEqual(raised.exception.status_code, 409)
+                self.assertIn("adaptive policy version", raised.exception.detail)
+                self.assertEqual(background.calls, [])
+                self.assertFalse(
+                    any(query.operation == "update" for query in sb.executed)
+                )
 
     def test_successful_single_and_bulk_retry_clear_only_credential_error(self):
         cases = (
@@ -750,6 +878,12 @@ class RuntimePathTests(unittest.TestCase):
                     client.assert_called_once_with(_runtime_settings(envelope), sb, "user-1", "job-1")
                     self.assertEqual(process.call_args.kwargs["gsc_client"], "client")
                     self.assertEqual(process.call_args.kwargs["gsc_auth_method"], envelope["method"])
+                    self.assertIs(
+                        process.call_args.kwargs[
+                            "page_copy_correction_enabled"
+                        ],
+                        False,
+                    )
                     terminal = [
                         query for query in sb.executed
                         if query.operation == "update" and query.payload and (
@@ -876,6 +1010,7 @@ class RuntimePathTests(unittest.TestCase):
         provider.assert_called_once()
         self.assertEqual(provider.call_args.args[0], private_api_key)
         self.assertEqual(provider.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
+        self.assertNotIn("max_tokens", provider.call_args.kwargs)
         build_docx.assert_called_once()
         final = [
             query for query in sb.executed
@@ -914,9 +1049,187 @@ class RuntimePathTests(unittest.TestCase):
                         "section": "process",
                         "responsibility": "Explain the verified process.",
                         "proof_points": ["The process includes an audit."],
+                        "planned_heading": "How the Audit Process Works",
+                        "coverage_points": ["Explain the audit sequence."],
+                        "owned_block_ids": ["O1"],
+                        "owned_blocks": [{
+                            "id": "O1",
+                            "order": 1,
+                            "heading_level": "h2",
+                            "heading": "Current process",
+                            "excerpt": "The current page explains an audit-led process.",
+                            "content_hash": "stored-safe-hash",
+                        }],
+                        "retain_points": ["Keep the audit-led idea."],
+                        "improve_points": ["Clarify the sequence."],
+                        "depth_policy": "claim_sensitive",
                     }],
                 },
                 "adaptive_section_plan": [{"section": "process", "mode": "compact"}],
+                "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+                "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+                "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+                "page_copy_guidance": {
+                    "id": "editorial_refresh",
+                    "label": "Editorial Refresh",
+                    "version": "1",
+                },
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "api_key": "runtime-api-secret",
+            "dfs_login": "runtime-dfs-login",
+            "dfs_password": "runtime-dfs-secret",
+            "provider": "Claude",
+            "brand_name": "CopyPilot",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "page_copy_guidance": {"id": "editorial_refresh", "version": "1"},
+        }
+        provider = Mock(
+            return_value="## How the Audit Process Works\nA concise verified process."
+        )
+        stored_strategy = job["results"][0]["strategy_brief"]
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
+            patch.object(meta, "_build_combined_docx", return_value=b"safe-docx") as build_docx,
+            patch(
+                "utils.dfs.get_serp_data",
+                return_value={
+                    "paa_items": [{"question": "What is an audit?"}],
+                    "ai_overview_raw": "Fresh overview context.",
+                },
+            ) as get_serp,
+            patch.object(meta, "rank_keywords") as rank_keywords,
+            patch.object(meta, "assign_keywords_to_sections") as assign_keywords,
+            patch.object(meta, "_scrape_owned_page_for_settings") as scrape_owned_page,
+        ):
+            jobs._rerun_single_section("job-1", 0, "process", job, "user-1", sb)
+
+        prompt = provider.call_args.args[1]
+        self.assertIn("Word count guidance: Develop this section to 300 to 500 words", prompt)
+        self.assertIn("Adaptive section guidance", prompt)
+        self.assertIn("page-wide brand mention budget is already used", prompt)
+        self.assertIn("## How the Audit Process Works", prompt)
+        self.assertIn("The current page explains an audit-led process.", prompt)
+        self.assertIn("Apply editorial-refresh page-copy guidance", prompt)
+        get_serp.assert_called_once_with(
+            "runtime-dfs-login",
+            "runtime-dfs-secret",
+            "technical seo",
+            2840,
+        )
+        rank_keywords.assert_not_called()
+        assign_keywords.assert_not_called()
+        scrape_owned_page.assert_not_called()
+        self.assertNotIn("max_tokens", provider.call_args.kwargs)
+        generated_template = build_docx.call_args.kwargs["template"]
+        process_section = next(
+            section for section in generated_template["sections"] if section["name"] == "process"
+        )
+        self.assertEqual(process_section["word_count"], [300, 500])
+        updated_row = job["results"][0]
+        self.assertEqual(updated_row["strategy_brief"], stored_strategy)
+        self.assertEqual(
+            updated_row["strategy_brief"]["section_guidance"][0]["owned_blocks"][0]["id"],
+            "O1",
+        )
+        self.assertEqual(
+            updated_row["page_quality_policy_version"],
+            PAGE_QUALITY_POLICY_VERSION,
+        )
+        self.assertEqual(
+            updated_row["adaptive_policy_version"],
+            ADAPTIVE_POLICY_VERSION,
+        )
+        self.assertEqual(
+            updated_row["owned_page_mapping_version"],
+            OWNED_PAGE_MAPPING_VERSION,
+        )
+        self.assertEqual(
+            updated_row["page_copy_guidance"]["id"],
+            "editorial_refresh",
+        )
+
+    def test_source_asset_section_rerun_keeps_template_and_authored_brand_budget(self):
+        trust_quote = (
+            "CopyPilot appears in this exact quote, and CopyPilot appears again."
+        )
+        strategy_brief = {
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "source_asset_mapping_diagnostics": {
+                "active": True,
+                "assigned_asset_ids": ["A1", "A2"],
+                "unassigned_asset_ids": [],
+            },
+            "section_guidance": [
+                {
+                    "section": "trust_bar",
+                    "responsibility": "Preserve the exact trust statement.",
+                    "source_asset_ids": ["A1"],
+                    "source_assets": [{
+                        "id": "A1",
+                        "kind": "testimonial",
+                        "quote": trust_quote,
+                        "attribution": "Alex Example",
+                    }],
+                    "proof_points": [],
+                },
+                {
+                    "section": "social_proof",
+                    "responsibility": "Preserve the attributed source material.",
+                    "source_asset_ids": ["A2"],
+                    "source_assets": [{
+                        "id": "A2",
+                        "kind": "testimonial",
+                        "quote": "Exact target testimonial.",
+                        "attribution": "Jordan Example",
+                    }],
+                    "proof_points": [],
+                },
+            ],
+        }
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/",
+                "page_type": "homepage",
+                "template_key": "homepage",
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "url": "https://example.com/",
+                "primary_keyword": "copywriting software",
+                "h1": "Copywriting Software",
+                "section_results": {
+                    "hero": "# Copywriting Software\nCopyPilot adds one authored mention.",
+                    "trust_bar": f"> {trust_quote}\nAlex Example",
+                    "social_proof": (
+                        "> Exact target testimonial.\nJordan Example"
+                    ),
+                },
+                "strategy_brief": strategy_brief,
+                "adaptive_section_plan": [{
+                    "section": "social_proof",
+                    "mode": "full",
+                    "reason": "source_asset_material",
+                }],
+                "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+                "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+                "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+                "source_asset_manifest_version": (
+                    SOURCE_ASSET_MANIFEST_VERSION
+                ),
+                "page_copy_guidance": {
+                    "id": "editorial_refresh",
+                    "label": "Editorial Refresh",
+                    "version": "1",
+                },
             }],
         }
         sb = _Supabase({"jobs": [job]})
@@ -926,25 +1239,56 @@ class RuntimePathTests(unittest.TestCase):
             "dfs_login": "",
             "provider": "Claude",
             "brand_name": "CopyPilot",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "page_copy_guidance": {
+                "id": "editorial_refresh",
+                "version": "1",
+            },
         }
-        provider = Mock(return_value="## Process\nA concise verified process.")
+        provider = Mock(
+            return_value="## Client Results\nA reviewer-requested revision."
+        )
 
         with (
             patch.object(jobs, "hydrate_job_settings", return_value=runtime),
             patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
-            patch.object(meta, "_build_combined_docx", return_value=b"safe-docx") as build_docx,
+            patch.object(
+                meta,
+                "_build_combined_docx",
+                return_value=b"safe-docx",
+            ) as build_docx,
         ):
-            jobs._rerun_single_section("job-1", 0, "process", job, "user-1", sb)
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "social_proof",
+                job,
+                "user-1",
+                sb,
+            )
 
+        provider.assert_called_once()
         prompt = provider.call_args.args[1]
-        self.assertIn("Word count guidance: Develop this section to 300 to 500 words", prompt)
-        self.assertIn("Adaptive section guidance", prompt)
-        self.assertIn("page-wide brand mention budget is already used", prompt)
-        generated_template = build_docx.call_args.kwargs["template"]
-        process_section = next(
-            section for section in generated_template["sections"] if section["name"] == "process"
+        self.assertIn(
+            "1 used in earlier sections",
+            prompt,
         )
-        self.assertEqual(process_section["word_count"], [300, 500])
+        self.assertNotIn(trust_quote, prompt)
+        self.assertNotIn("Exact target testimonial.", prompt)
+        generated_template = build_docx.call_args.kwargs["template"]
+        social_proof = next(
+            section
+            for section in generated_template["sections"]
+            if section["name"] == "social_proof"
+        )
+        self.assertEqual(social_proof["adaptive_mode"], "full")
+        self.assertIn(
+            "not factual proof",
+            social_proof["adaptive_instruction"],
+        )
 
     def test_section_rerun_uses_and_stores_reviewer_instruction(self):
         job = {

@@ -81,6 +81,15 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(captured["max_tokens"], copy_gen.CLAUDE_STREAMING_TOKEN_THRESHOLD + 1)
         self.assertNotIn("thinking", captured)
 
+    def test_claude_text_stream_rejects_empty_response(self):
+        stream = types.SimpleNamespace(text_stream=[" ", "\n"])
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "AI provider returned an empty text response",
+        ):
+            copy_gen._extract_anthropic_stream_text(stream)
+
     def test_claude_strategy_request_can_use_medium_adaptive_effort(self):
         captured = {}
 

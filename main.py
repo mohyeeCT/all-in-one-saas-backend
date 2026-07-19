@@ -1,6 +1,30 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from routers import all_in_one, jobs, settings
+from safe_logging import log_safe_exception
+
+logger = logging.getLogger(__name__)
+
+ALLOWED_CORS_ORIGINS = (
+    "https://copypilot.app",
+    "https://all-in-one.copypilot.app",
+    "https://copypilot-platform-mohyeects-projects.vercel.app",
+)
+
+
+def _cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin")
+    if origin not in ALLOWED_CORS_ORIGINS:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
 
 app = FastAPI(
     title="All in One Copy API",
@@ -10,11 +34,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://copypilot.app",
-        "https://all-in-one.copypilot.app",
-    ],
-    allow_origin_regex=r"https://copypilot-platform(?:-[a-z0-9-]+)?-mohyeects-projects\.vercel\.app",
+    allow_origins=list(ALLOWED_CORS_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,20 +50,17 @@ def health():
     return {"status": "ok"}
 
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
-
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
-    """Inject CORS headers on unhandled 500s.
-    Railway EU edge strips CORS from 500 responses, causing misleading
-    CORS errors in DevTools that mask the real server error."""
+    """Return a safe 500 while retaining CORS for exact approved origins."""
+    log_safe_exception(
+        logger,
+        "aio.http.unhandled",
+        exc,
+        method=request.method,
+    )
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
-        headers={
-            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-            "Access-Control-Allow-Credentials": "true",
-        },
+        content={"detail": "Internal server error."},
+        headers=_cors_headers(request),
     )

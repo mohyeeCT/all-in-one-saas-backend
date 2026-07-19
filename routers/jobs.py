@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from google.auth.exceptions import RefreshError
 from datetime import datetime, timedelta, timezone
@@ -5,15 +7,75 @@ from typing import Literal
 from auth import get_current_user, get_supabase
 from credentials import hydrate_job_settings, load_user_credentials, mark_gsc_reconnect_required, strip_secret_fields
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
+from safe_logging import log_safe_exception, log_safe_external_failure
+from utils.page_quality import (
+    PageQualityConfigurationError,
+    page_quality_reruns_enabled,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _GSC_RECONNECT_ERROR = "Google Search Console reconnect required."
 _GSC_UNAVAILABLE_ERROR = "Selected Google Search Console connection unavailable."
 _GSC_CONFIG_ERROR = "Google Search Console OAuth configuration missing."
 _CREDENTIALS_UNAVAILABLE_ERROR = "Saved credentials are temporarily unavailable."
+_ROW_PROCESSING_ERROR = "This row could not be processed. Please try again."
 _STALE_CANCELLING_AFTER = timedelta(minutes=30)
 _STALE_FINISHED_RUNNING_AFTER = timedelta(minutes=2)
+
+
+def _enforce_page_quality_rerun_available(
+    settings: dict,
+    *,
+    page_copy_requested: bool,
+):
+    if (
+        page_copy_requested
+        and str((settings or {}).get("page_quality_policy_version") or "").strip()
+        and not page_quality_reruns_enabled()
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Page-copy quality v1 reruns are temporarily unavailable. "
+                "The stored job will not be rerun with legacy behavior."
+            ),
+        )
+
+
+def _validate_page_quality_rerun_settings(
+    settings: dict,
+    *,
+    page_copy_requested: bool,
+):
+    """Fail before scheduling when exact stored page-copy versions cannot run."""
+    if not page_copy_requested:
+        return
+    from routers.all_in_one import _stored_page_quality_context
+
+    try:
+        _stored_page_quality_context(
+            settings or {},
+            page_copy_requested=True,
+        )
+    except PageQualityConfigurationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This job was not rerun because its stored page-copy quality "
+                f"configuration is unavailable: {exc}"
+            ),
+        ) from None
+
+
+def _row_requests_page_copy(row: dict, settings: dict) -> bool:
+    return bool(
+        (row or {}).get(
+            "gen_page_copy",
+            (settings or {}).get("gen_page_copy", True),
+        )
+    )
 
 
 from pydantic import BaseModel
@@ -317,6 +379,15 @@ def rerun_row(
 
     if row_index < 0 or row_index >= len(rows):
         raise HTTPException(status_code=400, detail="Row index out of range")
+    page_copy_requested = _row_requests_page_copy(rows[row_index], settings)
+    _enforce_page_quality_rerun_available(
+        settings,
+        page_copy_requested=page_copy_requested,
+    )
+    _validate_page_quality_rerun_settings(
+        settings,
+        page_copy_requested=page_copy_requested,
+    )
     enforce_job_start(sb, user.id, "all-in-one", 1, 50, exclude_job_id=job_id)
     enforce_rate_limit(sb, user.id, "all-in-one", "row-rerun", 30)
 
@@ -390,8 +461,6 @@ def _rerun_single_row(
         )
         return
     _clear_credentials_runtime_error(sb, job_id, user_id)
-    import traceback, time
-
     try:
         row = rows[row_index]
         # Apply keyword override if provided - inject as manual keyword
@@ -444,6 +513,7 @@ def _rerun_single_row(
             brand_profile=brand_profile,
             gsc_auth_method=gsc_auth_method,
             scraper_override=scraper_override,
+            page_copy_correction_enabled=False,
         )
 
         # Update just this row's result in the existing results array
@@ -463,10 +533,26 @@ def _rerun_single_row(
             "updated_at": "now()"
         }).eq("id", job_id).eq("user_id", user_id).execute()
 
-    except Exception:
+    except PageQualityConfigurationError as exc:
         sb.table("jobs").update({
             "status": "complete",
-            "current_step": f"Row {row_index + 1} failed: {traceback.format_exc(limit=1)[:120]}",
+            "current_step": (
+                f"Row {row_index + 1} was not rerun because its stored page-copy "
+                f"quality configuration is unavailable: {exc}"
+            ),
+            "updated_at": "now()",
+        }).eq("id", job_id).eq("user_id", user_id).execute()
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "aio.rerun.row_failed",
+            exc,
+            job_id=job_id,
+            row=row_index + 1,
+        )
+        sb.table("jobs").update({
+            "status": "complete",
+            "current_step": f"Row {row_index + 1} rerun failed. Please try again.",
             "updated_at": "now()"
         }).eq("id", job_id).eq("user_id", user_id).execute()
 
@@ -491,6 +577,18 @@ def rerun_rows(
     valid_indices = [i for i in body.row_indices if 0 <= i < len(rows)]
     if not valid_indices:
         raise HTTPException(status_code=400, detail="No valid row indices provided")
+    page_copy_requested = any(
+        _row_requests_page_copy(rows[index], settings)
+        for index in valid_indices
+    )
+    _enforce_page_quality_rerun_available(
+        settings,
+        page_copy_requested=page_copy_requested,
+    )
+    _validate_page_quality_rerun_settings(
+        settings,
+        page_copy_requested=page_copy_requested,
+    )
     enforce_job_start(sb, user.id, "all-in-one", len(valid_indices), 50, exclude_job_id=job_id)
     enforce_rate_limit(sb, user.id, "all-in-one", "bulk-rerun", 10)
 
@@ -577,14 +675,22 @@ def _rerun_multiple_rows(job_id: str, row_indices: list, rows: list, settings: d
                 user_id=user_id,
                 brand_profile=brand_profile,
                 gsc_auth_method=gsc_auth_method,
+                page_copy_correction_enabled=False,
             )
             results[row_index] = result
             if result.get("error") or result.get("status") == "error":
                 failed += 1
-        except Exception as e:
+        except Exception as exc:
+            log_safe_exception(
+                logger,
+                "aio.rerun.bulk_row_failed",
+                exc,
+                job_id=job_id,
+                row=row_index + 1,
+            )
             results[row_index] = {
                 "url": rows[row_index].get("url", ""),
-                "error": str(e),
+                "error": _ROW_PROCESSING_ERROR,
                 "status": "error",
                 "gsc_auth_method": gsc_auth_method,
             }
@@ -655,6 +761,15 @@ def rerun_section(
         raise HTTPException(status_code=404, detail="Job not found")
 
     job = res.data[0]
+    stored_settings = job.get("settings") or {}
+    _enforce_page_quality_rerun_available(
+        stored_settings,
+        page_copy_requested=True,
+    )
+    _validate_page_quality_rerun_settings(
+        stored_settings,
+        page_copy_requested=True,
+    )
     results = job.get("results") or []
     row_index = body.row_index
 
@@ -708,25 +823,31 @@ def _rerun_single_section(
     Rebuilds _full_page, _word_count, and docx after updating the section.
     """
     import base64
-    import traceback
+    from copy import deepcopy
     from utils.copy_gen import (
         _build_section_prompt,
         _count_brand_mentions,
         _page_brand_mention_budget,
+        _source_asset_exact_phrases,
+        _validated_source_asset_section_names,
         DEFAULT_MODELS,
         PROVIDER_FN,
         sanitise,
     )
-    from utils.adaptive_templates import adapt_template_for_generation
+    from utils.owned_page import SOURCE_ASSET_MANIFEST_VERSION
     from utils.templates import get_template
     from utils.dfs import get_serp_data
     from routers.all_in_one import (
+        _adapt_page_template_for_generation,
         _add_strategy_qa_flag,
+        _build_page_quality_diagnostics,
         _build_combined_docx,
         _build_content_gap_summary,
         _collect_qa_flags,
+        _enforce_v1_canonical_page_h1,
         _qa_status,
         _split_forbidden_phrases,
+        _stored_page_quality_context,
         _template_for_page_copy,
     )
 
@@ -764,6 +885,16 @@ def _rerun_single_section(
         business_type = settings.get("business_type", "general")
         page_type = stored_row.get("page_type") or settings.get("page_type", "service")
         location_code = int(settings.get("location_code", 2840))
+        page_quality = _stored_page_quality_context(
+            settings,
+            page_copy_requested=True,
+        )
+        page_quality_enabled = bool(page_quality["enabled"])
+        page_copy_guidance = page_quality["guidance"]
+        exact_headings_enabled = bool(
+            page_quality["policy"]
+            and page_quality["policy"].exact_planned_headings
+        )
 
         # ── 2. Brand profile → append to client_brief ──────────────────────────
         client_brief = settings.get("client_brief", "") or ""
@@ -805,12 +936,49 @@ def _rerun_single_section(
 
         separate_faq_output = bool(stored_row.get("gen_faqs", settings.get("gen_faqs", True)))
         template = _template_for_page_copy(template, separate_faq_output)
-        strategy_brief = row_result.get("strategy_brief") or {}
-        if row_result.get("adaptive_section_plan"):
-            template, _ = adapt_template_for_generation(
+        stored_strategy_brief = row_result.get("strategy_brief") or {}
+        source_asset_rerun_enabled = bool(
+            page_quality.get("source_asset_manifest_version")
+            == SOURCE_ASSET_MANIFEST_VERSION
+        )
+        strategy_brief = stored_strategy_brief
+        if (
+            not source_asset_rerun_enabled
+            and isinstance(stored_strategy_brief, dict)
+            and stored_strategy_brief.get(
+                "source_asset_manifest_version"
+            )
+        ):
+            strategy_brief = deepcopy(stored_strategy_brief)
+            strategy_brief.pop("source_asset_manifest_version", None)
+            strategy_brief.pop("source_asset_manifest_hash", None)
+            strategy_brief.pop("source_asset_mapping_diagnostics", None)
+            for contract in strategy_brief.get("section_guidance") or []:
+                if not isinstance(contract, dict):
+                    continue
+                had_source_asset_contract = bool(
+                    contract.get("source_asset_ids")
+                    or contract.get("source_assets")
+                )
+                contract.pop("source_asset_ids", None)
+                contract.pop("source_assets", None)
+                if had_source_asset_contract:
+                    contract.pop("required_named_items", None)
+        if row_result.get("adaptive_section_plan") or page_quality_enabled:
+            template, _ = _adapt_page_template_for_generation(
                 template,
                 resolved_template_key,
                 strategy_brief,
+                adaptive_policy_version=(
+                    page_quality["adaptive_policy_version"]
+                    if page_quality_enabled
+                    else ""
+                ),
+                source_asset_manifest_version=page_quality.get(
+                    "source_asset_manifest_version",
+                    "",
+                ),
+                include_source_asset_instruction=False,
             )
 
         section_def = next((s for s in template["sections"] if s["name"] == section_name), None)
@@ -823,7 +991,14 @@ def _rerun_single_section(
 
         # ── 4. Context from stored result ─────────────────────────────────────
         overall_primary_keyword = row_result.get("primary_keyword") or ""
-        h1 = row_result.get("h1") or overall_primary_keyword
+        if exact_headings_enabled:
+            h1 = (
+                row_result.get("optimised_h1")
+                or row_result.get("h1")
+                or overall_primary_keyword
+            )
+        else:
+            h1 = row_result.get("h1") or overall_primary_keyword
         section_results = dict(row_result.get("section_results") or {})
         section_rerun_notes = dict(row_result.get("section_rerun_notes") or {})
         keyword_assignment = row_result.get("keyword_assignment") or {}
@@ -844,7 +1019,18 @@ def _rerun_single_section(
         reviewer_corrections = (existing_notes + ([new_note] if new_note else []))[-5:]
         brand_mention_budget = _page_brand_mention_budget(len(template["sections"])) if brand_name else None
         brand_mentions_used = sum(
-            _count_brand_mentions(text, brand_name)
+            _count_brand_mentions(
+                text,
+                brand_name,
+                excluded_exact_phrases=(
+                    _source_asset_exact_phrases(
+                        strategy_brief,
+                        name,
+                    )
+                    if source_asset_rerun_enabled
+                    else []
+                ),
+            )
             for name, text in section_results.items()
             if name != section_name
         )
@@ -852,8 +1038,18 @@ def _rerun_single_section(
         # previous_section_text: all sections before target in template order
         section_order = [s["name"] for s in template["sections"]]
         target_pos = section_order.index(section_name) if section_name in section_order else len(section_order)
+        source_asset_section_names = (
+            _validated_source_asset_section_names(strategy_brief)
+            if source_asset_rerun_enabled
+            else set()
+        )
         previous_section_text = "\n\n".join(
-            section_results.get(s, "") for s in section_order[:target_pos] if section_results.get(s)
+            section_results.get(s, "")
+            for s in section_order[:target_pos]
+            if (
+                section_results.get(s)
+                and s.casefold() not in source_asset_section_names
+            )
         )[-600:]  # cap so prompt stays lean
 
         # ── 5. Re-fetch SERP for fresh PAA + AI Overview ───────────────────────
@@ -863,14 +1059,28 @@ def _rerun_single_section(
             try:
                 serp = get_serp_data(dfs_login, dfs_password, overall_primary_keyword, location_code)
                 if serp.get("error"):
+                    log_safe_external_failure(
+                        logger,
+                        "aio.rerun.section_serp_failed",
+                        serp.get("error"),
+                        job_id=job_id,
+                        row=row_index + 1,
+                    )
                     _update_job(sb, job_id, user_id, {
-                        "current_step": "DataForSEO SERP refresh failed: " + str(serp["error"])[:120]
+                        "current_step": "Search-result refresh was unavailable; continuing with saved context."
                     })
                 paa_questions = serp.get("paa_items") or serp.get("paa") or []
                 ai_overview = serp.get("ai_overview_raw") or serp.get("ai_overview") or ""
-            except Exception as e:
+            except Exception as exc:
+                log_safe_exception(
+                    logger,
+                    "aio.rerun.section_serp_failed",
+                    exc,
+                    job_id=job_id,
+                    row=row_index + 1,
+                )
                 _update_job(sb, job_id, user_id, {
-                    "current_step": "DataForSEO SERP refresh failed: " + str(e)[:120]
+                    "current_step": "Search-result refresh was unavailable; continuing with saved context."
                 })
 
         # ── 6. Build prompt and call AI ────────────────────────────────────────
@@ -898,6 +1108,8 @@ def _rerun_single_section(
             strategy_brief=strategy_brief,
             brand_mentions_used=brand_mentions_used,
             brand_mention_budget=brand_mention_budget,
+            page_copy_guidance=page_copy_guidance,
+            page_quality_policy=page_quality["policy"],
         )
 
         raw = fn(api_key, prompt, model=model)
@@ -905,6 +1117,12 @@ def _rerun_single_section(
 
         # ── 7. Patch section, rebuild full_page + word_count ───────────────────
         section_results[section_name] = new_text
+        if exact_headings_enabled:
+            section_results, _ = _enforce_v1_canonical_page_h1(
+                section_results,
+                template,
+                h1,
+            )
         if new_note:
             section_rerun_notes[section_name] = reviewer_corrections
 
@@ -928,12 +1146,24 @@ def _rerun_single_section(
             template=template,
             brand_name=brand_name,
             business_type=business_type,
+            strategy_brief=strategy_brief,
+            page_quality_policy_version=page_quality["page_quality_policy_version"],
         )
         strategy_status = row_result.get("strategy_status") or ("ready" if strategy_brief else "unavailable")
         _add_strategy_qa_flag(qa_flags, strategy_status, row_result.get("strategy_issues") or [])
         content_gap_summary = _build_content_gap_summary(
             row_result.get("competitor_section_map") or {},
             section_results,
+        )
+        quality_diagnostics = (
+            _build_page_quality_diagnostics(
+                strategy_brief=strategy_brief,
+                template=template,
+                section_results=section_results,
+                page_quality=page_quality,
+            )
+            if page_quality_enabled
+            else row_result.get("quality_diagnostics")
         )
 
         # ── 8. Regenerate docx ─────────────────────────────────────────────────
@@ -956,6 +1186,7 @@ def _rerun_single_section(
                 gen_meta=bool(row_result.get("generated_title")),
                 gen_faqs=bool(row_result.get("faq_items")),
                 gen_page_copy=True,
+                page_quality_policy_version=page_quality["page_quality_policy_version"],
             )
             docx_b64 = base64.b64encode(docx_bytes).decode("utf-8")
         except Exception:
@@ -975,6 +1206,7 @@ def _rerun_single_section(
             "word_count": word_count,
             "docx_b64": docx_b64,
             "content_gap_summary": content_gap_summary,
+            "quality_diagnostics": quality_diagnostics,
             "qa_flags": qa_flags,
             "status": _qa_status(qa_flags),
         }
@@ -986,8 +1218,24 @@ def _rerun_single_section(
             "updated_at": "now()",
         }).eq("id", job_id).eq("user_id", user_id).execute()
 
-    except Exception:
+    except PageQualityConfigurationError as exc:
         sb.table("jobs").update({
-            "current_step": f"Section rerun failed (row {row_index + 1}, '{section_name}'): {traceback.format_exc(limit=1)[:140]}",
+            "current_step": (
+                f"Section rerun was not completed for row {row_index + 1}, "
+                f"'{section_name}', because its stored page-copy quality "
+                f"configuration is unavailable: {exc}"
+            ),
+            "updated_at": "now()",
+        }).eq("id", job_id).eq("user_id", user_id).execute()
+    except Exception as exc:
+        log_safe_exception(
+            logger,
+            "aio.rerun.section_failed",
+            exc,
+            job_id=job_id,
+            row=row_index + 1,
+        )
+        sb.table("jobs").update({
+            "current_step": f"Section rerun failed for row {row_index + 1}. Please try again.",
             "updated_at": "now()",
         }).eq("id", job_id).eq("user_id", user_id).execute()

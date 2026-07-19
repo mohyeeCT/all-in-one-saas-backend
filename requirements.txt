@@ -3,7 +3,7 @@ uvicorn[standard]==0.30.6
 supabase==2.15.0
 pydantic>=2.8.2,<2.9.0
 requests==2.32.3
-anthropic==0.34.2
+anthropic==0.117.0
 openai==1.47.0
 google-genai==0.8.0
 mistralai==1.0.3

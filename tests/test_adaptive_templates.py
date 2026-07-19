@@ -1,6 +1,12 @@
 from copy import deepcopy
 
-from utils.adaptive_templates import ADAPTIVE_TEMPLATE_POLICIES, adapt_template_for_generation
+from utils.adaptive_templates import (
+    ADAPTIVE_TEMPLATE_POLICIES,
+    adapt_template_for_generation,
+    attach_depth_policies,
+    depth_policy_for_section,
+)
+from utils.page_quality import ADAPTIVE_POLICY_VERSION
 from utils.templates import TEMPLATES
 
 
@@ -107,6 +113,7 @@ def test_responsive_sections_preserve_one_proof_and_compact_zero_proof():
     assert plan_by_section["pain_points"]["mode"] == "compact"
     assert adapted_by_name["pain_points"]["word_count"] == [154, 304]
     assert "fewest complete paragraphs or blocks" in adapted_by_name["pain_points"]["adaptive_instruction"]
+    assert "Use only as many blocks" not in adapted_by_name["pain_points"]["adaptive_instruction"]
 
 
 def test_informational_templates_keep_structure_and_relax_only_fill_quotas():
@@ -198,3 +205,73 @@ def test_ecommerce_and_brand_families_use_the_same_evidence_rules():
     assert about_modes["company_story"]["mode"] == "full"
     assert about_modes["mission_values"]["mode"] == "omit"
     assert about_modes["team"]["mode"] == "omit"
+
+
+def test_v1_retains_section_depth_and_compacts_only_unsupported_claim_areas():
+    strategy = _strategy(
+        ("pain_points", []),
+        ("benefits", []),
+        ("social_proof", []),
+    )
+    strategy = attach_depth_policies(
+        strategy,
+        "service_page",
+        ADAPTIVE_POLICY_VERSION,
+    )
+    adapted, plan = adapt_template_for_generation(
+        TEMPLATES["service_page"],
+        "service_page",
+        strategy,
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+    )
+    adapted_by_name = {section["name"]: section for section in adapted["sections"]}
+    plan_by_section = _plan_by_section(plan)
+
+    assert plan_by_section["pain_points"]["depth_policy"] == "explanatory"
+    assert plan_by_section["pain_points"]["mode"] == "full"
+    assert adapted_by_name["pain_points"]["word_count"] == [220, 380]
+    assert plan_by_section["benefits"]["depth_policy"] == "claim_sensitive"
+    assert plan_by_section["benefits"]["mode"] == "full"
+    assert adapted_by_name["benefits"]["word_count"] == [250, 430]
+    assert "compact or withhold areas" in adapted_by_name["benefits"]["adaptive_instruction"]
+    assert "fewest complete paragraphs or blocks" not in adapted_by_name["benefits"]["adaptive_instruction"]
+    assert plan_by_section["social_proof"]["depth_policy"] == "proof_only"
+    assert plan_by_section["social_proof"]["mode"] == "omit"
+
+
+def test_model_depth_policy_is_replaced_by_the_reviewed_server_policy():
+    strategy = {
+        "section_guidance": [{
+            "section": "pain_points",
+            "responsibility": "Explain the reader problem.",
+            "proof_points": [],
+            "depth_policy": "proof_only",
+        }]
+    }
+
+    attached = attach_depth_policies(
+        strategy,
+        "service_page",
+        ADAPTIVE_POLICY_VERSION,
+    )
+
+    assert attached["section_guidance"][0]["depth_policy"] == "explanatory"
+
+
+def test_v1_depth_classification_is_dispatched_from_its_immutable_registry(
+    monkeypatch,
+):
+    monkeypatch.setitem(
+        ADAPTIVE_TEMPLATE_POLICIES,
+        "service_page",
+        {
+            **ADAPTIVE_TEMPLATE_POLICIES["service_page"],
+            "claim_sensitive_sections": frozenset(),
+        },
+    )
+
+    assert depth_policy_for_section(
+        "service_page",
+        "benefits",
+        ADAPTIVE_POLICY_VERSION,
+    ) == "claim_sensitive"

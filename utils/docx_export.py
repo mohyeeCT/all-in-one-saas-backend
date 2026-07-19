@@ -89,6 +89,31 @@ def build_docx(
             continue
 
         lines = text.splitlines()
+        content_lines = [line.strip() for line in lines if line.strip()]
+        has_markdown_heading = any(
+            line.startswith(("# ", "## ", "### ")) for line in content_lines
+        )
+        heading_level = str(section.get("heading_level") or "").strip().lower()
+        is_versioned_section = bool(
+            str(section.get("adaptive_policy_version") or "").strip()
+        )
+
+        if (
+            content_lines
+            and is_versioned_section
+            and heading_level in {"h1", "h2", "h3"}
+            and not has_markdown_heading
+        ):
+            fallback_heading = str(
+                section.get("planned_heading") or section.get("label") or ""
+            ).strip()
+            if fallback_heading:
+                p = doc.add_paragraph(
+                    fallback_heading,
+                    style=f"Heading {heading_level[1]}",
+                )
+                _set_heading_color(p, "2E4057")
+
         for line in lines:
             line = line.strip()
             if not line:

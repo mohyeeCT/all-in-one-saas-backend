@@ -1,3 +1,4 @@
+import logging
 import time
 import uuid
 import base64
@@ -6,13 +7,14 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlparse
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Response
 from google.auth.exceptions import RefreshError
 from pydantic import BaseModel
 
 from auth import get_current_user, get_supabase
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
 from credentials import hydrate_job_settings, mark_gsc_reconnect_required, strip_secret_fields
+from safe_logging import log_safe_exception, log_safe_external_failure
 from utils.niches import get_niche_context
 from utils.dfs import (
     get_search_volume, get_keyword_difficulty,
@@ -27,22 +29,69 @@ from utils.scraper import (
 )
 from utils.faq_scraper import is_ecommerce_collection_page, scrape_page_context
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
-from utils.adaptive_templates import adapt_template_for_generation
+from utils.adaptive_templates import (
+    adapt_template_for_generation,
+    attach_depth_policies,
+)
+from utils.owned_page import (
+    OWNED_PAGE_MAPPING_VERSION,
+    SOURCE_ASSET_MANIFEST_VERSION,
+    build_owned_page_registry,
+    build_source_asset_manifest,
+    get_owned_page_mapping_policy,
+)
+from utils.page_quality import (
+    ADAPTIVE_POLICY_VERSION,
+    PAGE_QUALITY_POLICY_VERSION,
+    PageQualityConfigurationError,
+    get_adaptive_policy,
+    get_page_quality_policy,
+    guidance_capability_payload,
+    page_quality_creation_enabled,
+    resolve_stored_guidance_profile,
+    select_guidance_profile,
+)
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
+    _source_asset_exact_phrases,
+    _source_asset_forbidden_conflicts,
+    _structured_source_asset_render_plan,
+    _validated_source_asset_section_names,
     generate_page, generate_faq, generate_copy, generate_strategy_brief, sanitise,
     normalise_collection_references,
-    strategy_brief_issues, META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
+    page_plan_diagnostics, strategy_brief_issues,
+    META_TITLE_PREFERRED_MIN, META_TITLE_PREFERRED_MAX,
     META_DESCRIPTION_PREFERRED_MIN, META_DESCRIPTION_PREFERRED_MAX,
 )
 from utils.docx_export import build_docx
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _GSC_RECONNECT_ERROR = "Google Search Console reconnect required."
 _GSC_UNAVAILABLE_ERROR = "Selected Google Search Console connection unavailable."
 _GSC_CONFIG_ERROR = "Google Search Console OAuth configuration missing."
 _GSC_METHOD_LABELS = {"google_oauth", "service_account", "disabled", "unavailable"}
+_OWNED_PAGE_CONTEXT_ERROR = "Owned-page context was unavailable."
+_ROW_PROCESSING_ERROR = "This row could not be processed. Please try again."
+_STRATEGY_BRIEF_ERROR = "Strategy brief generation was unavailable."
+_SOURCE_ASSET_ADAPTIVE_MARKER = "__source_asset_material_present__"
+_SOURCE_ASSET_ADAPTIVE_REASONS = frozenset({
+    "no_owned_proof",
+    "keyword_section_without_owned_proof",
+})
+_SOURCE_ASSET_ADAPTIVE_INSTRUCTION = (
+    "The proof-only omission rule applies to newly authored factual claims, "
+    "not to exact assigned source assets. Preserve those assigned assets as "
+    "required editorial material, not factual proof, and do not infer any "
+    "added claim from them."
+)
+_SOURCE_ASSET_RERUN_ADAPTIVE_INSTRUCTION = (
+    "This section remains available for a reviewer rerun, but its source "
+    "assets are intentionally excluded from this rerun prompt. Do not "
+    "reconstruct or replace them. They are not factual proof and authorize "
+    "no invented replacement claims."
+)
 
 _RATE_LIMITS = {
     "Claude": 0.5,
@@ -51,6 +100,215 @@ _RATE_LIMITS = {
     "Mistral (free tier)": 2.0,
     "Groq (free tier)": 2.0,
 }
+
+
+def _new_job_page_quality_settings(
+    submitted_settings: dict,
+    user_id: object,
+    *,
+    page_copy_requested: bool = True,
+) -> tuple[dict, object | None]:
+    """Resolve server-owned versions once, before a new job is persisted."""
+    settings = dict(submitted_settings)
+    if not page_copy_requested:
+        settings.pop("page_copy_guidance_profile_id", None)
+        return settings, None
+
+    submitted_profile_id = str(
+        settings.get("page_copy_guidance_profile_id") or ""
+    ).strip()
+    if not page_quality_creation_enabled(user_id):
+        if submitted_profile_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Current AIO page-copy quality guidance is not enabled for this account.",
+            )
+        settings.pop("page_copy_guidance_profile_id", None)
+        return settings, None
+
+    try:
+        profile = select_guidance_profile(submitted_profile_id)
+    except PageQualityConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    settings.update({
+        "page_copy_guidance_profile_id": profile.id,
+        "page_copy_guidance": profile.snapshot(),
+        "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+        "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+        "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+    })
+    return settings, profile
+
+
+def _stored_page_quality_context(
+    settings: dict,
+    *,
+    page_copy_requested: bool,
+) -> dict:
+    """Resolve exact stored versions, or preserve the historical legacy path."""
+    page_quality_version = str(
+        settings.get("page_quality_policy_version") or ""
+    ).strip()
+    if not page_quality_version:
+        return {
+            "enabled": False,
+            "guidance": None,
+            "policy": None,
+            "mapping_policy": None,
+            "page_quality_policy_version": "",
+            "adaptive_policy_version": "",
+            "owned_page_mapping_version": "",
+            "source_asset_manifest_version": "",
+        }
+    if not page_copy_requested:
+        return {
+            "enabled": False,
+            "guidance": None,
+            "policy": None,
+            "mapping_policy": None,
+            "page_quality_policy_version": page_quality_version,
+            "adaptive_policy_version": str(
+                settings.get("adaptive_policy_version") or ""
+            ).strip(),
+            "owned_page_mapping_version": str(
+                settings.get("owned_page_mapping_version") or ""
+            ).strip(),
+            "source_asset_manifest_version": str(
+                settings.get("source_asset_manifest_version") or ""
+            ).strip(),
+        }
+
+    page_policy = get_page_quality_policy(page_quality_version)
+    adaptive_version = str(settings.get("adaptive_policy_version") or "").strip()
+    adaptive_policy = get_adaptive_policy(adaptive_version)
+    if adaptive_policy.version != page_policy.adaptive_policy_version:
+        raise PageQualityConfigurationError(
+            "Stored page-quality and adaptive policy versions do not match."
+        )
+    mapping_version = str(
+        settings.get("owned_page_mapping_version") or ""
+    ).strip()
+    mapping_policy = get_owned_page_mapping_policy(mapping_version)
+    source_asset_version = str(
+        settings.get("source_asset_manifest_version") or ""
+    ).strip()
+    if (
+        source_asset_version
+        and source_asset_version != SOURCE_ASSET_MANIFEST_VERSION
+    ):
+        raise PageQualityConfigurationError(
+            f'Source-asset manifest version "{source_asset_version}" is unavailable.'
+        )
+    guidance = resolve_stored_guidance_profile(
+        settings.get("page_copy_guidance"),
+        versioned_job=True,
+    )
+    return {
+        "enabled": True,
+        "guidance": guidance,
+        "policy": page_policy,
+        "mapping_policy": mapping_policy,
+        "page_quality_policy_version": page_policy.version,
+        "adaptive_policy_version": adaptive_policy.version,
+        "owned_page_mapping_version": mapping_version,
+        "source_asset_manifest_version": source_asset_version,
+    }
+
+
+def _page_copy_correction_is_active(
+    page_quality: dict,
+    *,
+    requested: bool,
+) -> bool:
+    """Limit the corrective path to newly stamped, compatible jobs."""
+    return bool(
+        requested
+        and page_quality.get("enabled")
+        and page_quality.get("source_asset_manifest_version")
+        == SOURCE_ASSET_MANIFEST_VERSION
+    )
+
+
+def _adapt_page_template_for_generation(
+    template: dict,
+    template_key: str,
+    strategy_brief: dict | None,
+    *,
+    adaptive_policy_version: str = "",
+    source_asset_manifest_version: str = "",
+    include_source_asset_instruction: bool = True,
+) -> tuple[dict, list[dict]]:
+    """Keep validated editorial assets without changing adaptive evidence rules."""
+    baseline_template, baseline_plan = adapt_template_for_generation(
+        template,
+        template_key,
+        strategy_brief,
+        adaptive_policy_version=adaptive_policy_version,
+    )
+    if source_asset_manifest_version != SOURCE_ASSET_MANIFEST_VERSION:
+        return baseline_template, baseline_plan
+    source_section_names = _validated_source_asset_section_names(
+        strategy_brief
+    )
+    if not source_section_names:
+        return baseline_template, baseline_plan
+
+    baseline_plan_by_section = {
+        str(item.get("section") or "").strip().casefold(): item
+        for item in baseline_plan
+        if isinstance(item, dict)
+    }
+    bridged_section_names = {
+        section_name
+        for section_name in source_section_names
+        if (
+            baseline_plan_by_section.get(section_name, {}).get("mode")
+            in {"omit", "compact"}
+            and baseline_plan_by_section.get(section_name, {}).get("reason")
+            in _SOURCE_ASSET_ADAPTIVE_REASONS
+        )
+    }
+    if not bridged_section_names:
+        return baseline_template, baseline_plan
+
+    planning_brief = deepcopy(strategy_brief or {})
+    for contract in planning_brief.get("section_guidance") or []:
+        if (
+            isinstance(contract, dict)
+            and str(contract.get("section") or "").strip().casefold()
+            in bridged_section_names
+        ):
+            contract["proof_points"] = [_SOURCE_ASSET_ADAPTIVE_MARKER]
+
+    adapted_template, adapted_plan = adapt_template_for_generation(
+        template,
+        template_key,
+        planning_brief,
+        adaptive_policy_version=adaptive_policy_version,
+    )
+    for section in adapted_template.get("sections") or []:
+        section_name = str(section.get("name") or "").strip().casefold()
+        if section_name not in bridged_section_names:
+            continue
+        instruction = str(section.get("adaptive_instruction") or "").strip()
+        source_asset_instruction = (
+            _SOURCE_ASSET_ADAPTIVE_INSTRUCTION
+            if include_source_asset_instruction
+            else _SOURCE_ASSET_RERUN_ADAPTIVE_INSTRUCTION
+        )
+        section["adaptive_instruction"] = (
+            f"{instruction} {source_asset_instruction}".strip()
+        )
+    for item in adapted_plan:
+        section_name = str(item.get("section") or "").strip().casefold()
+        if section_name not in bridged_section_names:
+            continue
+        item["proof_point_count"] = baseline_plan_by_section[
+            section_name
+        ].get("proof_point_count", 0)
+        item["reason"] = "source_asset_material"
+    return adapted_template, adapted_plan
 
 
 def _scrape_owned_page_for_settings(
@@ -140,6 +398,18 @@ _REPEATED_PHRASE_STOPWORDS = _CONTENT_GAP_STOPWORDS | {
 }
 
 _QA_SEVERITIES = {"warning", "review", "error"}
+_GENERIC_PAGE_HEADINGS = frozenset({
+    "about",
+    "benefits",
+    "conclusion",
+    "features",
+    "introduction",
+    "our process",
+    "our services",
+    "overview",
+    "services",
+    "why choose us",
+})
 _B2B_CONSUMER_CTAS = (
     "shop now",
     "add to cart",
@@ -438,7 +708,12 @@ def _find_generic_opener(text: str) -> str:
     return ""
 
 
-def _add_generic_opener_flags(flags: list[dict], generated_description: str, section_results: dict):
+def _add_generic_opener_flags(
+    flags: list[dict],
+    generated_description: str,
+    section_results: dict,
+    strategy_brief: dict | None = None,
+):
     opener = _find_generic_opener(generated_description)
     if opener:
         flags.append({
@@ -451,7 +726,14 @@ def _add_generic_opener_flags(flags: list[dict], generated_description: str, sec
     for section_name, text in (section_results or {}).items():
         if str(section_name).startswith("_"):
             continue
-        opener = _find_generic_opener(_strip_leading_markdown_headings(str(text or "")))
+        authored_text = _without_exact_source_asset_phrases(
+            str(text or ""),
+            strategy_brief,
+            section_name=str(section_name),
+        )
+        opener = _find_generic_opener(
+            _strip_leading_markdown_headings(authored_text)
+        )
         if opener:
             flags.append({
                 "code": "generic_opener",
@@ -462,7 +744,11 @@ def _add_generic_opener_flags(flags: list[dict], generated_description: str, sec
             })
 
 
-def _add_generic_page_reference_flags(flags: list[dict], section_results: dict):
+def _add_generic_page_reference_flags(
+    flags: list[dict],
+    section_results: dict,
+    strategy_brief: dict | None = None,
+):
     pattern = re.compile(
         r"\b(?:this page|this collection|this category|this range|on this page)\b",
         re.IGNORECASE,
@@ -470,7 +756,12 @@ def _add_generic_page_reference_flags(flags: list[dict], section_results: dict):
     for section_name, text in (section_results or {}).items():
         if str(section_name).startswith("_"):
             continue
-        match = pattern.search(str(text or ""))
+        authored_text = _without_exact_source_asset_phrases(
+            str(text or ""),
+            strategy_brief,
+            section_name=str(section_name),
+        )
+        match = pattern.search(authored_text)
         if match:
             _add_qa_flag(
                 flags,
@@ -523,6 +814,59 @@ def _enforce_canonical_page_h1(section_results: dict, canonical_h1: str) -> tupl
             return updated, True
 
     return section_results, False
+
+
+def _enforce_v1_canonical_page_h1(
+    section_results: dict,
+    template: dict | None,
+    canonical_h1: str,
+) -> tuple[dict, bool]:
+    """Make the versioned H1 section match its server-selected heading exactly."""
+    canonical_h1 = str(canonical_h1 or "").strip()
+    if not section_results or not template or not canonical_h1:
+        return section_results, False
+
+    h1_section = next(
+        (
+            section
+            for section in template.get("sections") or []
+            if str(section.get("heading_level") or "").casefold() == "h1"
+        ),
+        None,
+    )
+    section_name = str((h1_section or {}).get("name") or "")
+    text = str(section_results.get(section_name) or "")
+    if not section_name or not text.strip():
+        return section_results, False
+
+    lines = text.splitlines()
+    first_content_index = next(
+        (index for index, line in enumerate(lines) if line.strip()),
+        None,
+    )
+    if first_content_index is None:
+        return section_results, False
+
+    first_content_line = lines[first_content_index]
+    heading_match = re.match(
+        r"^\s*(#{1,3})\s+(.+?)\s*$",
+        first_content_line,
+    )
+    if (
+        heading_match
+        and heading_match.group(1) == "#"
+        and heading_match.group(2).strip() == canonical_h1
+    ):
+        return section_results, False
+
+    if heading_match:
+        lines[first_content_index] = f"# {canonical_h1}"
+    else:
+        lines.insert(first_content_index, f"# {canonical_h1}")
+
+    updated = dict(section_results)
+    updated[section_name] = "\n".join(lines)
+    return updated, True
 
 
 def _add_h1_alignment_flag(flags: list[dict], optimised_h1: str, section_results: dict):
@@ -694,6 +1038,133 @@ def _add_exclamation_flags(flags: list[dict], outputs: list[tuple[str, str]]):
                 "!",
                 severity="review",
             )
+
+
+def _without_exact_source_asset_phrases(
+    text: str,
+    strategy_brief: dict | None,
+    *,
+    section_name: str = "",
+) -> str:
+    value = str(text or "")
+    validated_sections = _validated_source_asset_section_names(
+        strategy_brief
+    )
+    requested_section = str(section_name or "").strip().casefold()
+    section_names = (
+        [requested_section]
+        if requested_section in validated_sections
+        else ([] if requested_section else sorted(validated_sections))
+    )
+    for source_section_name in section_names:
+        for phrase in sorted(
+            _source_asset_exact_phrases(
+                strategy_brief,
+                source_section_name,
+            ),
+            key=len,
+            reverse=True,
+        ):
+            value = value.replace(phrase, "", 1)
+    return value
+
+
+def _page_copy_without_materialized_source_units(
+    section_results: dict,
+    strategy_brief: dict | None,
+    forbidden_phrases: list[str] | None = None,
+) -> str:
+    """Return authored page text for repetition review, excluding exact inserts."""
+    sections = []
+    for section_name, text in (section_results or {}).items():
+        if str(section_name).startswith("_"):
+            continue
+        authored_text = str(text or "")
+        for item in _structured_source_asset_render_plan(
+            strategy_brief,
+            str(section_name),
+            forbidden_phrases or [],
+        ):
+            rendered = str(item.get("rendered") or "")
+            if rendered:
+                authored_text = authored_text.replace(rendered, "", 1)
+        sections.append(authored_text)
+    return "\n\n".join(sections)
+
+
+def _structured_source_duplicate_findings(
+    section_results: dict,
+    strategy_brief: dict | None,
+    forbidden_phrases: list[str] | None = None,
+) -> list[dict]:
+    """Find exact structured-source phrases repeated outside canonical units."""
+    findings = []
+    for section_name, text in (section_results or {}).items():
+        if str(section_name).startswith("_"):
+            continue
+        remainder = str(text or "")
+        materialized_items = []
+        for item in _structured_source_asset_render_plan(
+            strategy_brief,
+            str(section_name),
+            forbidden_phrases or [],
+        ):
+            rendered = str(item.get("rendered") or "")
+            if not rendered or rendered not in remainder:
+                continue
+            remainder = remainder.replace(rendered, "", 1)
+            materialized_items.append(item)
+
+        duplicate_phrases = []
+        asset_ids = []
+        for item in materialized_items:
+            phrases = (
+                item.get("items") or []
+                if item.get("kind") == "named_list"
+                else [item.get("quote"), item.get("attribution")]
+            )
+            item_has_duplicate = False
+            for phrase in phrases:
+                exact_phrase = str(phrase or "").strip()
+                is_named_list_item = item.get("kind") == "named_list"
+                is_single_word_list_item = bool(
+                    is_named_list_item
+                    and len(re.findall(r"[^\W_]+", exact_phrase, re.UNICODE)) == 1
+                )
+                duplicate_present = bool(
+                    exact_phrase
+                    and (
+                        re.search(
+                            (
+                                r"(?m)^[ \t]*(?:[-+*]|\d+[.)])[ \t]+"
+                                + re.escape(exact_phrase)
+                                + r"[ \t]*$"
+                            ),
+                            remainder,
+                        )
+                        if is_single_word_list_item
+                        else exact_phrase in remainder
+                    )
+                )
+                if duplicate_present:
+                    duplicate_phrases.append(exact_phrase)
+                    item_has_duplicate = True
+            if item_has_duplicate:
+                asset_ids.append(str(item.get("asset_id") or ""))
+
+        if duplicate_phrases:
+            findings.append({
+                "section": str(section_name),
+                "asset_ids": list(dict.fromkeys(
+                    asset_id
+                    for asset_id in asset_ids
+                    if asset_id
+                )),
+                "duplicate_phrases": list(dict.fromkeys(
+                    duplicate_phrases
+                )),
+            })
+    return findings
 
 
 def _add_b2b_consumer_cta_flags(
@@ -1023,6 +1494,640 @@ def _add_section_word_count_flags(flags: list[dict], section_results: dict, temp
             })
 
 
+def _first_markdown_heading(text: str) -> tuple[str, str] | None:
+    for line in str(text or "").splitlines():
+        if not line.strip():
+            continue
+        match = re.match(r"^\s*(#{1,3})\s+(.+?)\s*$", line)
+        if not match:
+            return None
+        return f"h{len(match.group(1))}", match.group(2).strip()
+    return None
+
+
+def _page_plan_contracts(strategy_brief: dict | None) -> dict[str, dict]:
+    brief = strategy_brief if isinstance(strategy_brief, dict) else {}
+    return {
+        str(item.get("section") or "").strip().casefold(): item
+        for item in brief.get("section_guidance") or []
+        if isinstance(item, dict) and str(item.get("section") or "").strip()
+    }
+
+
+_SOURCE_LIST_ITEM_RE = re.compile(r"^\s*[-+*]\s+(.+?)\s*$")
+_SOURCE_TESTIMONIAL_ATOMIC_GAP_CHARS = 40
+_SOURCE_TESTIMONIAL_FORMATTING_GAP_RE = re.compile(
+    r"""^[\s>*_~`|:;,'"\-–—]*$"""
+)
+
+
+def _normalise_exact_source_phrase(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def _exact_source_phrase_pattern(text: str) -> str:
+    parts = re.split(r"(\s+)", str(text or "").strip())
+    return "".join(
+        r"\s+" if part.isspace() else re.escape(part)
+        for part in parts
+        if part
+    )
+
+
+def _source_named_list_is_one_unit(text: str, items: list) -> bool:
+    required_items = [
+        _normalise_exact_source_phrase(item)
+        for item in items
+        if str(item or "").strip()
+    ]
+    if not required_items:
+        return True
+
+    runs = []
+    current_run = []
+    contiguous_runs = []
+    current_contiguous_run = []
+    for line in str(text or "").splitlines():
+        match = _SOURCE_LIST_ITEM_RE.match(line)
+        if match:
+            item = _normalise_exact_source_phrase(match.group(1))
+            current_run.append(item)
+            current_contiguous_run.append(item)
+            continue
+        if line.strip() and current_run:
+            runs.append(current_run)
+            current_run = []
+        if current_contiguous_run:
+            contiguous_runs.append(current_contiguous_run)
+            current_contiguous_run = []
+    if current_run:
+        runs.append(current_run)
+    if current_contiguous_run:
+        contiguous_runs.append(current_contiguous_run)
+
+    strict_matching_runs = [
+        run
+        for run in contiguous_runs
+        if run == required_items
+    ]
+    if strict_matching_runs:
+        return len(strict_matching_runs) == 1
+
+    loose_matching_runs = [
+        run
+        for run in runs
+        if run == required_items
+    ]
+    return len(loose_matching_runs) == 1
+
+
+def _source_testimonial_is_atomic(
+    text: str,
+    quote: str,
+    attribution: str,
+) -> bool:
+    source_text = str(text or "").replace("\r\n", "\n")
+    quote_pattern = _exact_source_phrase_pattern(quote)
+    attribution_pattern = _exact_source_phrase_pattern(attribution)
+    if not quote_pattern or not attribution_pattern:
+        return False
+
+    for quote_match in re.finditer(quote_pattern, source_text):
+        line_start = source_text.rfind("\n", 0, quote_match.start()) + 1
+        prefix = source_text[line_start:quote_match.start()]
+        if (
+            len(prefix) > _SOURCE_TESTIMONIAL_ATOMIC_GAP_CHARS
+            or not _SOURCE_TESTIMONIAL_FORMATTING_GAP_RE.fullmatch(prefix)
+        ):
+            continue
+        tail = source_text[quote_match.end():]
+        for attribution_match in re.finditer(attribution_pattern, tail):
+            gap = tail[:attribution_match.start()]
+            if len(gap) > _SOURCE_TESTIMONIAL_ATOMIC_GAP_CHARS:
+                break
+            attribution_end = quote_match.end() + attribution_match.end()
+            line_end = source_text.find("\n", attribution_end)
+            if line_end < 0:
+                line_end = len(source_text)
+            suffix = source_text[attribution_end:line_end]
+            if (
+                _SOURCE_TESTIMONIAL_FORMATTING_GAP_RE.fullmatch(gap)
+                and len(suffix) <= _SOURCE_TESTIMONIAL_ATOMIC_GAP_CHARS
+                and _SOURCE_TESTIMONIAL_FORMATTING_GAP_RE.fullmatch(
+                    suffix
+                )
+            ):
+                return True
+    return False
+
+
+def _add_page_plan_qa_flags(
+    flags: list[dict],
+    section_results: dict,
+    template: dict | None,
+    strategy_brief: dict | None,
+    page_quality_policy,
+    canonical_h1: str = "",
+    forbidden_phrases: list[str] | None = None,
+    page_copy_correction_enabled: bool = False,
+):
+    if not section_results or not template:
+        return
+    contracts = _page_plan_contracts(strategy_brief)
+    actual_headings: dict[str, dict] = {}
+    exact_headings_enabled = bool(
+        page_quality_policy
+        and page_quality_policy.exact_planned_headings
+    )
+    coverage_enabled = bool(
+        page_quality_policy
+        and page_quality_policy.coverage_points
+    )
+    source_asset_quality_enabled = bool(
+        (
+            strategy_brief.get("source_asset_manifest_version")
+            if isinstance(strategy_brief, dict)
+            else ""
+        )
+        == SOURCE_ASSET_MANIFEST_VERSION
+    )
+    raw_source_asset_diagnostics = (
+        (strategy_brief or {}).get("source_asset_mapping_diagnostics")
+        if isinstance(strategy_brief, dict)
+        else None
+    )
+    source_asset_diagnostics = (
+        raw_source_asset_diagnostics
+        if isinstance(raw_source_asset_diagnostics, dict)
+        else {}
+    )
+    validated_source_asset_sections = (
+        _validated_source_asset_section_names(strategy_brief)
+        if source_asset_quality_enabled
+        else set()
+    )
+    unassigned_source_asset_ids = [
+        str(value)
+        for value in source_asset_diagnostics.get(
+            "unassigned_asset_ids"
+        ) or []
+        if str(value)
+    ]
+    if (
+        source_asset_quality_enabled
+        and source_asset_diagnostics.get("active")
+        and unassigned_source_asset_ids
+    ):
+        flags.append({
+            "code": "page_source_assets_unassigned",
+            "message": (
+                "One or more owned-page source assets were not assigned to a "
+                "page section and need relevance review."
+            ),
+            "output": "page_copy",
+            "asset_ids": unassigned_source_asset_ids,
+            "severity": "review",
+        })
+
+    for section in template.get("sections") or []:
+        section_name = str(section.get("name") or "")
+        expected_level = str(section.get("heading_level") or "").casefold()
+        contract = contracts.get(section_name.casefold(), {})
+        planned_heading = str(contract.get("planned_heading") or "").strip()
+        actual = _first_markdown_heading(section_results.get(section_name, ""))
+
+        if exact_headings_enabled and expected_level == "h1":
+            if not actual:
+                flags.append({
+                    "code": "page_h1_missing",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" does not '
+                        "start with its required H1."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "severity": "review",
+                })
+            elif (
+                actual[0] == "h1"
+                and str(canonical_h1 or "").strip()
+                and actual[1] != str(canonical_h1).strip()
+            ):
+                flags.append({
+                    "code": "page_h1_canonical_mismatch",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" does not '
+                        "use its exact canonical H1."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "canonical_h1": str(canonical_h1).strip(),
+                    "actual_heading": actual[1],
+                    "severity": "review",
+                })
+
+        if exact_headings_enabled and expected_level in {"h2", "h3"}:
+            if not planned_heading:
+                flags.append({
+                    "code": "page_planned_heading_missing",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" has no '
+                        "accepted reader-facing heading plan."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "severity": "review",
+                })
+            elif not actual or actual[1] != planned_heading:
+                flags.append({
+                    "code": "page_heading_plan_mismatch",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" does not use '
+                        "its exact accepted planned heading."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "planned_heading": planned_heading,
+                    "actual_heading": actual[1] if actual else "",
+                    "severity": "review",
+                })
+
+        if exact_headings_enabled and actual:
+            actual_level, actual_heading = actual
+            if (
+                expected_level in {"h2", "h3"}
+                and (
+                    actual_heading.casefold() in _GENERIC_PAGE_HEADINGS
+                    or actual_heading.casefold()
+                    == str(section.get("label") or "").strip().casefold()
+                )
+            ):
+                flags.append({
+                    "code": "page_heading_generic",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" uses '
+                        "a generic reader-facing heading."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "actual_heading": actual_heading,
+                    "severity": "review",
+                })
+            heading_entry = actual_headings.setdefault(
+                actual_heading.casefold(),
+                {"heading": actual_heading, "sections": []},
+            )
+            heading_entry["sections"].append(section_name)
+            if expected_level in {"h1", "h2", "h3"} and actual_level != expected_level:
+                flags.append({
+                    "code": "page_heading_hierarchy",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" starts with '
+                        f"{actual_level.upper()} instead of {expected_level.upper()}."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "expected_level": expected_level,
+                    "actual_level": actual_level,
+                    "severity": "review",
+                })
+            elif expected_level == "none":
+                flags.append({
+                    "code": "page_heading_hierarchy",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" adds '
+                        "a heading even though the template requires body copy only."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "expected_level": "none",
+                    "actual_level": actual_level,
+                    "severity": "review",
+                })
+
+        target = section.get("word_count") or []
+        text = str(section_results.get(section_name) or "")
+        source_asset_section_enabled = (
+            section_name.casefold() in validated_source_asset_sections
+        )
+        source_asset_conflicts = (
+            _source_asset_forbidden_conflicts(
+                strategy_brief,
+                section_name,
+                forbidden_phrases or [],
+            )
+            if source_asset_section_enabled
+            else []
+        )
+        conflicting_source_asset_ids = {
+            conflict["asset_id"]
+            for conflict in source_asset_conflicts
+            if conflict.get("asset_id")
+        }
+        conflicting_source_phrase_keys = {
+            str(conflict.get("source_phrase") or "").strip().casefold()
+            for conflict in source_asset_conflicts
+            if str(conflict.get("source_phrase") or "").strip()
+        }
+        if source_asset_conflicts:
+            flags.append({
+                "code": "page_source_asset_forbidden_conflict",
+                "message": (
+                    f'Section "{section.get("label", section_name)}" has '
+                    "assigned exact source material that was deferred because "
+                    "it conflicts with a configured forbidden phrase."
+                ),
+                "output": "page_copy",
+                "section": section_name,
+                "asset_ids": sorted(conflicting_source_asset_ids),
+                "forbidden_phrases": list(dict.fromkeys(
+                    str(conflict.get("forbidden_phrase") or "").strip()
+                    for conflict in source_asset_conflicts
+                    if str(conflict.get("forbidden_phrase") or "").strip()
+                )),
+                "severity": "review",
+            })
+        required_named_items = []
+        seen_required_items = set()
+        raw_required_items = contract.get("required_named_items") or []
+        if source_asset_quality_enabled and not source_asset_section_enabled:
+            raw_required_items = []
+        elif not source_asset_section_enabled:
+            raw_required_items = raw_required_items[:12]
+        for value in raw_required_items:
+            required_item = str(value or "").strip()
+            if required_item.casefold() in conflicting_source_phrase_keys:
+                continue
+            if not source_asset_section_enabled:
+                required_item = required_item[:160]
+            required_key = required_item.casefold()
+            if required_item and required_key not in seen_required_items:
+                seen_required_items.add(required_key)
+                required_named_items.append(required_item)
+        missing_named_items = [
+            required_item
+            for required_item in required_named_items
+            if not _contains_forbidden_phrase(
+                _normalise_phrase(text),
+                _normalise_phrase(required_item),
+            )
+        ]
+        if text.strip() and missing_named_items:
+            flags.append({
+                "code": "page_required_source_item_missing",
+                "message": (
+                    f'Section "{section.get("label", section_name)}" omits '
+                    "one or more required names or source paths."
+                ),
+                "output": "page_copy",
+                "section": section_name,
+                "missing_items": missing_named_items,
+                "severity": "review",
+            })
+        if source_asset_section_enabled and text.strip():
+            missing_testimonials = []
+            unpreserved_source_lists = []
+            source_statements_needing_review = []
+            normalized_text = _normalise_phrase(text)
+            for asset in contract.get("source_assets") or []:
+                if not isinstance(asset, dict):
+                    continue
+                if (
+                    str(asset.get("id") or "")
+                    in conflicting_source_asset_ids
+                ):
+                    continue
+                if asset.get("kind") == "direct_statement":
+                    statement = str(asset.get("statement") or "").strip()
+                    if statement and not _contains_forbidden_phrase(
+                        normalized_text,
+                        _normalise_phrase(statement),
+                    ):
+                        source_statements_needing_review.append(
+                            str(asset.get("id") or "").strip()
+                        )
+                    continue
+                if asset.get("kind") == "named_list":
+                    if not _source_named_list_is_one_unit(
+                        text,
+                        asset.get("items") or [],
+                    ):
+                        unpreserved_source_lists.append(
+                            str(asset.get("id") or "").strip()
+                        )
+                    continue
+                if asset.get("kind") != "testimonial":
+                    continue
+                asset_id = str(asset.get("id") or "").strip()
+                missing_components = []
+                for component, value in (
+                    ("quote", asset.get("quote")),
+                    ("attribution", asset.get("attribution")),
+                ):
+                    exact_value = str(value or "").strip()
+                    if exact_value and not _contains_forbidden_phrase(
+                        normalized_text,
+                        _normalise_phrase(exact_value),
+                    ):
+                        missing_components.append(component)
+                if (
+                    not missing_components
+                    and not _source_testimonial_is_atomic(
+                        text,
+                        str(asset.get("quote") or ""),
+                        str(asset.get("attribution") or ""),
+                    )
+                ):
+                    missing_components.append("atomic_pair")
+                if missing_components:
+                    missing_testimonials.append({
+                        "asset_id": asset_id,
+                        "missing_components": missing_components,
+                    })
+            if missing_testimonials:
+                flags.append({
+                    "code": "page_required_testimonial_missing",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" omits '
+                        "or changes an assigned testimonial quote or attribution."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "missing_testimonials": missing_testimonials,
+                    "severity": "review",
+                })
+            if unpreserved_source_lists:
+                flags.append({
+                    "code": "page_required_source_list_not_preserved",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" does '
+                        "not preserve an assigned named source list as one "
+                        "complete list."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "asset_ids": unpreserved_source_lists,
+                    "severity": "review",
+                })
+            if source_statements_needing_review:
+                flags.append({
+                    "code": (
+                        "page_source_statement_preservation_needs_review"
+                    ),
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" does '
+                        "not preserve one or more assigned direct source "
+                        "statements verbatim. Review whether each supported "
+                        "proposition remains intact without added claims."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "asset_ids": source_statements_needing_review,
+                    "severity": "review",
+                })
+        if coverage_enabled and text.strip() and len(target) == 2:
+            target_min = int(target[0])
+            actual_words = _word_count_for_qa(text)
+            if source_asset_quality_enabled:
+                target_midpoint = (
+                    int(target[0]) + int(target[1])
+                ) // 2
+                planned_depth_threshold = (
+                    target_min
+                    if page_copy_correction_enabled
+                    else int(target_midpoint * 0.85)
+                )
+            else:
+                target_midpoint = None
+                planned_depth_threshold = int(target_min * 0.8)
+            if actual_words < planned_depth_threshold:
+                depth_target_label = (
+                    "planned minimum depth"
+                    if page_copy_correction_enabled
+                    else "planned depth review threshold"
+                )
+                flags.append({
+                    "code": "page_section_below_planned_depth",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" is '
+                        f"substantially below its {depth_target_label}."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "actual_words": actual_words,
+                    "target_min": target_min,
+                    **(
+                        {
+                            "target_midpoint": target_midpoint,
+                            "review_threshold": planned_depth_threshold,
+                        }
+                        if target_midpoint is not None
+                        else {}
+                    ),
+                    "severity": "review",
+                })
+
+    for heading_entry in (
+        actual_headings.values()
+        if exact_headings_enabled
+        else []
+    ):
+        heading = heading_entry["heading"]
+        section_names = heading_entry["sections"]
+        if heading and len(section_names) > 1:
+            flags.append({
+                "code": "page_heading_duplicate",
+                "message": f'The heading "{heading}" is repeated across page sections.',
+                "output": "page_copy",
+                "sections": section_names,
+                "severity": "review",
+            })
+
+
+def _build_page_quality_diagnostics(
+    *,
+    strategy_brief: dict | None,
+    template: dict | None,
+    section_results: dict,
+    page_quality: dict,
+) -> dict:
+    plan = page_plan_diagnostics(
+        strategy_brief,
+        (template or {}).get("sections", []),
+    )
+    contracts = _page_plan_contracts(strategy_brief)
+    sections = []
+    findings = list(plan.get("findings") or [])
+
+    for section in (template or {}).get("sections") or []:
+        section_name = str(section.get("name") or "")
+        contract = contracts.get(section_name.casefold(), {})
+        actual = _first_markdown_heading(section_results.get(section_name, ""))
+        expected_level = str(section.get("heading_level") or "").casefold()
+        actual_heading = actual[1] if actual else ""
+        if expected_level in {"h2", "h3"} and not actual_heading:
+            findings.append({
+                "code": "actual_heading_not_reliably_parsed",
+                "section": section_name,
+                "message": "No leading Markdown heading could be parsed reliably.",
+            })
+        elif actual_heading and (
+            actual_heading.casefold()
+            == str(section.get("label") or "").strip().casefold()
+            or actual_heading.casefold() in _GENERIC_PAGE_HEADINGS
+        ):
+            findings.append({
+                "code": "actual_heading_generic",
+                "section": section_name,
+                "message": "The generated heading is generic or repeats the internal template label.",
+            })
+        sections.append({
+            "section": section_name,
+            "section_label": section.get("label") or section_name,
+            "expected_heading_level": expected_level,
+            "planned_heading": contract.get("planned_heading") or "",
+            "actual_heading": actual_heading,
+            "actual_heading_level": actual[0] if actual else "",
+            "coverage_points": list(contract.get("coverage_points") or []),
+            "depth_policy": contract.get("depth_policy") or section.get("depth_policy") or "",
+            "owned_block_ids": list(contract.get("owned_block_ids") or []),
+            "source_asset_ids": list(contract.get("source_asset_ids") or []),
+            "retain_points": list(contract.get("retain_points") or []),
+            "improve_points": list(contract.get("improve_points") or []),
+            "actual_words": _word_count_for_qa(
+                str(section_results.get(section_name) or "")
+            ),
+            "planned_word_range": list(section.get("word_count") or []),
+        })
+
+    guidance = page_quality.get("guidance")
+    return {
+        "page_quality_policy_version": page_quality["page_quality_policy_version"],
+        "adaptive_policy_version": page_quality["adaptive_policy_version"],
+        "owned_page_mapping_version": page_quality["owned_page_mapping_version"],
+        "source_asset_manifest_version": page_quality.get(
+            "source_asset_manifest_version",
+            "",
+        ),
+        "guidance_profile": (
+            {
+                "id": guidance.id,
+                "label": guidance.label,
+                "version": guidance.version,
+            }
+            if guidance
+            else None
+        ),
+        "summary": {
+            key: value
+            for key, value in plan.items()
+            if key not in {"findings"}
+        },
+        "sections": sections,
+        "findings": findings,
+    }
+
+
 def _template_for_page_copy(template: dict, separate_faq_output_enabled: bool) -> dict:
     page_template = deepcopy(template)
     if not separate_faq_output_enabled:
@@ -1286,6 +2391,9 @@ def _collect_qa_flags(
     brand_name: str = "",
     business_type: str = "general",
     page_type: str = "general",
+    strategy_brief: dict | None = None,
+    page_quality_policy_version: str = "",
+    page_copy_correction_enabled: bool = False,
 ) -> list[dict]:
     flags = []
 
@@ -1314,15 +2422,100 @@ def _collect_qa_flags(
     if gen_page_copy and not page_copy_text.strip():
         _add_qa_flag(flags, "page_copy_missing", "Page copy was requested but no page sections were generated.", "page_copy")
     elif gen_page_copy:
+        if (
+            page_copy_correction_enabled
+            and re.search(
+                r"\[\[[ \t]*COPYPILOT_SOURCE_",
+                page_copy_text,
+                re.IGNORECASE,
+            )
+        ):
+            _add_qa_flag(
+                flags,
+                "internal_source_marker",
+                "An internal source-placement marker remains in page copy.",
+                "page_copy",
+                severity="review",
+            )
+        if page_copy_correction_enabled:
+            for finding in _structured_source_duplicate_findings(
+                section_results,
+                strategy_brief,
+                forbidden_phrases,
+            ):
+                flags.append({
+                    "code": "page_structured_source_duplicate",
+                    "message": (
+                        f'Section "{finding["section"]}" repeats exact '
+                        "source wording outside its canonical source unit."
+                    ),
+                    "output": "page_copy",
+                    "section": finding["section"],
+                    "asset_ids": finding["asset_ids"],
+                    "duplicate_phrases": finding["duplicate_phrases"],
+                    "severity": "review",
+                })
         _add_section_word_count_flags(flags, section_results, template)
-        _add_repeated_phrase_flags(flags, page_copy_text)
+        page_quality_policy = (
+            get_page_quality_policy(page_quality_policy_version)
+            if page_quality_policy_version
+            else None
+        )
+        if page_quality_policy:
+            _add_page_plan_qa_flags(
+                flags,
+                section_results,
+                template,
+                strategy_brief,
+                page_quality_policy,
+                canonical_h1=optimised_h1 or input_h1,
+                forbidden_phrases=forbidden_phrases,
+                page_copy_correction_enabled=page_copy_correction_enabled,
+            )
+            planned_depth_sections = {
+                str(flag.get("section") or "")
+                for flag in flags
+                if flag.get("code") == "page_section_below_planned_depth"
+            }
+            flags[:] = [
+                flag
+                for flag in flags
+                if not (
+                    flag.get("code") == "section_word_count_below_target"
+                    and str(flag.get("section") or "") in planned_depth_sections
+                )
+            ]
+        authored_page_copy_text = (
+            _page_copy_without_materialized_source_units(
+                section_results,
+                strategy_brief,
+                forbidden_phrases,
+            )
+            if page_quality_policy and page_copy_correction_enabled
+            else page_copy_text
+        )
+        _add_repeated_phrase_flags(flags, authored_page_copy_text)
 
     if gen_meta:
-        _add_generic_opener_flags(flags, generated_description or "", section_results if gen_page_copy else {})
+        _add_generic_opener_flags(
+            flags,
+            generated_description or "",
+            section_results if gen_page_copy else {},
+            strategy_brief,
+        )
     elif gen_page_copy:
-        _add_generic_opener_flags(flags, "", section_results)
+        _add_generic_opener_flags(
+            flags,
+            "",
+            section_results,
+            strategy_brief,
+        )
     if gen_page_copy:
-        _add_generic_page_reference_flags(flags, section_results)
+        _add_generic_page_reference_flags(
+            flags,
+            section_results,
+            strategy_brief,
+        )
 
     if gen_meta and gen_page_copy:
         _add_h1_alignment_flag(flags, optimised_h1 or "", section_results)
@@ -1376,8 +2569,26 @@ def _collect_qa_flags(
         faq_items,
         section_results,
     )
-    _add_exclamation_flags(flags, outputs)
-    _add_b2b_consumer_cta_flags(flags, business_type, outputs)
+    authored_outputs = [
+        (
+            output,
+            (
+                _without_exact_source_asset_phrases(
+                    text,
+                    strategy_brief,
+                )
+                if output == "page_copy"
+                else text
+            ),
+        )
+        for output, text in outputs
+    ]
+    _add_exclamation_flags(flags, authored_outputs)
+    _add_b2b_consumer_cta_flags(
+        flags,
+        business_type,
+        authored_outputs,
+    )
 
     seen_matches = set()
     for output, text in outputs:
@@ -1414,6 +2625,7 @@ def _process_single_row(
     brand_profile: dict = None,
     gsc_auth_method: str = "disabled",
     scraper_override: str = "",
+    page_copy_correction_enabled: bool = True,
 ) -> dict:
     row_started_at = time.monotonic()
 
@@ -1435,6 +2647,28 @@ def _process_single_row(
     gen_faqs      = row.get("gen_faqs",      settings.get("gen_faqs",      True))
     row_num_faqs  = row.get("num_faqs")
     num_faqs      = int(settings.get("num_faqs", 5) if row_num_faqs is None else row_num_faqs)
+    page_quality = _stored_page_quality_context(
+        settings,
+        page_copy_requested=bool(gen_page_copy),
+    )
+    page_quality_enabled = bool(page_quality["enabled"])
+    page_quality_policy = page_quality["policy"]
+    page_copy_guidance = page_quality["guidance"]
+    page_copy_correction_active = _page_copy_correction_is_active(
+        page_quality,
+        requested=bool(
+            page_copy_correction_enabled
+            and gen_page_copy
+        ),
+    )
+    page_planning_enabled = bool(
+        page_quality_policy
+        and (
+            page_quality_policy.exact_planned_headings
+            or page_quality_policy.coverage_points
+            or page_quality_policy.bounded_owned_page_reuse
+        )
+    )
 
     dfs_login    = settings["dfs_login"]
     dfs_password = settings["dfs_password"]
@@ -1484,6 +2718,23 @@ def _process_single_row(
         "gsc_auth_method": gsc_auth_method,
         "page_type": page_type,
         "template_key": template_key,
+        "page_copy_quality": {
+            "enabled": page_quality_enabled,
+            "correction_enabled": page_copy_correction_active,
+            "page_quality_policy_version": page_quality["page_quality_policy_version"],
+            "adaptive_policy_version": page_quality["adaptive_policy_version"],
+            "owned_page_mapping_version": page_quality["owned_page_mapping_version"],
+            "source_asset_manifest_version": page_quality.get(
+                "source_asset_manifest_version",
+                "",
+            ),
+            "guidance_profile_id": (
+                page_copy_guidance.id if page_copy_guidance else ""
+            ),
+            "guidance_profile_version": (
+                page_copy_guidance.version if page_copy_guidance else ""
+            ),
+        },
         "generation_requested": {
             "meta": bool(gen_meta),
             "faqs": bool(gen_faqs),
@@ -1551,8 +2802,9 @@ def _process_single_row(
         dfs_ranked = get_ranked_keywords_for_url(url, dfs_login, dfs_password, location_code)
         run_diagnostics["input_signal_counts"]["dfs_ranked"] = len(dfs_ranked)
         step("DFS ranked: " + str(len(dfs_ranked)) + " keywords found")
-    except Exception as e:
-        step("⚠ DFS ranked failed: " + str(e)[:60])
+    except Exception as exc:
+        log_safe_exception(logger, "aio.keywords.ranked_failed", exc)
+        step("Ranked keyword data was unavailable; continuing.")
 
     # Optional GSC layer
     gsc_queries = []
@@ -1574,12 +2826,14 @@ def _process_single_row(
         step("fetching keyword volumes...")
         try:
             vol_map = get_search_volume(all_kws, dfs_login, dfs_password, location_code)
-        except Exception as e:
-            step("DataForSEO keyword volume failed: " + str(e)[:120])
+        except Exception as exc:
+            log_safe_exception(logger, "aio.keywords.volume_failed", exc)
+            step("Keyword volume data was unavailable; continuing.")
         try:
             diff_map = get_keyword_difficulty(all_kws, dfs_login, dfs_password, location_code)
-        except Exception as e:
-            step("DataForSEO keyword difficulty failed: " + str(e)[:120])
+        except Exception as exc:
+            log_safe_exception(logger, "aio.keywords.difficulty_failed", exc)
+            step("Keyword difficulty data was unavailable; continuing.")
 
     pool   = merge_keyword_pools(gsc_queries, dfs_ranked, manual_kws, vol_map, diff_map)
     run_diagnostics["input_signal_counts"]["keyword_pool"] = len(pool)
@@ -1651,7 +2905,12 @@ def _process_single_row(
     try:
         serp_data       = get_serp_data(dfs_login, dfs_password, primary_keyword, location_code)
         if serp_data.get("error"):
-            step("DataForSEO SERP failed: " + str(serp_data["error"])[:120])
+            log_safe_external_failure(
+                logger,
+                "aio.serp.failed",
+                serp_data.get("error"),
+            )
+            step("Search-result data was unavailable; continuing.")
         paa_questions   = serp_data.get("paa_items") or serp_data.get("paa") or []
         ai_overview_sections = serp_data.get("ai_overview_sections") or []
         ai_overview     = serp_data.get("ai_overview_raw") or serp_data.get("ai_overview") or ""
@@ -1660,8 +2919,9 @@ def _process_single_row(
         run_diagnostics["input_signal_counts"]["ai_overview_sections"] = len(ai_overview_sections)
         run_diagnostics["input_signal_counts"]["serp_organic"] = len(organic_results)
         step("SERP: " + ("AIO ✓" if ai_overview else "AIO ✗") + ", PAA: " + str(len(paa_questions)) + ", organic: " + str(len(organic_results)))
-    except Exception as e:
-        step("⚠ SERP failed: " + str(e)[:60])
+    except Exception as exc:
+        log_safe_exception(logger, "aio.serp.failed", exc)
+        step("Search-result data was unavailable; continuing.")
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 3 — Owned-page context (shared by strategy and every output)
@@ -1669,6 +2929,8 @@ def _process_single_row(
     page_context = ""
     scraped_page_content = ""
     owned_page_scrape = {}
+    owned_page_registry = None
+    source_asset_manifest = None
     if gen_faqs or gen_meta or gen_page_copy:
         if settings.get("scrape_pages", True) and _owned_page_scraper_available(settings, scraper_override):
             step("scraping page context...")
@@ -1696,23 +2958,76 @@ def _process_single_row(
                     run_diagnostics["input_signal_counts"]["scraped_page_chars"] = len(scraped_page_content)
                     step("page context: " + str(len(page_context)) + " chars")
                 else:
-                    scrape_error = scrape_result.get("error") or "Page scraping failed."
-                    run_diagnostics["scrape"]["page_context_error"] = scrape_error
-                    step("owned-page scrape unavailable: " + scrape_error[:60])
-            except Exception as error:
+                    log_safe_external_failure(
+                        logger,
+                        "aio.scrape.owned_page_failed",
+                        scrape_result.get("error"),
+                    )
+                    run_diagnostics["scrape"]["page_context_error"] = (
+                        _OWNED_PAGE_CONTEXT_ERROR
+                    )
+                    scrape_result["error"] = _OWNED_PAGE_CONTEXT_ERROR
+                    step("Owned-page context was unavailable; continuing without it.")
+            except Exception as exc:
+                log_safe_exception(
+                    logger,
+                    "aio.scrape.owned_page_failed",
+                    exc,
+                )
                 owned_page_scrape = {
                     "success": False,
-                    "error": str(error),
+                    "error": _OWNED_PAGE_CONTEXT_ERROR,
                     "source": "",
                     "requested_provider": settings.get("scrape_provider", "jina"),
                     "mode": "ecommerce_collection" if is_ecommerce_collection_page(business_type, page_type) else "default",
                 }
-                run_diagnostics["scrape"]["page_context_error"] = str(error)
-                step("owned-page scrape unavailable: " + str(error)[:60])
+                run_diagnostics["scrape"]["page_context_error"] = (
+                    _OWNED_PAGE_CONTEXT_ERROR
+                )
+                step("Owned-page context was unavailable; continuing without it.")
 
         if client_brief:
             page_context = (page_context + "\n\n" + client_brief).strip()
         run_diagnostics["input_signal_counts"]["page_context_chars"] = len(page_context)
+        if (
+            page_quality_policy
+            and page_quality_policy.bounded_owned_page_reuse
+        ):
+            owned_page_registry = build_owned_page_registry(
+                scraped_page_content,
+                mapping_version=page_quality["owned_page_mapping_version"],
+            )
+            run_diagnostics["owned_page_mapping"] = {
+                "version": owned_page_registry["version"],
+                "registry_block_count": len(owned_page_registry["blocks"]),
+                "source_char_count": owned_page_registry["source_char_count"],
+                "retained_char_count": owned_page_registry["retained_char_count"],
+                "truncated": owned_page_registry["truncated"],
+            }
+            source_asset_version = page_quality.get(
+                "source_asset_manifest_version",
+                "",
+            )
+            if source_asset_version:
+                source_asset_manifest = build_source_asset_manifest(
+                    owned_page_registry,
+                    manifest_version=source_asset_version,
+                )
+                manifest_diagnostics = source_asset_manifest["diagnostics"]
+                run_diagnostics["source_asset_manifest"] = {
+                    "version": source_asset_manifest["version"],
+                    "manifest_hash": source_asset_manifest["manifest_hash"],
+                    "asset_count": manifest_diagnostics["asset_count"],
+                    "source_truncated": manifest_diagnostics[
+                        "source_truncated"
+                    ],
+                    "registry_truncated": manifest_diagnostics[
+                        "registry_truncated"
+                    ],
+                    "structured_assets_suppressed": manifest_diagnostics[
+                        "structured_assets_suppressed"
+                    ],
+                }
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 4 — Competitor scraping (for page copy)
@@ -1769,8 +3084,9 @@ def _process_single_row(
                 if top:
                     competitor_section_map = map_competitor_sections(top, template["sections"])
                 step("competitors: " + str(len(competitor_urls_used)) + " scraped")
-            except Exception as e:
-                step("⚠ competitor scrape failed: " + str(e)[:60])
+            except Exception as exc:
+                log_safe_exception(logger, "aio.scrape.competitor_failed", exc)
+                step("Competitor evidence was unavailable; continuing.")
         else:
             step("competitors unavailable: no organic results")
 
@@ -1813,7 +3129,22 @@ def _process_single_row(
                 competitor_section_map=competitor_section_map,
                 template_sections=(template or {}).get("sections", []),
                 required_outputs=required_strategy_outputs,
+                enable_page_planning=page_planning_enabled,
+                owned_page_registry=owned_page_registry,
+                source_asset_manifest=source_asset_manifest,
+                page_quality_policy=page_quality_policy,
+                page_copy_correction_enabled=page_copy_correction_active,
             )
+            if page_quality_enabled:
+                strategy_brief = attach_depth_policies(
+                    strategy_brief,
+                    (
+                        ""
+                        if settings.get("custom_template_text", "").strip()
+                        else resolved_template_key
+                    ),
+                    page_quality["adaptive_policy_version"],
+                )
             strategy_issues = strategy_brief_issues(
                 strategy_brief,
                 (template or {}).get("sections", []),
@@ -1821,18 +3152,28 @@ def _process_single_row(
             )
             strategy_status = "ready" if not strategy_issues else "needs_review"
             step("strategy brief ready" if not strategy_issues else "strategy brief needs review")
-        except Exception as e:
+        except Exception as exc:
+            log_safe_exception(logger, "aio.strategy.failed", exc)
             strategy_brief = {}
             strategy_status = "unavailable"
-            strategy_issues = [str(e)[:160] or "Strategy generation failed."]
-            step("strategy brief unavailable: " + str(e)[:60])
+            strategy_issues = [_STRATEGY_BRIEF_ERROR]
+            step("Strategy brief was unavailable; continuing.")
 
     if gen_page_copy and template:
         adaptive_key = "" if settings.get("custom_template_text", "").strip() else resolved_template_key
-        template, adaptive_section_plan = adapt_template_for_generation(
+        template, adaptive_section_plan = _adapt_page_template_for_generation(
             template,
             adaptive_key,
             strategy_brief,
+            adaptive_policy_version=(
+                page_quality["adaptive_policy_version"]
+                if page_quality_enabled
+                else ""
+            ),
+            source_asset_manifest_version=page_quality.get(
+                "source_asset_manifest_version",
+                "",
+            ),
         )
         adaptive_template_family = str(template.get("_adaptive_family") or "")
         adaptive_mode_counts = {
@@ -1891,8 +3232,9 @@ def _process_single_row(
             if not h1 and optimised_h1:
                 h1 = optimised_h1
             step("✓ meta — title: " + str(len(generated_title or "")) + " chars, desc: " + str(len(generated_description or "")) + " chars")
-        except Exception as e:
-            step("⚠ meta failed: " + str(e)[:60])
+        except Exception as exc:
+            log_safe_exception(logger, "aio.meta.failed", exc)
+            step("Meta copy could not be generated; continuing with other requested outputs.")
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 6 — Generate FAQs
@@ -1948,8 +3290,9 @@ def _process_single_row(
             faq_schema, faq_script = _build_faq_schema(faq_items)
             run_diagnostics["output_counts"]["faq_items"] = len(faq_items)
 
-        except Exception as e:
-            step("⚠ FAQs failed: " + str(e)[:60])
+        except Exception as exc:
+            log_safe_exception(logger, "aio.faq.failed", exc)
+            step("FAQs could not be generated; continuing with other requested outputs.")
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 7 — Generate full page copy
@@ -1957,6 +3300,14 @@ def _process_single_row(
     section_results = {}
     full_page       = ""
     word_count      = 0
+    page_copy_canonical_h1 = (
+        (optimised_h1 or h1)
+        if (
+            page_quality_policy
+            and page_quality_policy.exact_planned_headings
+        )
+        else h1
+    )
 
     if gen_page_copy and template:
         step("generating page copy (" + str(len(template["sections"])) + " sections)...")
@@ -1997,7 +3348,7 @@ def _process_single_row(
                 lsi_keywords=lsi_map,
                 business_type=business_type,
                 brand_name=brand_name,
-                h1=h1,
+                h1=page_copy_canonical_h1,
                 page_type=page_type,
                 paa_questions=paa_questions,
                 ai_overview=ai_overview,
@@ -2011,33 +3362,79 @@ def _process_single_row(
                 progress_callback=on_section,
                 strategy_brief=strategy_brief,
                 brand_style_context=brand_style_context if evidence_contract_ready else "",
+                page_copy_guidance=page_copy_guidance,
+                page_quality_policy=page_quality_policy,
+                page_copy_correction_enabled=page_copy_correction_active,
             )
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
             if resolved_template_key == "collection_page":
                 section_results = {
-                    name: normalise_collection_references(text, primary_keyword or h1)
+                    name: normalise_collection_references(
+                        text,
+                        primary_keyword or h1,
+                        protected_exact_phrases=(
+                            _source_asset_exact_phrases(
+                                strategy_brief,
+                                name,
+                            )
+                        ),
+                    )
                     for name, text in section_results.items()
                 }
             full_page       = page_result.get("_full_page", "")
             word_count      = page_result.get("_word_count", 0)
-            section_results, h1_replaced = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+            if (
+                page_quality_policy
+                and page_quality_policy.exact_planned_headings
+            ):
+                section_results, h1_replaced = _enforce_v1_canonical_page_h1(
+                    section_results,
+                    template,
+                    page_copy_canonical_h1,
+                )
+            else:
+                section_results, h1_replaced = _enforce_canonical_page_h1(
+                    section_results,
+                    optimised_h1 or "",
+                )
             if h1_replaced:
                 full_page = _assemble_full_page_copy(section_results, template)
                 word_count = len(full_page.split())
-                step("page copy H1 aligned to meta H1")
+                step(
+                    "page copy H1 aligned to canonical H1"
+                    if (
+                        page_quality_policy
+                        and page_quality_policy.exact_planned_headings
+                    )
+                    else "page copy H1 aligned to meta H1"
+                )
             run_diagnostics["output_counts"]["sections"] = len(section_results)
             run_diagnostics["output_counts"]["word_count"] = word_count
             step("✓ page copy: " + str(word_count) + " words")
         except InterruptedError:
             raise
-        except Exception as e:
-            step("⚠ page copy failed: " + str(e)[:80])
+        except Exception as exc:
+            log_safe_exception(logger, "aio.page_copy.failed", exc)
+            step("Page copy could not be generated; continuing with other requested outputs.")
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 8 — Finalise generated output
     # ─────────────────────────────────────────────────────────────────────
     if gen_page_copy and section_results:
-        section_results, _ = _enforce_canonical_page_h1(section_results, optimised_h1 or "")
+        if (
+            page_quality_policy
+            and page_quality_policy.exact_planned_headings
+        ):
+            section_results, _ = _enforce_v1_canonical_page_h1(
+                section_results,
+                template,
+                page_copy_canonical_h1,
+            )
+        else:
+            section_results, _ = _enforce_canonical_page_h1(
+                section_results,
+                optimised_h1 or "",
+            )
         full_page = _assemble_full_page_copy(section_results, template)
         word_count = len(full_page.split())
 
@@ -2069,11 +3466,13 @@ def _process_single_row(
             gen_faqs=gen_faqs,
             gen_page_copy=gen_page_copy,
             keyword_assignment=kw_assignment,
+            page_quality_policy_version=page_quality["page_quality_policy_version"],
         )
         docx_b64 = base64.b64encode(docx_bytes).decode("utf-8")
         step("✓ done")
-    except Exception as e:
-        step("⚠ docx failed: " + str(e)[:60])
+    except Exception as exc:
+        log_safe_exception(logger, "aio.docx.failed", exc)
+        step("DOCX export could not be built; generated results remain available.")
 
     stored_competitor_section_map = {
         section: [str(excerpt)[:500] for excerpt in excerpts[:3] if str(excerpt).strip()]
@@ -2098,8 +3497,21 @@ def _process_single_row(
         brand_name=brand_name,
         business_type=business_type,
         page_type=page_type,
+        strategy_brief=strategy_brief,
+        page_quality_policy_version=page_quality["page_quality_policy_version"],
+        page_copy_correction_enabled=page_copy_correction_active,
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
+    quality_diagnostics = (
+        _build_page_quality_diagnostics(
+            strategy_brief=strategy_brief,
+            template=template,
+            section_results=section_results,
+            page_quality=page_quality,
+        )
+        if page_quality_enabled
+        else None
+    )
 
     if owned_page_scrape.get("success"):
         source_labels = {
@@ -2148,6 +3560,22 @@ def _process_single_row(
         "strategy_brief":       strategy_brief,
         "strategy_status":      strategy_status,
         "strategy_issues":      strategy_issues,
+        "page_quality_policy_version": page_quality["page_quality_policy_version"] or None,
+        "adaptive_policy_version": page_quality["adaptive_policy_version"] or None,
+        "owned_page_mapping_version": page_quality["owned_page_mapping_version"] or None,
+        "source_asset_manifest_version": page_quality.get(
+            "source_asset_manifest_version"
+        ) or None,
+        "page_copy_guidance": (
+            {
+                "id": page_copy_guidance.id,
+                "label": page_copy_guidance.label,
+                "version": page_copy_guidance.version,
+            }
+            if page_copy_guidance
+            else None
+        ),
+        "quality_diagnostics": quality_diagnostics,
         "scrape_status":        scrape_status,
         "page_context_preview": scraped_page_content,
         "adaptive_template_family": adaptive_template_family,
@@ -2160,15 +3588,61 @@ def _process_single_row(
     }
 
 
+def _append_page_copy_markdown(
+    doc,
+    section: dict,
+    text: str,
+    *,
+    skip_heading_text: str = "",
+):
+    actual_heading = _first_markdown_heading(text)
+    heading_level = str(section.get("heading_level") or "").casefold()
+    if not actual_heading and heading_level in {"h1", "h2", "h3"}:
+        fallback_heading = (
+            str(section.get("planned_heading") or "").strip()
+            or str(section.get("label") or section.get("name") or "").strip()
+        )
+        if fallback_heading:
+            doc.add_heading(fallback_heading, level=int(heading_level[1]))
+
+    skipped_heading = False
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading_match = re.match(r"^(#{1,3})\s+(.+?)\s*$", line)
+        if heading_match:
+            heading_text = heading_match.group(2).strip()
+            if (
+                not skipped_heading
+                and skip_heading_text
+                and heading_text.casefold() == skip_heading_text.casefold()
+            ):
+                skipped_heading = True
+                continue
+            doc.add_heading(heading_text, level=len(heading_match.group(1)))
+        elif line.startswith(("- ", "* ")):
+            doc.add_paragraph(line[2:].strip(), style="List Bullet")
+        elif re.match(r"^\d+\.\s+", line):
+            doc.add_paragraph(
+                re.sub(r"^\d+\.\s+", "", line),
+                style="List Number",
+            )
+        else:
+            doc.add_paragraph(line)
+
+
 def _build_combined_docx(
     url, h1, primary_keyword, page_type, template,
     generated_title, generated_description, optimised_h1,
     faq_items, faq_schema, section_results, word_count, competitor_urls,
     gen_meta, gen_faqs, gen_page_copy,
     keyword_assignment=None,
+    page_quality_policy_version="",
 ):
     """Build a single docx with meta, FAQs, and page copy in one document."""
     keyword_assignment = keyword_assignment or {}
+    is_versioned_page_copy = bool(str(page_quality_policy_version or "").strip())
     if gen_page_copy and not gen_meta and not gen_faqs and template:
         return build_docx(
             url=url,
@@ -2191,7 +3665,8 @@ def _build_combined_docx(
     doc = Document()
 
     # Title
-    title_para = doc.add_heading(h1 or url, level=1)
+    canonical_document_h1 = (optimised_h1 or h1) if is_versioned_page_copy else h1
+    title_para = doc.add_heading(canonical_document_h1 or url, level=1)
 
     # Metadata table
     meta_table = doc.add_table(rows=1, cols=2)
@@ -2239,10 +3714,22 @@ def _build_combined_docx(
             sec_name = section["name"]
             text = section_results.get(sec_name, "")
             if text:
-                doc.add_heading(section["label"], level=3)
-                for para in text.split("\n\n"):
-                    if para.strip():
-                        doc.add_paragraph(para.strip())
+                if is_versioned_page_copy:
+                    _append_page_copy_markdown(
+                        doc,
+                        section,
+                        text,
+                        skip_heading_text=(
+                            canonical_document_h1
+                            if str(section.get("heading_level") or "").casefold() == "h1"
+                            else ""
+                        ),
+                    )
+                else:
+                    doc.add_heading(section["label"], level=3)
+                    for paragraph in text.split("\n\n"):
+                        if paragraph.strip():
+                            doc.add_paragraph(paragraph.strip())
         doc.add_paragraph("")
 
     # FAQs
@@ -2372,10 +3859,17 @@ def _process_job(
                 "results":      results,
             })
             return
-        except Exception as e:
+        except Exception as exc:
+            log_safe_exception(
+                logger,
+                "aio.row.failed",
+                exc,
+                job_id=job_id,
+                row=idx + 1,
+            )
             result = {
                 "url": url,
-                "error": str(e),
+                "error": _ROW_PROCESSING_ERROR,
                 "status": "error",
                 "word_count": 0,
                 "docx_b64": None,
@@ -2454,6 +3948,7 @@ class AIOSettings(BaseModel):
     gen_meta: bool = True
     gen_faqs: bool = True
     num_faqs: int = 5
+    page_copy_guidance_profile_id: str = ""
 
 
 class AIOJobRequest(BaseModel):
@@ -2472,8 +3967,16 @@ def run_aio_job(
     job_id = str(uuid.uuid4())
     enforce_job_start(sb, user.id, "all-in-one", len(request.rows), 50)
     enforce_rate_limit(sb, user.id, "all-in-one", "job-create", 10)
+    submitted_settings, _ = _new_job_page_quality_settings(
+        request.settings.model_dump(),
+        user.id,
+        page_copy_requested=any(
+            row.gen_page_copy and row.url.strip().startswith("http")
+            for row in request.rows
+        ),
+    )
     try:
-        runtime_settings = hydrate_job_settings(sb, user.id, request.settings.model_dump())
+        runtime_settings = hydrate_job_settings(sb, user.id, submitted_settings)
     except Exception:
         raise HTTPException(
             status_code=503,
@@ -2520,7 +4023,7 @@ def run_aio_job(
         "results":        [],
         "logs":           [],
         "rows":           [r.model_dump() for r in request.rows],
-        "settings":       strip_secret_fields(request.settings.model_dump()),
+        "settings":       strip_secret_fields(submitted_settings),
         "current_step":   "Queued...",
     }).execute(), "all-in-one")
 
@@ -2535,6 +4038,24 @@ def run_aio_job(
     )
 
     return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/page-copy-capabilities")
+def page_copy_capabilities(
+    response: Response,
+    user=Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    payload = guidance_capability_payload(
+        page_quality_creation_enabled(user.id)
+    )
+    payload["policy_versions"] = {
+        "page_quality": PAGE_QUALITY_POLICY_VERSION,
+        "adaptive": ADAPTIVE_POLICY_VERSION,
+        "owned_page_mapping": OWNED_PAGE_MAPPING_VERSION,
+        "source_asset_manifest": SOURCE_ASSET_MANIFEST_VERSION,
+    }
+    return payload
 
 
 @router.get("/templates")

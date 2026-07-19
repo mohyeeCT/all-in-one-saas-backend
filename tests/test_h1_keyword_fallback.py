@@ -322,6 +322,70 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(generate_faq.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
         self.assertEqual(generate_page.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
 
+    def test_new_versioned_page_copy_threads_correction_to_strategy(self):
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "brand_name": "Example",
+                    "business_type": "service",
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+        ranked = [{
+            "keyword": "industrial dosing systems",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        strategy_brief = {
+            "search_intent": "Commercial",
+            "page_goal": "Help readers evaluate the service.",
+            "primary_positioning": "Lead with supported dosing services.",
+            "headline_direction": "Use a direct service headline.",
+            "verified_facts": [],
+        }
+
+        with patch.object(
+            all_in_one,
+            "generate_strategy_brief",
+            return_value=strategy_brief,
+        ) as generate_strategy, patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={
+                "hero": "Industrial dosing systems "
+                + " ".join(["copy"] * 120),
+                "_full_page": "Industrial dosing systems "
+                + " ".join(["copy"] * 120),
+                "_word_count": 121,
+            },
+        ):
+            self._process(
+                {
+                    "url": "https://example.com/industrial-dosing",
+                    "keyword": "industrial dosing systems",
+                    "page_type": "service",
+                    "h1": "Industrial Dosing Systems",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        self.assertIs(
+            generate_strategy.call_args.kwargs[
+                "page_copy_correction_enabled"
+            ],
+            True,
+        )
+
     def test_page_copy_removes_template_faq_when_separate_faq_output_is_enabled(self):
         settings = {
             **_settings(),
