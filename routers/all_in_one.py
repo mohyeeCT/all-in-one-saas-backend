@@ -238,6 +238,7 @@ def _adapt_page_template_for_generation(
     adaptive_policy_version: str = "",
     source_asset_manifest_version: str = "",
     include_source_asset_instruction: bool = True,
+    correction_evidence_contract: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Keep validated editorial assets without changing adaptive evidence rules."""
     baseline_template, baseline_plan = adapt_template_for_generation(
@@ -245,6 +246,7 @@ def _adapt_page_template_for_generation(
         template_key,
         strategy_brief,
         adaptive_policy_version=adaptive_policy_version,
+        correction_evidence_contract=correction_evidence_contract,
     )
     if source_asset_manifest_version != SOURCE_ASSET_MANIFEST_VERSION:
         return baseline_template, baseline_plan
@@ -286,6 +288,7 @@ def _adapt_page_template_for_generation(
         template_key,
         planning_brief,
         adaptive_policy_version=adaptive_policy_version,
+        correction_evidence_contract=correction_evidence_contract,
     )
     for section in adapted_template.get("sections") or []:
         section_name = str(section.get("name") or "").strip().casefold()
@@ -3209,6 +3212,7 @@ def _process_single_row(
                 "source_asset_manifest_version",
                 "",
             ),
+            correction_evidence_contract=page_copy_correction_active,
         )
         adaptive_template_family = str(template.get("_adaptive_family") or "")
         adaptive_mode_counts = {

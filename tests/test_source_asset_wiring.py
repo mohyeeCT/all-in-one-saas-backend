@@ -204,13 +204,16 @@ def test_correction_only_strategy_prompt_requests_keyword_h2_and_asset_audit(
     correction_only_rules = (
         "exactly one appropriate H2 planned_heading",
         "verify every relevant source asset ID is assigned exactly once",
-        "same-heading direct statement",
-        "rebalance suitable assignments within the existing three-asset",
-        "A responsibility, guidance item, or coverage point may request a "
-        "factual topic only when that section owns its proof fact or source asset",
-        "Otherwise plan a concise evidence-neutral transition or withhold the "
-        "claim area",
-    )
+            "same-heading direct statement",
+            "rebalance suitable assignments within the existing three-asset",
+            "A responsibility, guidance item, or coverage point may request a "
+            "factual topic only when that section owns its proof fact or a "
+            "direct-statement source asset",
+            "A named-list or testimonial asset authorizes only neutral exact "
+            "preservation",
+            "Otherwise plan a concise evidence-neutral transition or withhold "
+            "the claim area",
+        )
     for rule in correction_only_rules:
         assert rule in correction_prompt
         assert rule not in non_correction_prompt
@@ -3419,6 +3422,369 @@ def test_page_copy_correction_treats_hidden_source_units_as_truth_constraints():
     assert marker_contradiction_rule not in legacy_prompt
     assert marker_omit_rule not in legacy_prompt
     assert "[[COPYPILOT_SOURCE_A1]]" not in legacy_prompt
+
+
+def test_page_copy_correction_uses_bounded_exact_recap_evidence_without_reassignment():
+    section = {
+        **_section("summary"),
+        "depth_policy": "explanatory",
+        "adaptive_mode": "compact",
+        "evidence_sparse": True,
+        "word_count": [0, 180],
+    }
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1", "A2"],
+            "unassigned_asset_ids": [],
+        },
+        "section_guidance": [
+            {
+                "section": "intro",
+                "responsibility": "Introduce the source-backed topic.",
+                "proof_points": ["Oversized model fact."],
+                "proof_facts": [{
+                    "fact": "Oversized model fact.",
+                    "source": "current_page",
+                    "source_excerpt": "X" * 401,
+                }],
+            },
+            {
+                "section": "body_1",
+                "responsibility": "Explain the first supported point.",
+                "proof_points": ["Model-expanded first fact."],
+                "proof_facts": [{
+                    "fact": "Model-expanded first fact.",
+                    "source": "current_page",
+                    "source_excerpt": "Exact source proposition one.",
+                }],
+            },
+            {
+                "section": "body_2",
+                "responsibility": "Explain the second supported point.",
+                "source_asset_ids": ["A1", "A2"],
+                "source_assets": [
+                    {
+                        "id": "A1",
+                        "kind": "direct_statement",
+                        "statement": "Exact direct source proposition two.",
+                    },
+                    {
+                        "id": "A2",
+                        "kind": "named_list",
+                        "items": ["Hidden recap list item"],
+                    },
+                ],
+            },
+            {
+                "section": "body_3",
+                "responsibility": "Explain the third supported point.",
+                "proof_points": ["Model-expanded third fact."],
+                "proof_facts": [{
+                    "fact": "Model-expanded third fact.",
+                    "source": "current_page",
+                    "source_excerpt": "Exact source proposition three.",
+                }],
+            },
+            {
+                "section": "summary",
+                "responsibility": "Summarize earlier supported points.",
+            },
+            {
+                "section": "faq",
+                "responsibility": "Answer a later question.",
+                "proof_points": ["Later model-expanded fact."],
+                "proof_facts": [{
+                    "fact": "Later model-expanded fact.",
+                    "source": "current_page",
+                    "source_excerpt": "Later FAQ evidence must not flow backward.",
+                }],
+            },
+        ],
+    }
+    original_strategy = deepcopy(strategy)
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    for exact_evidence in (
+        "Exact source proposition one.",
+        "Exact direct source proposition two.",
+        "Exact source proposition three.",
+    ):
+        assert exact_evidence in corrected_prompt
+        assert exact_evidence not in legacy_prompt
+    assert "Model-expanded first fact." not in corrected_prompt
+    assert "Model-expanded third fact." not in corrected_prompt
+    assert ("X" * 401) not in corrected_prompt
+    assert "Hidden recap list item" not in corrected_prompt
+    assert "Later FAQ evidence must not flow backward." not in corrected_prompt
+    assert "Server-approved recap evidence (restatement only):" in corrected_prompt
+    assert "the only earlier-section facts this recap may restate" in corrected_prompt
+    assert "supplier behavior, pricing, process, cause, or outcome" in corrected_prompt
+    assert (
+        "without re-summarising the page strategy or earlier sections"
+        not in corrected_prompt
+    )
+    assert "an explicit restatement exception for this summary only" in (
+        corrected_prompt
+    )
+    assert "same-section proof point or a server-approved recap ceiling" in (
+        corrected_prompt
+    )
+    assert (
+        "The server-approved recap ceilings are the only earlier claims this "
+        "summary may restate"
+        in corrected_prompt
+    )
+    assert "owned proof points or in one server-approved recap ceiling" in (
+        corrected_prompt
+    )
+    assert "assigned proof point explicitly supports it" not in corrected_prompt
+    assert "check the earlier page copy and avoid restating it" not in (
+        corrected_prompt
+    )
+    assert "Use them only when they appear in this section's owned proof points." not in (
+        corrected_prompt
+    )
+    assert strategy == original_strategy
+    assert strategy["source_asset_mapping_diagnostics"]["assigned_asset_ids"] == [
+        "A1",
+        "A2",
+    ]
+    summary_contract = next(
+        item
+        for item in strategy["section_guidance"]
+        if item["section"] == "summary"
+    )
+    assert "source_asset_ids" not in summary_contract
+    assert "proof_facts" not in summary_contract
+
+
+def test_evidence_bounded_sparse_prompt_keeps_owned_exact_evidence_without_expansion():
+    exact_excerpt = (
+        "Fullness is the additional fabric width pleated into the finished "
+        "curtain width."
+    )
+    direct_statement = (
+        "A flat curtain has zero percent fullness, while 100 percent fullness "
+        "uses twice the finished width before pleating."
+    )
+    unsupported_direction = (
+        "Explain supplier billing, estimator workflow, and budget outcomes."
+    )
+    section = {
+        **_section("body_3"),
+        "depth_policy": "explanatory",
+        "adaptive_mode": "compact",
+        "evidence_sparse": True,
+        "word_count": [0, 156],
+    }
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "body_3",
+            "responsibility": unsupported_direction,
+            "guidance": unsupported_direction,
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "direct_statement",
+                "statement": direct_statement,
+            }],
+        }],
+    }
+
+    prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    assert exact_excerpt in prompt
+    assert direct_statement in prompt
+    assert unsupported_direction not in prompt
+    assert "This section owns limited exact claim ceilings or direct-source" in (
+        prompt
+    )
+    assert "Do not omit that supported material" in prompt
+    assert "This section has no usable authored evidence" not in prompt
+    assert "No authored minimum applies" in prompt
+
+
+def test_page_copy_correction_removes_minimum_and_generic_direction_for_sparse_marker_faq():
+    appointment_items = [
+        "Free consultation",
+        "Monday to Friday, 8:00 AM to 5:00 PM",
+        "Saturday and Sunday appointments available upon request",
+    ]
+    unsupported_responsibility = (
+        "Explain how the intake team schedules every consultation."
+    )
+    unsupported_guidance = (
+        "Recommend confirming hours and describe the booking workflow."
+    )
+    unsupported_prior_copy = (
+        "UNSUPPORTED PRIOR COPY SENTINEL about an invented intake workflow."
+    )
+    section = {
+        **_section("faq"),
+        "keyword_slot": "lsi",
+        "depth_policy": "explanatory",
+        "adaptive_mode": "compact",
+        "evidence_sparse": True,
+        "word_count": [0, 119],
+    }
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "faq",
+            "responsibility": unsupported_responsibility,
+            "guidance": unsupported_guidance,
+            "planned_heading": "Consultation Hours and Coverage Questions",
+            "proof_points": ["The site information is general, not legal advice."],
+            "proof_facts": [{
+                "fact": "The site information is general, not legal advice.",
+                "source": "current_page",
+                "source_excerpt": (
+                    "The site information is general, not legal advice."
+                ),
+            }],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": appointment_items,
+            }],
+        }],
+    }
+
+    sparse_prompt = copy_gen._build_section_prompt(
+        **{
+            **_correction_prompt_kwargs(section, strategy),
+            "lsi_keywords": ["Houston consultation hours"],
+            "previous_section_text": unsupported_prior_copy,
+        },
+        page_copy_correction_enabled=True,
+    )
+    supported_prompt = copy_gen._build_section_prompt(
+        **{
+            **_correction_prompt_kwargs(
+                {
+                    **section,
+                    "adaptive_mode": "full",
+                    "evidence_sparse": False,
+                    "word_count": [360, 600],
+                },
+                strategy,
+                ),
+                "lsi_keywords": ["Houston consultation hours"],
+                "previous_section_text": unsupported_prior_copy,
+            },
+        page_copy_correction_enabled=True,
+    )
+
+    assert "No authored minimum applies" in sparse_prompt
+    assert "no more than 100 authored words" in sparse_prompt
+    assert "must reach at least" not in sparse_prompt
+    assert unsupported_responsibility not in sparse_prompt
+    assert unsupported_guidance not in sparse_prompt
+    assert unsupported_prior_copy not in sparse_prompt
+    assert "Houston consultation hours" in sparse_prompt
+    assert "## Consultation Hours and Coverage Questions" in sparse_prompt
+    assert sparse_prompt.count("[[COPYPILOT_SOURCE_A1]]") == 1
+    assert all(item not in sparse_prompt for item in appointment_items)
+    assert "Do not ask or answer a question whose answer depends on hidden marker content" in (
+        sparse_prompt
+    )
+    assert "Deliver about 461 authored words" in supported_prompt
+    assert unsupported_responsibility in supported_prompt
+    assert unsupported_guidance in supported_prompt
+    assert unsupported_prior_copy in supported_prompt
+
+
+def test_evidence_sparse_zero_minimum_is_not_flagged_below_depth_but_keeps_maximum():
+    section = {
+        **_section("services"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 60],
+    }
+    template = {"sections": [section]}
+    strategy = {
+        "section_guidance": [{
+            "section": "services",
+            "responsibility": "Preserve the supported service topic.",
+            "planned_heading": "Evidence-Bounded Services",
+        }],
+    }
+    short_results = {
+        "services": (
+            "## Evidence-Bounded Services\n\n"
+            "A concise evidence-neutral transition."
+        ),
+    }
+    short_flags = []
+
+    all_in_one._add_section_word_count_flags(
+        short_flags,
+        short_results,
+        template,
+    )
+    all_in_one._add_page_plan_qa_flags(
+        short_flags,
+        short_results,
+        template,
+        strategy,
+        _PAGE_POLICY,
+        page_copy_correction_enabled=True,
+    )
+
+    assert all(
+        flag["code"]
+        not in {
+            "section_word_count_below_target",
+            "page_section_below_planned_depth",
+        }
+        for flag in short_flags
+    )
+
+    long_flags = []
+    all_in_one._add_section_word_count_flags(
+        long_flags,
+        {
+            "services": (
+                "## Evidence-Bounded Services\n\n"
+                + " ".join(["supported"] * 80)
+            ),
+        },
+        template,
+    )
+
+    assert any(
+        flag["code"] == "section_word_count_above_target"
+        for flag in long_flags
+    )
 
 
 def test_page_copy_correction_closes_source_descriptor_and_path_inference():

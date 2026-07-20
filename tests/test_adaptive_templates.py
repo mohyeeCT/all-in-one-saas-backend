@@ -331,6 +331,147 @@ def test_v1_retains_section_depth_and_compacts_only_unsupported_claim_areas():
     assert plan_by_section["social_proof"]["mode"] == "omit"
 
 
+def test_correction_contract_compacts_sparse_local_sections_without_reassigning_keywords():
+    rich_local_proof = " ".join(
+        f"Supported local evidence detail {index}"
+        for index in range(80)
+    )
+    strategy = _strategy(
+        ("hero", ["One supported hero fact"]),
+        ("local_intro", []),
+        ("services_in_location", []),
+        ("why_local", [rich_local_proof]),
+        ("service_area", []),
+        ("local_social_proof", []),
+        ("faq", ["One supported legal notice"]),
+        ("cta", []),
+    )
+    strategy = attach_depth_policies(
+        strategy,
+        "local_service_page",
+        ADAPTIVE_POLICY_VERSION,
+    )
+    original = deepcopy(TEMPLATES["local_service_page"])
+
+    legacy_adapted, legacy_plan = adapt_template_for_generation(
+        TEMPLATES["local_service_page"],
+        "local_service_page",
+        strategy,
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+    )
+    corrected_adapted, corrected_plan = adapt_template_for_generation(
+        TEMPLATES["local_service_page"],
+        "local_service_page",
+        strategy,
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        correction_evidence_contract=True,
+    )
+
+    legacy_by_name = {
+        section["name"]: section
+        for section in legacy_adapted["sections"]
+    }
+    corrected_by_name = {
+        section["name"]: section
+        for section in corrected_adapted["sections"]
+    }
+    legacy_plan_by_name = _plan_by_section(legacy_plan)
+    corrected_plan_by_name = _plan_by_section(corrected_plan)
+
+    assert legacy_plan_by_name["services_in_location"]["mode"] == "full"
+    assert legacy_by_name["services_in_location"]["word_count"] == [320, 560]
+    assert corrected_plan_by_name["services_in_location"]["mode"] == "compact"
+    assert corrected_plan_by_name["services_in_location"]["reason"] == (
+        "unsupported_claim_areas"
+    )
+    assert corrected_by_name["services_in_location"]["word_count"] == [0, 60]
+    assert corrected_by_name["services_in_location"]["evidence_sparse"] is True
+
+    assert corrected_plan_by_name["local_intro"]["mode"] == "compact"
+    assert corrected_plan_by_name["service_area"]["mode"] == "compact"
+    assert corrected_plan_by_name["faq"]["mode"] == "compact"
+    assert corrected_plan_by_name["cta"]["mode"] == "compact"
+    assert corrected_plan_by_name["why_local"]["mode"] == "full"
+    assert corrected_by_name["why_local"]["word_count"] == [250, 430]
+    assert corrected_plan_by_name["local_social_proof"]["mode"] == "omit"
+
+    assert [section["name"] for section in corrected_adapted["sections"]] == [
+        section["name"]
+        for section in original["sections"]
+        if section["name"] != "local_social_proof"
+    ]
+    assert {
+        section["name"]: section["keyword_slot"]
+        for section in corrected_adapted["sections"]
+    } == {
+        section["name"]: section["keyword_slot"]
+        for section in original["sections"]
+        if section["name"] != "local_social_proof"
+    }
+    assert TEMPLATES["local_service_page"] == original
+
+
+def test_correction_contract_evidence_bounds_blog_sections_without_changing_structure():
+    rich_body_proof = " ".join(
+        f"Supported body evidence detail {index}"
+        for index in range(100)
+    )
+    strategy = _strategy(
+        ("intro", ["Supported introduction fact"]),
+        ("context", ["Supported context fact"]),
+        ("body_1", [rich_body_proof]),
+        ("body_2", ["Supported body two fact"]),
+        ("body_3", ["Supported body three fact"]),
+        ("summary", []),
+        ("faq", []),
+        ("cta", ["Supported next step"]),
+    )
+    strategy = attach_depth_policies(
+        strategy,
+        "blog_standard",
+        ADAPTIVE_POLICY_VERSION,
+    )
+
+    adapted, plan = adapt_template_for_generation(
+        TEMPLATES["blog_standard"],
+        "blog_standard",
+        strategy,
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        correction_evidence_contract=True,
+    )
+    adapted_by_name = {
+        section["name"]: section
+        for section in adapted["sections"]
+    }
+    plan_by_name = _plan_by_section(plan)
+
+    assert plan_by_name["summary"]["mode"] == "compact"
+    assert plan_by_name["summary"]["reason"] == "limited_recap_evidence"
+    assert adapted_by_name["summary"]["word_count"] == [0, 180]
+    assert plan_by_name["faq"]["mode"] == "compact"
+    assert plan_by_name["faq"]["reason"] == "limited_recap_evidence"
+    assert adapted_by_name["faq"]["word_count"] == [0, 60]
+    assert plan_by_name["body_1"]["mode"] == "full"
+    assert adapted_by_name["body_1"]["word_count"] == [360, 600]
+    assert plan_by_name["body_2"]["mode"] == "compact"
+    assert plan_by_name["body_2"]["reason"] == "insufficient_owned_evidence"
+    assert adapted_by_name["body_2"]["word_count"] == [0, 60]
+    assert all(
+        plan_by_name[name]["mode"] == "compact"
+        for name in ("intro", "context", "body_2", "body_3", "summary", "faq", "cta")
+    )
+    assert [section["name"] for section in adapted["sections"]] == [
+        section["name"] for section in TEMPLATES["blog_standard"]["sections"]
+    ]
+    assert {
+        section["name"]: section["keyword_slot"]
+        for section in adapted["sections"]
+    } == {
+        section["name"]: section["keyword_slot"]
+        for section in TEMPLATES["blog_standard"]["sections"]
+    }
+
+
 def test_model_depth_policy_is_replaced_by_the_reviewed_server_policy():
     strategy = {
         "section_guidance": [{

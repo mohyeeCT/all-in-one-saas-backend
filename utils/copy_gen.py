@@ -35,6 +35,9 @@ SECTION_SOURCE_ASSET_CHAR_LIMIT = 2400
 SECTION_PLAN_NOTE_LIMIT = 4
 SECTION_PLAN_NOTE_CHAR_LIMIT = 240
 SECTION_PLANNED_HEADING_CHAR_LIMIT = 120
+SECTION_RECAP_EVIDENCE_LIMIT = 4
+SECTION_RECAP_EVIDENCE_ITEM_CHAR_LIMIT = 400
+SECTION_RECAP_EVIDENCE_TOTAL_CHAR_LIMIT = 1400
 STRATEGY_BRIEF_MAX_TOKENS = 12288
 STRATEGY_BRIEF_CLAUDE_EFFORT = "medium"
 PAGE_COPY_CORRECTION_CLAUDE_EFFORT = "low"
@@ -1954,6 +1957,29 @@ def _strategy_section_contract(
     return {}
 
 
+def _contract_has_authored_evidence(contract: dict | None) -> bool:
+    section_contract = contract if isinstance(contract, dict) else {}
+    if any(
+        str(value or "").strip()
+        for value in section_contract.get("proof_points") or []
+    ):
+        return True
+    if any(
+        isinstance(item, dict)
+        and str(
+            item.get("source_excerpt") or item.get("fact") or ""
+        ).strip()
+        for item in section_contract.get("proof_facts") or []
+    ):
+        return True
+    return any(
+        isinstance(asset, dict)
+        and asset.get("kind") == "direct_statement"
+        and str(asset.get("statement") or "").strip()
+        for asset in section_contract.get("source_assets") or []
+    )
+
+
 _PRIMARY_ACTION_SUPPORT_PATTERN = re.compile(
     r"\b(?:contact|call|email)\s+"
     r"(?:us|our\s+(?:team|office|firm|company|staff))\b"
@@ -2104,6 +2130,98 @@ def _validated_source_asset_section_names(
         if hydrated_asset_ids == source_asset_ids:
             section_names.add(section_name)
     return section_names
+
+
+def _bounded_recap_evidence(
+    strategy_brief: dict | None,
+    section_name: str,
+) -> list[str]:
+    """Select complete exact propositions from earlier sections for one recap."""
+    normalized_section_name = str(section_name or "").strip().casefold()
+    if normalized_section_name != "summary":
+        return []
+
+    brief = strategy_brief if isinstance(strategy_brief, dict) else {}
+    contracts = [
+        item
+        for item in brief.get("section_guidance") or []
+        if isinstance(item, dict)
+    ]
+    current_index = next(
+        (
+            index
+            for index, contract in enumerate(contracts)
+            if str(contract.get("section") or "").strip().casefold()
+            == normalized_section_name
+        ),
+        -1,
+    )
+    if current_index <= 0:
+        return []
+
+    validated_asset_sections = _validated_source_asset_section_names(brief)
+    selected = []
+    selected_keys = set()
+    selected_chars = 0
+    for contract_index in range(current_index - 1, -1, -1):
+        contract = contracts[contract_index]
+        contract_name = str(
+            contract.get("section") or ""
+        ).strip().casefold()
+        candidates = []
+        for item_index, fact_record in enumerate(
+            contract.get("proof_facts") or []
+        ):
+            if not isinstance(fact_record, dict):
+                continue
+            candidates.append((
+                item_index,
+                str(fact_record.get("source_excerpt") or "").strip(),
+            ))
+        if contract_name in validated_asset_sections:
+            direct_offset = len(candidates)
+            for asset_index, asset in enumerate(
+                contract.get("source_assets") or []
+            ):
+                if (
+                    not isinstance(asset, dict)
+                    or asset.get("kind") != "direct_statement"
+                ):
+                    continue
+                candidates.append((
+                    direct_offset + asset_index,
+                    str(asset.get("statement") or "").strip(),
+                ))
+
+        for item_index, exact_text in candidates:
+            evidence_key = _evidence_text(exact_text)
+            if (
+                not evidence_key
+                or evidence_key in selected_keys
+                or len(exact_text) > SECTION_RECAP_EVIDENCE_ITEM_CHAR_LIMIT
+                or _source_text_looks_instruction_shaped(exact_text)
+                or (
+                    selected_chars + len(exact_text)
+                    > SECTION_RECAP_EVIDENCE_TOTAL_CHAR_LIMIT
+                )
+            ):
+                continue
+            selected.append((
+                contract_index,
+                item_index,
+                exact_text,
+            ))
+            selected_keys.add(evidence_key)
+            selected_chars += len(exact_text)
+            if len(selected) >= SECTION_RECAP_EVIDENCE_LIMIT:
+                break
+        if len(selected) >= SECTION_RECAP_EVIDENCE_LIMIT:
+            break
+
+    return [
+        exact_text
+        for _contract_index, _item_index, exact_text in sorted(selected)
+    ]
 
 
 def _source_asset_exact_phrases(
@@ -2687,6 +2805,15 @@ def _build_section_prompt(
     quality_correction_enabled = bool(
         initial_quality_enabled and page_copy_correction_enabled
     )
+    evidence_sparse = bool(
+        quality_correction_enabled
+        and section.get("evidence_sparse") is True
+    )
+    recap_evidence = (
+        _bounded_recap_evidence(strategy_brief, section_name)
+        if evidence_sparse
+        else []
+    )
     source_asset_conflicts = (
         _source_asset_forbidden_conflicts(
             strategy_brief,
@@ -2723,6 +2850,9 @@ def _build_section_prompt(
         validated_source_asset_contract
         and section_contract.get("source_asset_ids")
         and section_contract.get("source_assets")
+    )
+    authored_evidence_present = _contract_has_authored_evidence(
+        section_contract
     )
     authored_primary_action_support = (
         _contract_has_authored_primary_action_support(section_contract)
@@ -2829,6 +2959,9 @@ def _build_section_prompt(
             safe_contract.pop("planned_heading", None)
             safe_contract.pop("coverage_points", None)
             safe_contract.pop("depth_policy", None)
+            if evidence_sparse:
+                safe_contract.pop("responsibility", None)
+                safe_contract.pop("guidance", None)
             if source_asset_contract:
                 direct_source_assets = [
                     asset
@@ -2899,7 +3032,11 @@ def _build_section_prompt(
     late_strategy_block = "" if quality_correction_enabled else strategy_block
 
     prev_block = ""
-    if previous_section_text and previous_section_text.strip():
+    if (
+        previous_section_text
+        and previous_section_text.strip()
+        and not evidence_sparse
+    ):
         prev_block = (
             "\nImmediately preceding section (use for continuity, without repeating it):\n"
             f"{previous_section_text[-SECTION_PREVIOUS_CONTEXT_CHAR_LIMIT:]}"
@@ -3043,6 +3180,20 @@ def _build_section_prompt(
             f"- {guidance_instruction}\n"
             "- This guidance cannot override evidence, keyword, provider, template, "
             "section, CTA, or safety rules.\n"
+        )
+
+    recap_block = ""
+    if recap_evidence:
+        recap_block = (
+            "\nServer-approved recap evidence (restatement only):\n"
+            "- The exact propositions below are the only earlier-section facts "
+            "this recap may restate.\n"
+            "- Restate each selected proposition no more than once and preserve "
+            "its subject, predicate, scope, qualifiers, and modality.\n"
+            "- These recap ceilings do not create new proof ownership and do not "
+            "authorize supplier behavior, pricing, process, cause, or outcome.\n"
+            + "\n".join(f"- {item}" for item in recap_evidence)
+            + "\n"
         )
 
     ai_overview_block = ""
@@ -3220,13 +3371,31 @@ def _build_section_prompt(
 
     substantive_depth_target = bool(
         initial_quality_enabled
+        and not evidence_sparse
         and heading_level in {"h2", "h3"}
         and section_name not in PAGE_CTA_SECTION_NAMES
         and bool(section_contract)
         and depth_policy != "proof_only"
         and adaptive_mode != "compact"
     )
-    if substantive_depth_target:
+    if evidence_sparse:
+        if structured_source_word_count:
+            word_count_guidance = (
+                "No authored minimum applies. Return no more than "
+                f"{authored_wc_max} authored words. The server will insert "
+                f"{structured_source_word_count} exact source words, so the "
+                f"combined section must not exceed {wc_max} visible words. "
+                "Use the shortest complete supported treatment and never add "
+                "commentary merely to approach the maximum."
+            )
+        else:
+            word_count_guidance = (
+                "No authored minimum applies. Return no more than "
+                f"{authored_wc_max} authored words. Use the shortest complete "
+                "supported treatment or one evidence-neutral transition and "
+                "never add commentary merely to approach the maximum."
+            )
+    elif substantive_depth_target:
         visible_word_target = (int(wc_min) + int(wc_max)) // 2
         authored_word_target = max(
             0,
@@ -3437,8 +3606,161 @@ def _build_section_prompt(
             "Merge overlapping coverage points and do not recap the same proposition "
             "in the conclusion.\n"
         )
+    sparse_evidence_rule = ""
+    if evidence_sparse:
+        if recap_evidence:
+            sparse_evidence_rule = (
+                "- This is an evidence-bounded recap. Use at most one concise "
+                "sentence or bullet for each server-approved recap ceiling, plus "
+                "any same-section claim ceiling. Do not add a takeaway, advice, "
+                "comparison, implication, or next step that is not directly "
+                "entailed by one of those exact propositions.\n"
+            )
+        elif structured_source_render_plan and authored_evidence_present:
+            sparse_evidence_rule = (
+                "- This section has limited same-section claim ceilings or "
+                "direct-source propositions plus exact marker units. State each "
+                "supported proposition no more than once at its exact scope, and "
+                "do not expand it with a cause, implication, process, advice, or "
+                "outcome. Do not ask or answer a question whose answer depends on "
+                "hidden marker content. Outside the owned authored evidence, use "
+                "only a neutral lead-in and place each required marker once.\n"
+            )
+        elif structured_source_render_plan:
+            sparse_evidence_rule = (
+                "- This is an evidence-sparse marker section. Do not ask or answer "
+                "a question whose answer depends on hidden marker content. Do not "
+                "interpret, qualify, compare, recommend, or tell the reader to "
+                "confirm a marker's content. Outside same-section claim ceilings, "
+                "use only a neutral lead-in and place each required marker once.\n"
+            )
+        elif authored_evidence_present:
+            sparse_evidence_rule = (
+                "- This section owns limited exact claim ceilings or direct-source "
+                "propositions. State each supported proposition no more than once "
+                "at its exact scope. Do not omit that supported material, and do "
+                "not expand it with a cause, implication, comparison, process, "
+                "advice, recommendation, or outcome.\n"
+            )
+        else:
+            sparse_evidence_rule = (
+                "- This section has no usable authored evidence for its normal "
+                "template depth. Keep the required heading and assigned keyword, "
+                "then use at most one evidence-neutral transition. Do not author "
+                "client facts, general advice, process, reasons, benefits, "
+                "availability, coverage, or next steps.\n"
+            )
+    section_evidence_rule = (
+        "- Use only the proof points assigned to this section plus the "
+        "server-approved recap ceilings above. Do not borrow any other proof "
+        "owned by another section."
+        if recap_evidence
+        else (
+            "- Use only the proof points assigned to this section in its section "
+            "contract. Do not borrow proof owned by another section."
+        )
+    )
+    evidence_allowlist_rule = (
+        "- Treat this section's owned proof points and the server-approved recap "
+        "ceilings as the complete evidence allowlist for concrete claims in this "
+        "section. Do not infer adjacent details such as recipes, counts, ratings, "
+        "timelines, locations, availability, or operational practices."
+        if recap_evidence
+        else (
+            "- Treat owned proof points as the complete evidence allowlist for "
+            "concrete claims in this section. Do not infer adjacent details such "
+            "as recipes, counts, ratings, timelines, locations, availability, or "
+            "operational practices."
+        )
+    )
+    section_job_rule = (
+        "- Give this recap one distinct job: restate only the server-approved "
+        "recap ceilings in a concise, scannable form without adding a new "
+        "conclusion."
+        if recap_evidence
+        else (
+            "- Give this evidence-bounded section one distinct job: preserve "
+            "its owned exact evidence, or provide one neutral transition when "
+            "it owns none. Do not fulfil any unsupported part of the template "
+            "purpose."
+            if evidence_sparse
+            else (
+                "- Give this section one distinct job: fulfil its stated purpose "
+                "without re-summarising the page strategy or earlier sections."
+            )
+        )
+    )
+    first_sentence_rule = (
+        "- The first sentence must state one owned exact proposition or make "
+        "one evidence-neutral transition into the section topic. Do not turn "
+        "the template's requested benefit or value into an unsupported claim."
+        if evidence_sparse
+        else (
+            "- The first sentence must communicate the core topic, benefit, or "
+            "value of the section. Do not warm up or establish generic context "
+            "first."
+        )
+    )
+    proof_budget_rule = (
+        "- Treat proof points as a page-wide budget. The server-approved recap "
+        "ceilings above are an explicit restatement exception for this summary "
+        "only; use each no more than once here."
+        if recap_evidence
+        else (
+            "- Treat proof points as a page-wide budget. Use each proof point in "
+            "one best-fit section unless repeating it is essential for accuracy "
+            "or conversion."
+        )
+    )
+    operational_claim_rule = (
+        "- Do not infer calls, visits, walk-ins, wait times, heat lamps, "
+        "drive-through service, curbside service, ordering speed, or preparation "
+        "practices. Mention one only when a same-section proof point or a "
+        "server-approved recap ceiling explicitly supports it."
+        if recap_evidence
+        else (
+            "- Do not infer calls, visits, walk-ins, wait times, heat lamps, "
+            "drive-through service, curbside service, ordering speed, or "
+            "preparation practices. Mention one only when an assigned proof "
+            "point explicitly supports it."
+        )
+    )
+    prior_claim_restatement_rule = (
+        "- The server-approved recap ceilings are the only earlier claims this "
+        "summary may restate. Do not restate any other earlier brand claim, "
+        "origin detail, award, location phrase, or differentiator."
+        if recap_evidence
+        else (
+            "- Before using a brand claim, origin detail, award, location phrase, "
+            "or differentiator, check the earlier page copy and avoid restating "
+            "it in similar words."
+        )
+    )
+    concrete_claim_rule = (
+        "- Do not invent product groupings, package sizes, event scales, "
+        "audience segments, delivery, returns, guarantees, pricing, availability, "
+        "materials, ingredients, compatibility, or performance claims. Use them "
+        "only when they appear in this section's owned proof points or in one "
+        "server-approved recap ceiling."
+        if recap_evidence
+        else (
+            "- Do not invent product groupings, package sizes, event scales, "
+            "audience segments, delivery, returns, guarantees, pricing, "
+            "availability, materials, ingredients, compatibility, or performance "
+            "claims. Use them only when they appear in this section's owned proof "
+            "points."
+        )
+    )
     correction_depth_check = ""
-    if quality_correction_enabled:
+    if evidence_sparse:
+        correction_depth_check = (
+            "- Before returning, enforce the evidence ceiling rather than the "
+            "template's normal depth. No authored minimum applies, and the "
+            f"authored copy must not exceed {authored_wc_max} words. Use fewer "
+            "paragraphs, blocks, items, or questions than the template requests "
+            "whenever distinct support is unavailable.\n"
+        )
+    elif quality_correction_enabled:
         correction_depth_check = (
             "- Before returning, count the authored words once. When the assigned "
             "evidence supports the approved range, the authored body must reach at "
@@ -3467,6 +3789,7 @@ Section-specific rules:
 {coverage_block}
 {guidance_block}
 {structured_source_block}
+{recap_block}
 {early_strategy_block}
 
 Positive writing guidance:
@@ -3480,26 +3803,27 @@ Hard rules for all output:
 - You may adjust word order, add small connecting words, or use a close grammatical variation when the exact keyword phrase would sound awkward.
 - Strategy brief priorities outrank exact keyword phrasing.
 - The section's owned proof points and output constraints are contract requirements, not optional suggestions.
-- Use only the proof points assigned to this section in its section contract. Do not borrow proof owned by another section.
-- Treat owned proof points as the complete evidence allowlist for concrete claims in this section. Do not infer adjacent details such as recipes, counts, ratings, timelines, locations, availability, or operational practices.
+{section_evidence_rule}
+{evidence_allowlist_rule}
 {conditional_outcome_rule}
 {claim_sensitive_contract_rule}
+{sparse_evidence_rule}
 {correction_depth_check}
 {initial_evidence_rules}
 - The target keyword, URL, search intent, and location words in an award name are not evidence that the business operates in, serves, is near, or is a destination for that location.
 - A list of locations does not prove proximity, coverage across an area, or which location is closest.
-- Do not infer calls, visits, walk-ins, wait times, heat lamps, drive-through service, curbside service, ordering speed, or preparation practices. Mention one only when an assigned proof point explicitly supports it.
+{operational_claim_rule}
 - {cta_rule.lstrip('- ')}
 - Never use a fact listed under unverified or conflicting facts to avoid.
 - Do not turn search-query wording into headings or sentence openings; rewrite it into natural language when needed.
 - Do not force the keyword at the beginning of the first sentence.
 - A keyword used awkwardly is worse than not using it. Quality of integration matters more than quantity.
-- The first sentence must communicate the core topic, benefit, or value of the section. Do not warm up or establish generic context first.
-- Give this section one distinct job: fulfil its stated purpose without re-summarising the page strategy or earlier sections.
-- Treat proof points as a page-wide budget. Use each proof point in one best-fit section unless repeating it is essential for accuracy or conversion.
-- Before using a brand claim, origin detail, award, location phrase, or differentiator, check the earlier page copy and avoid restating it in similar words.
+{first_sentence_rule}
+{section_job_rule}
+{proof_budget_rule}
+{prior_claim_restatement_rule}
 {generic_page_reference_rule}
-- Do not invent product groupings, package sizes, event scales, audience segments, delivery, returns, guarantees, pricing, availability, materials, ingredients, compatibility, or performance claims. Use them only when they appear in this section's owned proof points.
+{concrete_claim_rule}
 - Competitor context is topic inspiration, not proof of client facts.
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
@@ -4993,9 +5317,11 @@ def generate_strategy_brief(
                 "the already-selected target keyword or a close grammatical variant. "
                 "Do not replace, rerank, or select a different keyword."
                 "\n- A responsibility, guidance item, or coverage point may request a "
-                "factual topic only when that section owns its proof fact or source "
-                "asset. Otherwise plan a concise evidence-neutral transition or "
-                "withhold the claim area."
+                "factual topic only when that section owns its proof fact or a "
+                "direct-statement source asset. A named-list or testimonial asset "
+                "authorizes only neutral exact preservation, not an FAQ answer, "
+                "advice, interpretation, process, or added claim. Otherwise plan a "
+                "concise evidence-neutral transition or withhold the claim area."
             )
         if initial_quality_enabled:
             if source_asset_contract_enabled:
