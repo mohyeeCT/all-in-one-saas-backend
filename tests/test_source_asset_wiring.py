@@ -3619,6 +3619,7 @@ def test_evidence_bounded_sparse_prompt_keeps_owned_exact_evidence_without_expan
 
     assert exact_excerpt in prompt
     assert direct_statement in prompt
+    assert "A1:" not in prompt
     assert unsupported_direction not in prompt
     assert "This section owns limited exact claim ceilings or direct-source" in (
         prompt
@@ -3646,6 +3647,10 @@ def test_page_copy_correction_removes_minimum_and_generic_direction_for_sparse_m
     section = {
         **_section("faq"),
         "keyword_slot": "lsi",
+        "prompt_rules": (
+            "Write 4 to 5 local FAQ items. Explain how to confirm missing "
+            "coverage, availability, pricing, and booking details."
+        ),
         "depth_policy": "explanatory",
         "adaptive_mode": "compact",
         "evidence_sparse": True,
@@ -3711,7 +3716,15 @@ def test_page_copy_correction_removes_minimum_and_generic_direction_for_sparse_m
     assert unsupported_guidance not in sparse_prompt
     assert unsupported_prior_copy not in sparse_prompt
     assert "Houston consultation hours" in sparse_prompt
-    assert "## Consultation Hours and Coverage Questions" in sparse_prompt
+    assert "## Consultation Hours and Coverage Questions" not in sparse_prompt
+    assert "Write 4 to 5 local FAQ items" not in sparse_prompt
+    assert "Answer only questions whose complete answers are directly supported" in (
+        sparse_prompt
+    )
+    assert (
+        "replaces the normal template purpose, content requests, action "
+        "examples, coverage requests, and numeric quantities"
+    ) in sparse_prompt
     assert sparse_prompt.count("[[COPYPILOT_SOURCE_A1]]") == 1
     assert all(item not in sparse_prompt for item in appointment_items)
     assert "Do not ask or answer a question whose answer depends on hidden marker content" in (
@@ -3721,6 +3734,53 @@ def test_page_copy_correction_removes_minimum_and_generic_direction_for_sparse_m
     assert unsupported_responsibility in supported_prompt
     assert unsupported_guidance in supported_prompt
     assert unsupported_prior_copy in supported_prompt
+
+
+def test_page_copy_correction_removes_page_wide_direction_from_sparse_hero():
+    exact_excerpt = (
+        "The page identifies the named Texas communities in the service area."
+    )
+    unsupported_direction = (
+        "The firm serves clients throughout the Greater Houston region."
+    )
+    section = {
+        **_section("hero", heading_level="h1"),
+        "depth_policy": "explanatory",
+        "adaptive_mode": "compact",
+        "evidence_sparse": True,
+        "word_count": [0, 80],
+    }
+    strategy = {
+        "primary_positioning": unsupported_direction,
+        "headline_direction": unsupported_direction,
+        "section_guidance": [{
+            "section": "hero",
+            "responsibility": unsupported_direction,
+            "guidance": unsupported_direction,
+            "coverage_points": ["Coverage across Greater Houston"],
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+        }],
+    }
+
+    prompt = copy_gen._build_section_prompt(
+        **{
+            **_correction_prompt_kwargs(section, strategy),
+            "h1": "Service Area",
+            "page_type": "local",
+            "business_type": "local",
+        },
+        page_copy_correction_enabled=True,
+    )
+
+    assert exact_excerpt in prompt
+    assert unsupported_direction not in prompt
+    assert "Coverage across Greater Houston" not in prompt
+    assert "Start exactly with this canonical H1: # Service Area" in prompt
 
 
 def test_evidence_sparse_zero_minimum_is_not_flagged_below_depth_but_keeps_maximum():
@@ -4002,6 +4062,79 @@ def test_page_copy_correction_uses_marker_paths_when_primary_action_has_no_proof
     assert fallback_rule in prompt
     assert "**Primary next step:**" not in prompt
     assert "Additional options" not in prompt
+
+
+def test_page_copy_correction_renders_marker_only_sparse_section_without_provider_call(
+    monkeypatch,
+):
+    paths = [
+        "Free consultation",
+        "Monday to Friday, 8:00 AM to 5:00 PM",
+        "Contact",
+    ]
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta",
+            "responsibility": "Book a consultation and request a quote.",
+            "guidance": "Describe scheduling with the local team.",
+            "planned_heading": "Book Your Free Consultation Today",
+            "coverage_points": ["How to schedule", "Get a free quote"],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": paths,
+            }],
+        }],
+    }
+    section = {
+        **_section("cta"),
+        "planned_heading": "Next Steps",
+        "adaptive_mode": "compact",
+        "evidence_sparse": True,
+        "word_count": [0, 70],
+    }
+    calls = []
+
+    def provider(_api_key, prompt, **_kwargs):
+        calls.append(prompt)
+        raise AssertionError("marker-only sections must not call the provider")
+
+    provider_name = "MarkerOnlySparseSectionTest"
+    monkeypatch.setitem(copy_gen.PROVIDER_FN, provider_name, provider)
+    monkeypatch.setitem(copy_gen.PROVIDER_DELAY, provider_name, 0)
+    result = copy_gen.generate_page(
+        template={"sections": [section]},
+        keyword_assignment={"cta": {}},
+        lsi_keywords={},
+        business_type="local",
+        brand_name="Example",
+        h1="Service Area",
+        page_type="local",
+        paa_questions=[],
+        ai_overview="",
+        competitor_section_map={},
+        client_brief="",
+        client_existing_content="",
+        provider=provider_name,
+        api_key="test-key",
+        model="fixed-test-model",
+        strategy_brief=strategy,
+        page_quality_policy=_PAGE_POLICY,
+        page_copy_correction_enabled=True,
+    )
+
+    assert calls == []
+    assert result["cta"].startswith("## Next Steps\n")
+    assert all(result["cta"].count(f"- {path}") == 1 for path in paths)
+    assert "Scheduling is simple" not in result["cta"]
+    assert "free quote" not in result["cta"].casefold()
+    assert "Houston team" not in result["cta"]
 
 
 @pytest.mark.parametrize(
@@ -4690,6 +4823,689 @@ def test_correction_qa_flags_any_internal_source_marker_backstop():
         flag["code"] == "internal_source_marker"
         for flag in flags
     )
+
+
+def test_correction_qa_flags_raw_asset_labels_and_unsupported_action_types():
+    paths = ["Free consultation", "Contact"]
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta",
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": paths,
+            }],
+            "required_named_items": paths,
+        }],
+    }
+    section = {
+        **_section("cta"),
+        "planned_heading": "Next Steps",
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "cta": (
+                "## Next Steps\n\n"
+                "A1: Scheduling is simple. Book a free quote from our Houston "
+                "team today.\n\n"
+                "- Free consultation\n"
+                "- Contact"
+            ),
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief=strategy,
+        page_type="local",
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    raw_label = next(
+        flag
+        for flag in flags
+        if flag["code"] == "page_internal_source_asset_label"
+    )
+    unsupported_action = next(
+        flag
+        for flag in flags
+        if flag["code"] == "page_unsupported_action_type"
+    )
+    assert raw_label["asset_ids"] == ["A1"]
+    assert unsupported_action["action_types"] == ["booking", "quote"]
+
+
+def test_correction_qa_ignores_plain_asset_like_code_and_canonical_marker_list():
+    paths = ["Free consultation", "Contact"]
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta",
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": paths,
+            }],
+        }],
+    }
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+    }
+    flags = []
+
+    all_in_one._add_page_copy_evidence_backstop_flags(
+        flags,
+        {
+            "cta": (
+                "## Next Steps\n\n"
+                "A1 paper size is unrelated reader-facing terminology.\n\n"
+                "- Free consultation\n"
+                "- Contact"
+            ),
+        },
+        {"sections": [section]},
+        strategy,
+        [],
+        page_type="local",
+    )
+
+    assert all(
+        flag["code"]
+        not in {
+            "page_internal_source_asset_label",
+            "page_unsupported_action_type",
+            "page_unsupported_offer_qualifier",
+        }
+        for flag in flags
+    )
+
+
+def test_correction_qa_flags_unsupported_broad_location_scope():
+    section = {
+        **_section("hero", heading_level="h1"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+    strategy = {
+        "section_guidance": [{
+            "section": "hero",
+            "proof_points": [
+                "The page identifies named Texas communities."
+            ],
+            "proof_facts": [{
+                "fact": "The page identifies named Texas communities.",
+                "source": "current_page",
+                "source_excerpt": (
+                    "The page identifies named Texas communities."
+                ),
+            }],
+        }],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="Service Area",
+        input_h1="Service Area",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "hero": (
+                "# Service Area\n\n"
+                "The firm confirms coverage across the Greater Houston region "
+                "and serves clients throughout the Houston area."
+            ),
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief=strategy,
+        page_type="local",
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    scope_flag = next(
+        flag
+        for flag in flags
+        if flag["code"] == "page_unsupported_location_scope"
+    )
+    assert scope_flag["section"] == "hero"
+
+
+def test_correction_qa_allows_supported_quote_request_action():
+    source_statement = (
+        "The article points readers to the existing custom-curtain "
+        "quote-request path."
+    )
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 100],
+    }
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta",
+            "proof_points": [source_statement],
+            "proof_facts": [{
+                "fact": source_statement,
+                "source": "current_page",
+                "source_excerpt": source_statement,
+            }],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "direct_statement",
+                "statement": source_statement,
+            }],
+        }],
+    }
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "cta": (
+                "## Next Steps\n\n"
+                "Use the existing custom-curtain quote-request path."
+            ),
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief=strategy,
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    assert all(
+        flag["code"] != "page_unsupported_action_type"
+        for flag in flags
+    )
+
+
+def test_quote_request_path_supports_the_correction_primary_cta_contract():
+    source_statement = (
+        "The article points readers to the existing custom-curtain "
+        "quote-request path."
+    )
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta",
+            "proof_points": [source_statement],
+            "proof_facts": [{
+                "fact": source_statement,
+                "source": "current_page",
+                "source_excerpt": source_statement,
+            }],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "direct_statement",
+                "statement": source_statement,
+            }],
+        }],
+    }
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+    }
+
+    prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    assert copy_gen._contract_has_authored_primary_action_support(
+        strategy["section_guidance"][0]
+    )
+    assert "Lead with exactly one primary next-step sentence" in prompt
+    assert "**Primary next step:**" in prompt
+
+
+@pytest.mark.parametrize(
+    "negative_evidence",
+    [
+        "Do not request a quote.",
+        "Never get an estimate.",
+        "This page does not let visitors request a consultation.",
+        "You cannot currently request a quote.",
+        "Please do not attempt to book a consultation.",
+        (
+            "We do not currently allow website visitors to request a quote."
+        ),
+        (
+            "You cannot at this time through this website request a quote."
+        ),
+        "No quote-request path is available.",
+        "The quote-request path is unavailable.",
+    ],
+)
+def test_negative_evidence_does_not_enable_the_correction_primary_cta_contract(
+    negative_evidence,
+):
+    contract = {
+        "proof_facts": [{
+            "fact": negative_evidence,
+            "source": "current_page",
+            "source_excerpt": negative_evidence,
+        }],
+    }
+
+    assert not copy_gen._contract_has_authored_primary_action_support(
+        contract
+    )
+
+
+@pytest.mark.parametrize(
+    "positive_action",
+    [
+        "No pressure: request a quote.",
+        "No obligation—request a quote.",
+        "Without delay, request a quote.",
+        "Do not hesitate to request a quote.",
+        "You cannot wait to request a quote.",
+    ],
+)
+def test_positive_quote_actions_are_not_hidden_by_unrelated_negative_words(
+    positive_action,
+):
+    contract = {
+        "proof_facts": [{
+            "fact": positive_action,
+            "source": "current_page",
+            "source_excerpt": positive_action,
+        }],
+    }
+
+    assert copy_gen._supported_page_action_types(positive_action) == {
+        "quote"
+    }
+    assert copy_gen._contract_has_authored_primary_action_support(
+        contract
+    )
+
+
+def test_correction_qa_flags_sparse_section_body_without_required_heading():
+    section = {
+        **_section("benefits"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={"benefits": "Supported body copy without a heading."},
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief={"section_guidance": [{"section": "benefits"}]},
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    missing_heading = next(
+        flag
+        for flag in flags
+        if flag["code"] == "page_heading_missing"
+    )
+    assert missing_heading["section"] == "benefits"
+    assert missing_heading["expected_level"] == "h2"
+
+
+@pytest.mark.parametrize(
+    ("evidence", "generated_copy", "expected_action"),
+    [
+        (
+            "Booking is unavailable.",
+            "Book an appointment today.",
+            "booking",
+        ),
+        (
+            "We do not provide quotes.",
+            "Request a quote today.",
+            "quote",
+        ),
+        (
+            "Consultation details are not published.",
+            "Request a consultation today.",
+            "consultation",
+        ),
+    ],
+)
+def test_correction_qa_does_not_treat_negative_evidence_as_action_support(
+    evidence,
+    generated_copy,
+    expected_action,
+):
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+    strategy = {
+        "section_guidance": [{
+            "section": "cta",
+            "proof_facts": [{
+                "fact": evidence,
+                "source": "current_page",
+                "source_excerpt": evidence,
+            }],
+        }],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={"cta": f"## Next Steps\n\n{generated_copy}"},
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief=strategy,
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    unsupported = next(
+        flag
+        for flag in flags
+        if flag["code"] == "page_unsupported_action_type"
+    )
+    assert expected_action in unsupported["action_types"]
+
+
+@pytest.mark.parametrize(
+    "negative_statement",
+    [
+        "We do not provide quotes.",
+        "Booking is unavailable.",
+        "Consultation details are not published.",
+        (
+            "Quotes for projects submitted through this page are not "
+            "available."
+        ),
+    ],
+)
+def test_correction_qa_does_not_flag_faithfully_preserved_negative_evidence(
+    negative_statement,
+):
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+    strategy = {
+        "section_guidance": [{
+            "section": "cta",
+            "proof_facts": [{
+                "fact": negative_statement,
+                "source": "current_page",
+                "source_excerpt": negative_statement,
+            }],
+        }],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "cta": f"## Next Steps\n\n{negative_statement}"
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief=strategy,
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    assert all(
+        flag["code"] != "page_unsupported_action_type"
+        for flag in flags
+    )
+
+
+def test_correction_qa_flags_unsupported_appointment_action():
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "cta": "## Next Steps\n\nMake an appointment today."
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief={"section_guidance": [{"section": "cta"}]},
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    unsupported = next(
+        flag
+        for flag in flags
+        if flag["code"] == "page_unsupported_action_type"
+    )
+    assert unsupported["action_types"] == ["booking"]
+
+
+@pytest.mark.parametrize(
+    "contact_action",
+    [
+        "Submit the contact form",
+        "Use our contact form",
+    ],
+)
+def test_correction_qa_allows_supported_contact_form_actions(
+    contact_action,
+):
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+    strategy = {
+        "section_guidance": [{
+            "section": "cta",
+            "proof_facts": [{
+                "fact": f"{contact_action}.",
+                "source": "current_page",
+                "source_excerpt": f"{contact_action}.",
+            }],
+        }],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "cta": f"## Next Steps\n\n{contact_action}."
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        strategy_brief=strategy,
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    assert all(
+        flag["code"] != "page_unsupported_action_type"
+        for flag in flags
+    )
+
+
+@pytest.mark.parametrize(
+    ("brand_name", "supported_action"),
+    [
+        ("Rose Brand", "Contact Rose Brand"),
+        ("Dhukka Law Firm", "Call Dhukka Law Firm"),
+        ("Rose Brand", "Email support@example.com"),
+    ],
+)
+def test_correction_qa_allows_concrete_brand_contact_actions(
+    brand_name,
+    supported_action,
+):
+    section = {
+        **_section("cta"),
+        "evidence_sparse": True,
+        "adaptive_mode": "compact",
+        "word_count": [0, 80],
+    }
+    strategy = {
+        "section_guidance": [{
+            "section": "cta",
+            "proof_facts": [{
+                "fact": f"{supported_action}.",
+                "source": "current_page",
+                "source_excerpt": f"{supported_action}.",
+            }],
+        }],
+    }
+
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="",
+        faq_items=[],
+        section_results={
+            "cta": f"## Next Steps\n\n{supported_action}."
+        },
+        forbidden_phrases=[],
+        template={"sections": [section]},
+        brand_name=brand_name,
+        strategy_brief=strategy,
+        page_quality_policy_version=PAGE_QUALITY_POLICY_VERSION,
+        page_copy_correction_enabled=True,
+    )
+
+    assert all(
+        flag["code"] != "page_unsupported_action_type"
+        for flag in flags
+    )
+
+
+def test_brand_contact_evidence_keeps_named_cta_paths_secondary():
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta",
+            "proof_facts": [{
+                "fact": "Contact Rose Brand.",
+                "source": "current_page",
+                "source_excerpt": "Contact Rose Brand.",
+            }],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": ["View Services", "Read Customer Stories"],
+            }],
+        }],
+    }
+
+    plan = copy_gen._structured_source_asset_render_plan(
+        strategy,
+        "cta",
+        brand_name="Rose Brand",
+    )
+
+    assert plan[0]["role"] == "secondary_options"
+    assert plan[0]["group_label"] == copy_gen.SECONDARY_OPTIONS_LABEL
 
 
 def test_correction_qa_flags_structured_source_copies_outside_canonical_units():

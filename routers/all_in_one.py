@@ -53,6 +53,8 @@ from utils.page_quality import (
 )
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
+    _has_non_negated_action_match,
+    _supported_page_action_types,
     _source_asset_exact_phrases,
     _source_asset_forbidden_conflicts,
     _structured_source_asset_render_plan,
@@ -91,6 +93,42 @@ _SOURCE_ASSET_RERUN_ADAPTIVE_INSTRUCTION = (
     "assets are intentionally excluded from this rerun prompt. Do not "
     "reconstruct or replace them. They are not factual proof and authorize "
     "no invented replacement claims."
+)
+_PAGE_CLOSING_CTA_SECTION_NAMES = frozenset({
+    "cta",
+    "cta_close",
+    "closing",
+    "final_cta",
+})
+_PAGE_ACTION_PATTERNS = {
+    "booking": re.compile(
+        r"\b(?:book|booking|schedule|scheduling|appointments?)\b",
+        re.IGNORECASE,
+    ),
+    "consultation": re.compile(r"\bconsultations?\b", re.IGNORECASE),
+    "contact": re.compile(
+        r"\b(?:contact|reach\s+out|get\s+in\s+touch|call|email|message|"
+        r"speak\s+(?:to|with)|talk\s+(?:to|with))\b",
+        re.IGNORECASE,
+    ),
+    "order": re.compile(r"\b(?:order|purchase|buy|shop)\b", re.IGNORECASE),
+    "quote": re.compile(r"\b(?:quotes?|estimates?)\b", re.IGNORECASE),
+    "visit": re.compile(r"\b(?:visit|directions?)\b", re.IGNORECASE),
+}
+_FREE_OFFER_RE = re.compile(
+    r"\b(?:free|complimentary|no[-\s]?cost)\s+"
+    r"(?:quotes?|estimates?|consultations?|assessments?|trials?)\b",
+    re.IGNORECASE,
+)
+_BROAD_LOCATION_SCOPE_RE = re.compile(
+    r"\b(?:(?:coverage\s+across|"
+    r"serv(?:e|es|ing)\s+(?:clients?\s+)?throughout|"
+    r"clients?\s+throughout|"
+    r"available\s+(?:across|throughout))"
+    r"[^.!?\n]{0,80}\b(?:area|region)|"
+    r"(?:the\s+)?(?:entire|whole)\s+[^.!?\n]{0,50}"
+    r"(?:area|region))\b",
+    re.IGNORECASE,
 )
 
 _RATE_LIMITS = {
@@ -1170,6 +1208,199 @@ def _structured_source_duplicate_findings(
     return findings
 
 
+def _section_authored_evidence_texts(contract: dict | None) -> list[str]:
+    values = []
+    section_contract = contract if isinstance(contract, dict) else {}
+    for item in section_contract.get("proof_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(
+            item.get("source_excerpt") or item.get("fact") or ""
+        ).strip()
+        if text:
+            values.append(text)
+    for asset in section_contract.get("source_assets") or []:
+        if not isinstance(asset, dict) or asset.get("kind") != "direct_statement":
+            continue
+        text = str(asset.get("statement") or "").strip()
+        if text:
+            values.append(text)
+    return values
+
+
+def _page_action_types(
+    text: str,
+    *,
+    support: bool = False,
+    brand_name: str = "",
+) -> set[str]:
+    value = str(text or "")
+    if support:
+        return _supported_page_action_types(
+            value,
+            brand_name=brand_name,
+        )
+    action_types = _supported_page_action_types(
+        value,
+        brand_name=brand_name,
+    )
+    action_types.update({
+        action_type
+        for action_type, pattern in _PAGE_ACTION_PATTERNS.items()
+        if _has_non_negated_action_match(pattern, value)
+    })
+    return action_types
+
+
+def _add_page_copy_evidence_backstop_flags(
+    flags: list[dict],
+    section_results: dict,
+    template: dict | None,
+    strategy_brief: dict | None,
+    forbidden_phrases: list[str] | None,
+    *,
+    page_type: str,
+    brand_name: str = "",
+):
+    """Flag narrow correction-path leaks that deterministic evidence can prove."""
+    contracts = _page_plan_contracts(strategy_brief)
+    sections_by_name = {
+        str(section.get("name") or "").strip().casefold(): section
+        for section in (template or {}).get("sections") or []
+        if isinstance(section, dict)
+    }
+    diagnostics = (
+        (strategy_brief or {}).get("source_asset_mapping_diagnostics")
+        if isinstance(strategy_brief, dict)
+        else {}
+    )
+    known_asset_ids = {
+        str(value)
+        for value in (
+            diagnostics.get("assigned_asset_ids") or []
+            if isinstance(diagnostics, dict)
+            and diagnostics.get("active") is True
+            else []
+        )
+        if re.fullmatch(r"A[1-9]\d*", str(value))
+    }
+
+    for raw_section_name, raw_text in (section_results or {}).items():
+        section_name = str(raw_section_name or "").strip().casefold()
+        if not section_name or section_name.startswith("_"):
+            continue
+        text = str(raw_text or "")
+        contract = contracts.get(section_name, {})
+        section = sections_by_name.get(section_name, {})
+        evidence_sparse = section.get("evidence_sparse") is True
+        authored_text = _page_copy_without_materialized_source_units(
+            {section_name: text},
+            strategy_brief,
+            forbidden_phrases,
+        )
+        section_asset_ids = sorted(
+            {
+                str(value)
+                for value in contract.get("source_asset_ids") or []
+                if str(value) in known_asset_ids
+            }
+        )
+        leaked_asset_ids = [
+            asset_id
+            for asset_id in section_asset_ids
+            if re.search(
+                rf"(?im)^[ \t]*(?:#{1,6}[ \t]+)?"
+                rf"(?:source[ \t]+)?{re.escape(asset_id)}[ \t]*:",
+                authored_text,
+            )
+        ]
+        if leaked_asset_ids:
+            flags.append({
+                "code": "page_internal_source_asset_label",
+                "message": (
+                    f'Section "{section.get("label", section_name)}" exposes '
+                    "an internal source-asset label."
+                ),
+                "output": "page_copy",
+                "section": section_name,
+                "asset_ids": leaked_asset_ids,
+                "severity": "review",
+            })
+
+        evidence_texts = _section_authored_evidence_texts(contract)
+        evidence_text = "\n".join(evidence_texts)
+        if section_name in _PAGE_CLOSING_CTA_SECTION_NAMES:
+            generated_actions = _page_action_types(
+                authored_text,
+                brand_name=brand_name,
+            )
+            supported_actions = _page_action_types(
+                evidence_text,
+                support=True,
+                brand_name=brand_name,
+            )
+            unsupported_actions = sorted(
+                generated_actions - supported_actions
+            )
+            if unsupported_actions:
+                flags.append({
+                    "code": "page_unsupported_action_type",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" adds '
+                        "a next-step action type not supported by its exact "
+                        "same-section evidence."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "action_types": unsupported_actions,
+                    "severity": "review",
+                })
+
+            generated_offers = {
+                _normalise_phrase(match.group(0))
+                for match in _FREE_OFFER_RE.finditer(authored_text)
+            }
+            supported_evidence = _normalise_phrase(evidence_text)
+            unsupported_offers = sorted(
+                offer
+                for offer in generated_offers
+                if not _contains_forbidden_phrase(
+                    supported_evidence,
+                    offer,
+                )
+            )
+            if unsupported_offers:
+                flags.append({
+                    "code": "page_unsupported_offer_qualifier",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" adds '
+                        "an unsupported free or no-cost offer."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "offers": unsupported_offers,
+                    "severity": "review",
+                })
+
+        if (
+            evidence_sparse
+            and str(page_type or "").strip().casefold() == "local"
+            and _BROAD_LOCATION_SCOPE_RE.search(authored_text)
+            and not _BROAD_LOCATION_SCOPE_RE.search(evidence_text)
+        ):
+            flags.append({
+                "code": "page_unsupported_location_scope",
+                "message": (
+                    f'Section "{section.get("label", section_name)}" broadens '
+                    "named location evidence into unsupported area-wide "
+                    "coverage."
+                ),
+                "output": "page_copy",
+                "section": section_name,
+                "severity": "review",
+            })
+
+
 def _add_b2b_consumer_cta_flags(
     flags: list[dict],
     business_type: str,
@@ -1696,7 +1927,18 @@ def _add_page_plan_qa_flags(
         section_name = str(section.get("name") or "")
         expected_level = str(section.get("heading_level") or "").casefold()
         contract = contracts.get(section_name.casefold(), {})
-        planned_heading = str(contract.get("planned_heading") or "").strip()
+        evidence_sparse = bool(
+            page_copy_correction_enabled
+            and section.get("evidence_sparse") is True
+        )
+        planned_heading = str(
+            (
+                section.get("planned_heading")
+                if page_copy_correction_enabled
+                else contract.get("planned_heading")
+            )
+            or ""
+        ).strip()
         actual = _first_markdown_heading(section_results.get(section_name, ""))
 
         if exact_headings_enabled and expected_level == "h1":
@@ -1730,7 +1972,19 @@ def _add_page_plan_qa_flags(
                 })
 
         if exact_headings_enabled and expected_level in {"h2", "h3"}:
-            if not planned_heading:
+            if evidence_sparse and not actual:
+                flags.append({
+                    "code": "page_heading_missing",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" does '
+                        f"not start with its required {expected_level.upper()}."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "expected_level": expected_level,
+                    "severity": "review",
+                })
+            elif not planned_heading and not evidence_sparse:
                 flags.append({
                     "code": "page_planned_heading_missing",
                     "message": (
@@ -1741,7 +1995,9 @@ def _add_page_plan_qa_flags(
                     "section": section_name,
                     "severity": "review",
                 })
-            elif not actual or actual[1] != planned_heading:
+            elif planned_heading and (
+                not actual or actual[1] != planned_heading
+            ):
                 flags.append({
                     "code": "page_heading_plan_mismatch",
                     "message": (
@@ -1759,6 +2015,7 @@ def _add_page_plan_qa_flags(
             actual_level, actual_heading = actual
             if (
                 expected_level in {"h2", "h3"}
+                and not evidence_sparse
                 and (
                     actual_heading.casefold() in _GENERIC_PAGE_HEADINGS
                     or actual_heading.casefold()
@@ -2485,6 +2742,15 @@ def _collect_qa_flags(
                     "duplicate_phrases": finding["duplicate_phrases"],
                     "severity": "review",
                 })
+            _add_page_copy_evidence_backstop_flags(
+                flags,
+                section_results,
+                template,
+                strategy_brief,
+                forbidden_phrases,
+                page_type=page_type,
+                brand_name=brand_name,
+            )
         _add_section_word_count_flags(flags, section_results, template)
         page_quality_policy = (
             get_page_quality_policy(page_quality_policy_version)

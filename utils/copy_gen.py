@@ -237,6 +237,39 @@ def _section_specific_prompt_rules(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _evidence_sparse_section_contract(section_name: str) -> tuple[str, str]:
+    """Replace unsupported template requests with one evidence-owned job."""
+    normalized_name = str(section_name or "").strip().casefold()
+    if normalized_name == "faq":
+        return (
+            "Answer only question-and-answer material fully supported by this "
+            "section's exact evidence.",
+            "Answer only questions whose complete answers are directly supported "
+            "by a same-section claim ceiling or direct-source proposition. One "
+            "supported question is enough. Do not create questions about missing "
+            "details, confirmation steps, policies, coverage, availability, "
+            "pricing, consultations, or workflows unless that same-section "
+            "evidence supplies the complete answer.",
+        )
+    if normalized_name in PAGE_CLOSING_CTA_SECTION_NAMES:
+        return (
+            "Present only the supported next-step proposition or exact "
+            "server-materialized paths.",
+            "Do not follow generic CTA examples. Do not add contact, quote, "
+            "consultation, booking, scheduling, ordering, visiting, team, timing, "
+            "urgency, or destination claims unless a same-section claim ceiling "
+            "or direct-source proposition explicitly supports that exact action.",
+        )
+    return (
+        "Preserve this section's exact evidence without extending its scope.",
+        "State each distinct same-section proposition no more than once. If the "
+        "section owns no authored proposition, use only the required heading and "
+        "any server-materialized source unit. Do not fulfil generic template "
+        "requests for services, benefits, local relevance, coverage, process, "
+        "comparisons, advice, or outcomes without exact same-section support.",
+    )
+
+
 # ── Business type context ─────────────────────────────────────────────────────
 
 BUSINESS_TYPE_CONTEXT = {
@@ -1827,7 +1860,6 @@ def format_strategy_brief_for_prompt(
                             )
                         )
                         for asset in source_assets:
-                            asset_id = str(asset.get("id") or "").strip()
                             kind = str(asset.get("kind") or "").strip()
                             if kind == "named_list":
                                 items = [
@@ -1836,7 +1868,7 @@ def format_strategy_brief_for_prompt(
                                     if str(value).strip()
                                 ]
                                 details.append(
-                                    f"    - {asset_id} named list: preserve every exact "
+                                    "    - Named source list: preserve every exact "
                                     "label once as one complete list. The labels authorize "
                                     "no feature, function, availability, or outcome."
                                 )
@@ -1849,7 +1881,7 @@ def format_strategy_brief_for_prompt(
                                     asset.get("attribution") or ""
                                 ).strip()
                                 details.append(
-                                    f"    - {asset_id} testimonial: include the exact quote "
+                                    "    - Source testimonial: include the exact quote "
                                     "and exact attribution together as one atomic item. "
                                     "Do not paraphrase, split, or generalize it."
                                 )
@@ -1870,7 +1902,7 @@ def format_strategy_brief_for_prompt(
                                 if compact_page_section:
                                     if statement:
                                         details.append(
-                                            f"    - {asset_id}: {statement}"
+                                            f"    - Direct source proposition: {statement}"
                                         )
                                         details.append(
                                             "      Preserve only this direct source "
@@ -1881,7 +1913,7 @@ def format_strategy_brief_for_prompt(
                                         )
                                 else:
                                     details.append(
-                                        f"    - {asset_id} source proposition: preserve its "
+                                        "    - Direct source proposition: preserve its "
                                         "supported meaning without adding a mechanism, benefit, "
                                         "condition, comparison, or outcome."
                                     )
@@ -1985,6 +2017,8 @@ _PRIMARY_ACTION_SUPPORT_PATTERN = re.compile(
     r"(?:us|our\s+(?:team|office|firm|company|staff))\b"
     r"|\bsubmit\s+(?:your|a|an|the|project|contact)\b"
     r"|\brequest\s+(?:a|an|your|the)\b"
+    r"|\b(?:quotes?|estimates?)[-\s]+request\s+"
+    r"(?:path|form|page|process|option|link)\b"
     r"|\b(?:book|schedule)\s+(?:a|an|your|the)\b"
     r"|\bvisit\s+(?:us|our|the)\b"
     r"|\bshop\s+(?:now|online|our|the)\b"
@@ -2000,9 +2034,152 @@ _PRIMARY_ACTION_SUPPORT_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+_SUPPORTED_PAGE_ACTION_PATTERNS = {
+    "booking": re.compile(
+        r"\b(?:book|schedule)\s+"
+        r"(?:now|today|online|a|an|your|the)\b"
+        r"|\b(?:make|set\s+up|arrange)\s+"
+        r"(?:a|an|your|the)\s+appointment\b"
+        r"|\b(?:online\s+)?bookings?\s+(?:is|are)\s+available\b"
+        r"|\bappointments?\s+(?:is|are)\s+available\b",
+        re.IGNORECASE,
+    ),
+    "consultation": re.compile(
+        r"\b(?:book|schedule|request|arrange|get)\s+"
+        r"(?:(?:a|an|your|the)\s+)?(?:free\s+)?consultations?\b"
+        r"|\b(?:offers?|provides?)\s+"
+        r"(?:(?:a|an)\s+)?(?:free\s+)?consultations?\b"
+        r"|\bconsultations?\s+(?:is|are)\s+available\b",
+        re.IGNORECASE,
+    ),
+    "contact": re.compile(
+        r"\b(?:contact\s+(?:us|the\s+(?:firm|team|office|company))|"
+        r"reach\s+(?:us|out)|get\s+in\s+touch|"
+        r"call\s+(?:us|the\s+office)|email\s+(?:us|the\s+office)|"
+        r"message\s+us|(?:speak|talk)\s+(?:to|with)\s+"
+        r"(?:us|the\s+(?:firm|team|office)))\b"
+        r"|\b(?:submit|use|complete|fill\s+out)\s+"
+        r"(?:(?:our|the|a)\s+)?contact\s+form\b"
+        r"|\bcontact\s+form\s+(?:is|are)\s+available\b"
+        r"|\bemail\s+[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
+        r"|\bcall\s+\+?\d[\d\s().-]{6,}\d\b",
+        re.IGNORECASE,
+    ),
+    "order": re.compile(
+        r"\b(?:order|purchase|buy)\s+"
+        r"(?:now|online|a|an|your|the|our|this|these)\b"
+        r"|\bshop\s+(?:now|online|our|the)\b"
+        r"|\bordering\s+(?:is|are)\s+available\b",
+        re.IGNORECASE,
+    ),
+    "quote": re.compile(
+        r"\b(?:request|get|obtain|receive)\s+"
+        r"(?:(?:a|an|your|the)\s+)?(?:free\s+)?(?:quotes?|estimates?)\b"
+        r"|\b(?:quotes?|estimates?)[-\s]+request\s+"
+        r"(?:path|form|page|process|option|link)\b"
+        r"|\b(?:quotes?|estimates?)\s+(?:is|are)\s+available\b",
+        re.IGNORECASE,
+    ),
+    "visit": re.compile(
+        r"\bvisit\s+(?:us|our|the)\b"
+        r"|\bget\s+directions\b"
+        r"|\bdirections?\s+(?:is|are)\s+available\b",
+        re.IGNORECASE,
+    ),
+}
+_ACTION_CLAUSE_BOUNDARY_RE = re.compile(
+    r"[.!?;:\n—–]|,\s+(?:and|but|although|however|though|while)\b",
+    re.IGNORECASE,
+)
+_ACTION_NEGATION_PREFIX_RE = re.compile(
+    r"\b(?:(?:do|does|did)\s+not|(?:do|does|did)n['’]t|"
+    r"cannot|can['’]t|unable\s+to|"
+    r"not\s+(?:able|allowed|permitted)\s+to|no\s+longer)\b",
+    re.IGNORECASE,
+)
+_ACTION_DIRECT_NEGATION_PREFIX_RE = re.compile(
+    r"(?:\bnever(?:\s+(?:currently|directly|ever|online))?\s*|"
+    r"\bno\s+(?:(?:available|current|existing|listed|published|"
+    r"supported)\s+){0,2}|"
+    r"\bwithout\s+(?:(?:a|an|any|the)\s+)?"
+    r"(?:(?:available|current|existing)\s+){0,2}|"
+    r"\b(?:no|without)\s+(?:(?:a|an|any|the)\s+)?"
+    r"(?:ability|method|option|path|way)\b[^.!?;:\n—–]{0,40}\bto\s*)$",
+    re.IGNORECASE,
+)
+_ACTION_ENCOURAGEMENT_PREFIX_RE = re.compile(
+    r"\b(?:(?:(?:do\s+not|don['’]t|never)\s+"
+    r"(?:forget|hesitate|wait))|(?:(?:cannot|can['’]t)\s+wait))"
+    r"\s+to\s*$",
+    re.IGNORECASE,
+)
+_ACTION_NEGATION_SUFFIX_RE = re.compile(
+    r"\b(?:(?:is|are|was|were)\s+"
+    r"(?:(?:currently\s+)?unavailable|not\s+(?:currently\s+)?"
+    r"(?:available|enabled|listed|offered|provided|published|supported))|"
+    r"(?:do|does)\s+not\s+(?:currently\s+)?exist|"
+    r"(?:is|are)n['’]t\s+(?:currently\s+)?available)\b",
+    re.IGNORECASE,
+)
+
+
+def _action_clause_before(text: str, position: int) -> str:
+    prefix = str(text or "")[:position]
+    boundaries = list(_ACTION_CLAUSE_BOUNDARY_RE.finditer(prefix))
+    return prefix[boundaries[-1].end():] if boundaries else prefix
+
+
+def _action_clause_after(text: str, position: int) -> str:
+    suffix = str(text or "")[position:]
+    boundary = _ACTION_CLAUSE_BOUNDARY_RE.search(suffix)
+    return suffix[:boundary.start()] if boundary else suffix
+
+
+def _has_non_negated_action_match(pattern: re.Pattern, text: str) -> bool:
+    value = str(text or "")
+    for match in pattern.finditer(value):
+        prefix = _action_clause_before(value, match.start())
+        suffix = _action_clause_after(value, match.end())
+        encouraged_action = _ACTION_ENCOURAGEMENT_PREFIX_RE.search(prefix)
+        if (
+            (
+                encouraged_action
+                or not _ACTION_NEGATION_PREFIX_RE.search(prefix)
+            )
+            and not _ACTION_DIRECT_NEGATION_PREFIX_RE.search(prefix)
+            and not _ACTION_NEGATION_SUFFIX_RE.search(suffix)
+        ):
+            return True
+    return False
+
+
+def _supported_page_action_types(
+    text: str,
+    *,
+    brand_name: str = "",
+) -> set[str]:
+    """Return only action categories backed by narrow, positive wording."""
+    value = str(text or "")
+    supported = {
+        action_type
+        for action_type, pattern in _SUPPORTED_PAGE_ACTION_PATTERNS.items()
+        if _has_non_negated_action_match(pattern, value)
+    }
+    brand = str(brand_name or "").strip()
+    if brand:
+        brand_contact_pattern = re.compile(
+            rf"\b(?:contact|call|email)\s+{re.escape(brand)}(?=\W|$)",
+            re.IGNORECASE,
+        )
+        if _has_non_negated_action_match(brand_contact_pattern, value):
+            supported.add("contact")
+    return supported
+
 
 def _contract_has_authored_primary_action_support(
     contract: dict | None,
+    *,
+    brand_name: str = "",
 ) -> bool:
     section_contract = contract if isinstance(contract, dict) else {}
     support_texts = []
@@ -2029,7 +2206,11 @@ def _contract_has_authored_primary_action_support(
             if text
         )
     return any(
-        _PRIMARY_ACTION_SUPPORT_PATTERN.search(text)
+        _has_non_negated_action_match(
+            _PRIMARY_ACTION_SUPPORT_PATTERN,
+            text,
+        )
+        or _supported_page_action_types(text, brand_name=brand_name)
         for text in support_texts
     )
 
@@ -2322,6 +2503,8 @@ def _structured_source_asset_render_plan(
     strategy_brief: dict | None,
     section_name: str,
     forbidden_phrases="",
+    *,
+    brand_name: str = "",
 ) -> list[dict]:
     """Build exact server-owned list/testimonial inserts from a valid contract."""
     normalized_section_name = str(section_name or "").strip().casefold()
@@ -2344,7 +2527,10 @@ def _structured_source_asset_render_plan(
         normalized_section_name,
     )
     authored_primary_action_support = (
-        _contract_has_authored_primary_action_support(contract)
+        _contract_has_authored_primary_action_support(
+            contract,
+            brand_name=brand_name,
+        )
     )
     closing_cta_section = (
         normalized_section_name in PAGE_CLOSING_CTA_SECTION_NAMES
@@ -2440,6 +2626,8 @@ def _structured_source_asset_prompt_block(render_plan: list[dict]) -> str:
         "- A server-materialized marker means captured source content will be "
         "inserted; it is not a claim ceiling. Do not characterize or infer from "
         "its hidden content.\n"
+        "- Marker names and any A-number inside them are internal placement "
+        "syntax. Never reproduce an A-number as a reader-facing label.\n"
         "- Do not describe the assigned topic as absent, unpublished, unknown, "
         "unavailable, variable, or requiring confirmation. If neither a claim "
         "ceiling nor an assigned direct-source proposition supports authored "
@@ -2607,6 +2795,42 @@ def _normalise_closing_primary_cta_label(
     value = "\n".join(lines)
     value = re.sub(r"\n[ \t]+\n", "\n\n", value)
     return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def _marker_only_sparse_section_copy(
+    section: dict,
+    render_plan: list[dict],
+) -> str:
+    """Build a claim-free shell while the server owns all visible source text."""
+    section_name = str(section.get("name") or "").strip().casefold()
+    heading_level = str(
+        section.get("heading_level") or "none"
+    ).strip().casefold()
+    if section_name in PAGE_CLOSING_CTA_SECTION_NAMES:
+        heading = "Next Steps"
+    elif section_name == "service_area":
+        heading = "Service Area"
+    elif section_name == "faq":
+        heading = "Frequently Asked Questions"
+    else:
+        heading = _clean_strategy_text(
+            section.get("label") or section.get("name"),
+            SECTION_PLANNED_HEADING_CHAR_LIMIT,
+        )
+        heading = re.sub(r"\s+(?:in|for)\s+\[[^\]]+\]", "", heading)
+        heading = re.sub(r"\[[^\]]+\]", "", heading)
+        heading = re.sub(r"\s+", " ", heading).strip() or "Details"
+
+    lines = []
+    if heading_level in {"h2", "h3"}:
+        prefix = "##" if heading_level == "h2" else "###"
+        lines.append(f"{prefix} {heading}")
+    lines.extend(
+        str(item.get("marker") or "").strip()
+        for item in render_plan
+        if str(item.get("marker") or "").strip()
+    )
+    return "\n\n".join(lines)
 
 
 def _materialise_structured_source_assets(
@@ -2855,13 +3079,22 @@ def _build_section_prompt(
         section_contract
     )
     authored_primary_action_support = (
-        _contract_has_authored_primary_action_support(section_contract)
+        _contract_has_authored_primary_action_support(
+            section_contract,
+            brand_name=brand_name,
+        )
+    )
+    unsupported_closing_action = bool(
+        quality_correction_enabled
+        and section_name in PAGE_CLOSING_CTA_SECTION_NAMES
+        and not authored_primary_action_support
     )
     structured_source_render_plan = (
         _structured_source_asset_render_plan(
             strategy_brief,
             section_name,
             forbidden_phrases,
+            brand_name=brand_name,
         )
         if quality_correction_enabled and source_asset_contract
         else []
@@ -2902,6 +3135,11 @@ def _build_section_prompt(
     ).casefold()
     adaptive_mode = str(section.get("adaptive_mode") or "full").casefold()
     section_prompt_rules = _section_specific_prompt_rules(section.get("prompt_rules", ""))
+    section_purpose = str(section.get("purpose") or "").strip()
+    if evidence_sparse:
+        section_purpose, section_prompt_rules = (
+            _evidence_sparse_section_contract(section_name)
+        )
     adaptive_instruction = str(section.get("adaptive_instruction") or "").strip()
 
     if kw_slot == "primary":
@@ -3019,7 +3257,10 @@ def _build_section_prompt(
         strategy_for_prompt,
         output_type="page",
         section_names=[section.get("name", "")],
-        include_headline_direction=heading_level == "h1",
+        include_headline_direction=(
+            heading_level == "h1"
+            and not evidence_sparse
+        ),
         include_source_assets=bool(
             initial_quality_enabled and source_asset_contract
         ),
@@ -3077,9 +3318,23 @@ def _build_section_prompt(
         )
 
     heading_instruction = ""
+    planned_heading_value = (
+        (
+            section.get("planned_heading")
+            or section_contract.get("planned_heading")
+        )
+        if quality_correction_enabled
+        else section_contract.get("planned_heading")
+    )
+    if evidence_sparse:
+        planned_heading_value = (
+            "Next Steps"
+            if unsupported_closing_action
+            else ""
+        )
     planned_heading = (
         _normalise_planned_heading(
-            section_contract.get("planned_heading"),
+            planned_heading_value,
             heading_level,
         )
         if exact_headings_enabled
@@ -3115,13 +3370,21 @@ def _build_section_prompt(
     else:
         heading_instruction = "Do not add a heading. Write body copy only."
 
+    coverage_source = (
+        (
+            section.get("coverage_points")
+            or section_contract.get("coverage_points")
+        )
+        if quality_correction_enabled
+        else section_contract.get("coverage_points")
+    )
     coverage_points = (
         _clean_bounded_strategy_list(
-            section_contract.get("coverage_points"),
+            coverage_source,
             max_items=SECTION_COVERAGE_POINT_LIMIT,
             max_chars=SECTION_COVERAGE_POINT_CHAR_LIMIT,
         )
-        if coverage_enabled
+        if coverage_enabled and not evidence_sparse
         else []
     )
     coverage_block = ""
@@ -3269,12 +3532,28 @@ def _build_section_prompt(
         brand_rule = "- No brand name required.\n"
 
     adaptive_block = ""
-    if adaptive_instruction:
+    if adaptive_instruction or evidence_sparse:
+        if evidence_sparse:
+            adaptive_scope = (
+                "- This guidance replaces the normal template purpose, content "
+                "requests, action examples, coverage requests, and numeric "
+                "quantities when they lack exact same-section evidence. Format, "
+                "keyword, and safety constraints remain binding.\n"
+            )
+        else:
+            adaptive_scope = (
+                "- This guidance overrides only numeric quantity requirements in "
+                "the section-specific rules. Evidence, format, keyword, and safety "
+                "constraints remain binding.\n"
+            )
         adaptive_block = (
             "\nAdaptive section guidance:\n"
-            "- This guidance overrides only numeric quantity requirements in the section-specific "
-            "rules. Evidence, format, keyword, and safety constraints remain binding.\n"
-            f"- {adaptive_instruction}\n"
+            f"{adaptive_scope}"
+            + (
+                f"- {adaptive_instruction}\n"
+                if adaptive_instruction
+                else ""
+            )
         )
     if section_name in PAGE_CTA_SECTION_NAMES:
         if initial_quality_enabled and source_asset_contract:
@@ -3291,11 +3570,6 @@ def _build_section_prompt(
                 "- A CTA is allowed in this section, but it may mention only a contact, "
                 "ordering, or visit method supported by this section's assigned proof points."
             )
-        unsupported_closing_action = bool(
-            quality_correction_enabled
-            and section_name in PAGE_CLOSING_CTA_SECTION_NAMES
-            and not authored_primary_action_support
-        )
         if initial_quality_enabled and not unsupported_closing_action:
             cta_rule += (
                 " Every CTA instruction must be a complete grammatical sentence with "
@@ -3778,7 +4052,7 @@ Page H1: {h1 or 'Not provided'}
 Brand name: {brand_name or 'Not specified'}
 Business context: {business_context}
 
-Section purpose: {section['purpose']}
+Section purpose: {section_purpose}
 Word count guidance: {word_count_guidance}
 {keyword_instruction}
 {heading_instruction}
@@ -4141,35 +4415,57 @@ def generate_page(
                 strategy_brief,
                 sec_name,
                 forbidden_phrases,
+                brand_name=brand_name,
             )
             if page_copy_correction_active
             else []
         )
-        try:
-            provider_options = {
-                "max_tokens": PAGE_SECTION_MAX_TOKENS,
-                "model": resolved_model,
-            }
-            if (
-                page_copy_correction_active
-                and provider == "Claude"
-                and fn is _call_claude
-                and resolved_model == "claude-sonnet-5"
-            ):
-                provider_options["effort"] = (
-                    PAGE_COPY_CORRECTION_CLAUDE_EFFORT
-                )
-            raw = fn(api_key, prompt, **provider_options)
-            authored_text = sanitise(
-                raw,
-                brand_name,
-                protected_exact_phrases=protected_exact_phrases,
+        strategy_section_contract = _strategy_section_contract(
+            strategy_brief,
+            sec_name,
+        )
+        marker_only_sparse_section = bool(
+            page_copy_correction_active
+            and section.get("evidence_sparse") is True
+            and structured_source_render_plan
+            and not _contract_has_authored_evidence(
+                strategy_section_contract
             )
+            and not any((primary_kw, supporting_kw, *lsi_kws))
+            and str(section.get("heading_level") or "").casefold() != "h1"
+        )
+        try:
+            if marker_only_sparse_section:
+                authored_text = _marker_only_sparse_section_copy(
+                    section,
+                    structured_source_render_plan,
+                )
+            else:
+                provider_options = {
+                    "max_tokens": PAGE_SECTION_MAX_TOKENS,
+                    "model": resolved_model,
+                }
+                if (
+                    page_copy_correction_active
+                    and provider == "Claude"
+                    and fn is _call_claude
+                    and resolved_model == "claude-sonnet-5"
+                ):
+                    provider_options["effort"] = (
+                        PAGE_COPY_CORRECTION_CLAUDE_EFFORT
+                    )
+                raw = fn(api_key, prompt, **provider_options)
+                authored_text = sanitise(
+                    raw,
+                    brand_name,
+                    protected_exact_phrases=protected_exact_phrases,
+                )
             if (
                 page_copy_correction_active
                 and sec_name in PAGE_CLOSING_CTA_SECTION_NAMES
                 and _contract_has_authored_primary_action_support(
-                    _strategy_section_contract(strategy_brief, sec_name)
+                    strategy_section_contract,
+                    brand_name=brand_name,
                 )
             ):
                 authored_text = _normalise_closing_primary_cta_label(

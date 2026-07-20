@@ -2,6 +2,7 @@ from copy import deepcopy
 
 from utils.adaptive_templates import (
     ADAPTIVE_TEMPLATE_POLICIES,
+    _authored_evidence_values,
     adapt_template_for_generation,
     attach_depth_policies,
     depth_policy_for_section,
@@ -409,6 +410,164 @@ def test_correction_contract_compacts_sparse_local_sections_without_reassigning_
         if section["name"] != "local_social_proof"
     }
     assert TEMPLATES["local_service_page"] == original
+
+
+def test_correction_contract_rejects_sparse_strategy_headings_and_coverage():
+    strategy = _strategy(
+        ("hero", ["The page identifies named service-area communities."]),
+        ("local_intro", ["The page identifies named service-area communities."]),
+        ("services_in_location", []),
+        ("why_local", []),
+        ("service_area", []),
+        ("local_social_proof", []),
+        ("faq", ["Contacting the firm does not create a client relationship."]),
+        ("cta", []),
+    )
+    unsafe_plans = {
+        "services_in_location": (
+            "Legal Support Available Across Greater Houston",
+            ["General availability throughout the region"],
+        ),
+        "why_local": (
+            "Working With Clients Throughout the Region",
+            ["Region-wide access and consistent service"],
+        ),
+        "service_area": (
+            "Communities We Serve Across Greater Houston",
+            ["Coverage across the whole Greater Houston region"],
+        ),
+        "faq": (
+            "Booking and Coverage Questions",
+            ["How to book", "What a consultation includes"],
+        ),
+        "cta": (
+            "Book Your Free Consultation Today",
+            ["How to schedule", "Get a free quote from the local team"],
+        ),
+    }
+    for contract in strategy["section_guidance"]:
+        if contract["section"] not in unsafe_plans:
+            continue
+        heading, coverage = unsafe_plans[contract["section"]]
+        contract["planned_heading"] = heading
+        contract["coverage_points"] = coverage
+    strategy = attach_depth_policies(
+        strategy,
+        "local_service_page",
+        ADAPTIVE_POLICY_VERSION,
+    )
+
+    adapted, plan = adapt_template_for_generation(
+        TEMPLATES["local_service_page"],
+        "local_service_page",
+        strategy,
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        correction_evidence_contract=True,
+    )
+    adapted_by_name = {
+        section["name"]: section
+        for section in adapted["sections"]
+    }
+    plan_by_name = _plan_by_section(plan)
+
+    for section_name in (
+        "services_in_location",
+        "why_local",
+        "service_area",
+        "faq",
+    ):
+        assert plan_by_name[section_name]["evidence_sparse"] is True
+        assert "planned_heading" not in adapted_by_name[section_name]
+        assert "coverage_points" not in adapted_by_name[section_name]
+    assert "planned_heading" not in adapted_by_name["cta"]
+    assert "coverage_points" not in adapted_by_name["cta"]
+    assert {
+        section["name"]: section["keyword_slot"]
+        for section in adapted["sections"]
+    } == {
+        section["name"]: section["keyword_slot"]
+        for section in TEMPLATES["local_service_page"]["sections"]
+        if section["name"] != "local_social_proof"
+    }
+
+
+def test_correction_contract_deduplicates_overlapping_authored_evidence():
+    proof_excerpt = (
+        "Readers can review the finishing guide and use the custom curtain "
+        "quote request path before contacting the company."
+    )
+    direct_statement = (
+        "The article says readers can review the finishing guide and use the "
+        "custom curtain quote request path before contacting the company."
+    )
+    contract = {
+        "section": "cta",
+        "proof_facts": [{
+            "fact": proof_excerpt,
+            "source_excerpt": proof_excerpt,
+        }],
+        "source_assets": [{
+            "id": "A1",
+            "kind": "direct_statement",
+            "statement": direct_statement,
+        }],
+    }
+    strategy = attach_depth_policies(
+        {"section_guidance": [contract]},
+        "blog_standard",
+        ADAPTIVE_POLICY_VERSION,
+    )
+    cta_section = next(
+        deepcopy(section)
+        for section in TEMPLATES["blog_standard"]["sections"]
+        if section["name"] == "cta"
+    )
+
+    adapted, plan = adapt_template_for_generation(
+        {"sections": [cta_section]},
+        "blog_standard",
+        strategy,
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        correction_evidence_contract=True,
+    )
+
+    assert len(_authored_evidence_values(contract)) == 1
+    assert plan[0]["authored_evidence_count"] == 1
+    assert plan[0]["mode"] == "compact"
+    assert plan[0]["evidence_sparse"] is True
+    assert adapted["sections"][0]["word_count"][0] == 0
+
+
+def test_authored_evidence_containment_dedupe_remains_conservative():
+    short_generic = "Free consultation"
+    richer_offer = "Free consultation appointments are available on weekdays."
+    shared_prefix_left = (
+        "The article explains that finished dimensions affect material quantity."
+    )
+    shared_prefix_right = (
+        "The article explains that fullness affects material quantity."
+    )
+    contract = {
+        "proof_facts": [{
+            "source_excerpt": short_generic,
+        }, {
+            "source_excerpt": shared_prefix_left,
+        }],
+        "source_assets": [{
+            "kind": "direct_statement",
+            "statement": richer_offer,
+        }, {
+            "kind": "direct_statement",
+            "statement": shared_prefix_right,
+        }],
+    }
+
+    assert _authored_evidence_values(contract) == [
+        short_generic,
+        shared_prefix_left,
+        richer_offer,
+        shared_prefix_right,
+    ]
 
 
 def test_correction_contract_evidence_bounds_blog_sections_without_changing_structure():

@@ -194,6 +194,7 @@ _EVIDENCE_EXPANSION_MULTIPLIER = 2
 _EVIDENCE_TRANSITION_WORD_ALLOWANCE = 40
 _EVIDENCE_SPARSE_AUTHORED_MAX = 60
 _RECAP_AUTHORED_MAX = 180
+_EVIDENCE_CONTAINMENT_MIN_CHARS = 24
 
 
 def _section_contracts(strategy_brief: dict | None) -> dict[str, dict]:
@@ -215,6 +216,29 @@ def _proof_point_count(contract: dict | None) -> int:
         1
         for item in proof_points
         if str(item or "").strip()
+    )
+
+
+def _canonical_evidence_text(value: str) -> str:
+    return re.sub(
+        r"[\W_]+",
+        " ",
+        str(value or "").casefold(),
+        flags=re.UNICODE,
+    ).strip()
+
+
+def _same_evidence_cluster(left: str, right: str) -> bool:
+    left_key = _canonical_evidence_text(left)
+    right_key = _canonical_evidence_text(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    shorter, longer = sorted((left_key, right_key), key=len)
+    return (
+        len(shorter) >= _EVIDENCE_CONTAINMENT_MIN_CHARS
+        and shorter in longer
     )
 
 
@@ -247,12 +271,23 @@ def _authored_evidence_values(contract: dict | None) -> list[str]:
         if statement:
             values.append(statement)
     unique_values = []
-    seen = set()
     for value in values:
-        key = " ".join(value.casefold().split())
-        if key and key not in seen:
-            seen.add(key)
+        matching_index = next(
+            (
+                index
+                for index, existing in enumerate(unique_values)
+                if _same_evidence_cluster(existing, value)
+            ),
+            None,
+        )
+        if matching_index is None:
             unique_values.append(value)
+            continue
+        if (
+            len(_canonical_evidence_text(value))
+            > len(_canonical_evidence_text(unique_values[matching_index]))
+        ):
+            unique_values[matching_index] = value
     return unique_values
 
 
@@ -474,7 +509,7 @@ def adapt_template_for_generation(
                     )
                     or (
                         section_name in _CLOSING_CTA_SECTION_NAMES
-                        and authored_evidence_count == 0
+                        and authored_evidence_count <= 1
                     )
                     or (
                         depth_policy == "claim_sensitive"
@@ -559,6 +594,8 @@ def adapt_template_for_generation(
             if evidence_sparse:
                 section["word_count"] = bounded_word_count
                 section["evidence_sparse"] = True
+                section.pop("planned_heading", None)
+                section.pop("coverage_points", None)
                 instruction = (
                     f"{_EVIDENCE_SPARSE_INSTRUCTION} "
                     f"{_COMPACT_INSTRUCTION} {instruction}"
