@@ -4289,6 +4289,28 @@ PROVIDER_DELAY = {
 }
 
 
+def _page_section_provider_options(
+    *,
+    provider: str,
+    provider_fn,
+    model: str,
+    page_copy_correction_active: bool,
+) -> dict:
+    """Keep initial and rerun page-section provider settings identical."""
+    options = {
+        "max_tokens": PAGE_SECTION_MAX_TOKENS,
+        "model": model,
+    }
+    if (
+        page_copy_correction_active
+        and provider == "Claude"
+        and provider_fn is _call_claude
+        and model == "claude-sonnet-5"
+    ):
+        options["effort"] = PAGE_COPY_CORRECTION_CLAUDE_EFFORT
+    return options
+
+
 # ── Section loop ──────────────────────────────────────────────────────────────
 
 def _completed_outline_label(
@@ -4441,19 +4463,12 @@ def generate_page(
                     structured_source_render_plan,
                 )
             else:
-                provider_options = {
-                    "max_tokens": PAGE_SECTION_MAX_TOKENS,
-                    "model": resolved_model,
-                }
-                if (
-                    page_copy_correction_active
-                    and provider == "Claude"
-                    and fn is _call_claude
-                    and resolved_model == "claude-sonnet-5"
-                ):
-                    provider_options["effort"] = (
-                        PAGE_COPY_CORRECTION_CLAUDE_EFFORT
-                    )
+                provider_options = _page_section_provider_options(
+                    provider=provider,
+                    provider_fn=fn,
+                    model=resolved_model,
+                    page_copy_correction_active=page_copy_correction_active,
+                )
                 raw = fn(api_key, prompt, **provider_options)
                 authored_text = sanitise(
                     raw,

@@ -828,6 +828,7 @@ def _rerun_single_section(
         _build_section_prompt,
         _count_brand_mentions,
         _page_brand_mention_budget,
+        _page_section_provider_options,
         _source_asset_exact_phrases,
         _validated_source_asset_section_names,
         DEFAULT_MODELS,
@@ -845,6 +846,7 @@ def _rerun_single_section(
         _build_content_gap_summary,
         _collect_qa_flags,
         _enforce_v1_canonical_page_h1,
+        _page_copy_correction_is_active,
         _qa_status,
         _split_forbidden_phrases,
         _stored_page_quality_context,
@@ -890,6 +892,10 @@ def _rerun_single_section(
             page_copy_requested=True,
         )
         page_quality_enabled = bool(page_quality["enabled"])
+        page_copy_correction_active = _page_copy_correction_is_active(
+            page_quality,
+            requested=True,
+        )
         page_copy_guidance = page_quality["guidance"]
         exact_headings_enabled = bool(
             page_quality["policy"]
@@ -1119,7 +1125,13 @@ def _rerun_single_section(
             page_quality_policy=page_quality["policy"],
         )
 
-        raw = fn(api_key, prompt, model=model)
+        provider_options = _page_section_provider_options(
+            provider=provider,
+            provider_fn=fn,
+            model=model,
+            page_copy_correction_active=page_copy_correction_active,
+        )
+        raw = fn(api_key, prompt, **provider_options)
         new_text = sanitise(raw, brand_name)
 
         # ── 7. Patch section, rebuild full_page + word_count ───────────────────

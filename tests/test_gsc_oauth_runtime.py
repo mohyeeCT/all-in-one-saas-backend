@@ -16,7 +16,7 @@ from credentials import (
 )
 from routers.all_in_one import AIOJobRequest, AIORow, AIOSettings
 from routers import all_in_one, jobs
-from utils import gsc
+from utils import copy_gen, gsc
 from utils.owned_page import (
     OWNED_PAGE_MAPPING_VERSION,
     SOURCE_ASSET_MANIFEST_VERSION,
@@ -1010,7 +1010,11 @@ class RuntimePathTests(unittest.TestCase):
         provider.assert_called_once()
         self.assertEqual(provider.call_args.args[0], private_api_key)
         self.assertEqual(provider.call_args.kwargs["model"], "claude-haiku-4-5-20251001")
-        self.assertNotIn("max_tokens", provider.call_args.kwargs)
+        self.assertEqual(
+            provider.call_args.kwargs["max_tokens"],
+            copy_gen.PAGE_SECTION_MAX_TOKENS,
+        )
+        self.assertNotIn("effort", provider.call_args.kwargs)
         build_docx.assert_called_once()
         final = [
             query for query in sb.executed
@@ -1025,6 +1029,76 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(final.payload["failed_rows"], 0)
         self.assertNotIn(private_api_key, repr(final.payload))
         self.assertNotIn("_gsc_credentials", repr(final.payload))
+
+    def test_quality_v1_sonnet5_section_rerun_keeps_correction_transport(self):
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/page",
+                "page_type": "service",
+                "template_key": "service_page",
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "url": "https://example.com/page",
+                "primary_keyword": "technical seo",
+                "h1": "Technical SEO",
+                "section_results": {"hero": "Existing hero"},
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "dfs_login": "",
+            "provider": "Claude",
+            "model": "claude-sonnet-5",
+            "brand_name": "CopyPilot",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "page_copy_guidance": {
+                "id": "editorial_refresh",
+                "version": "1",
+            },
+        }
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch.object(
+                copy_gen,
+                "_call_claude",
+                return_value="# Fresh technical SEO hero",
+            ) as provider,
+            patch.dict(
+                copy_gen.PROVIDER_FN,
+                {"Claude": provider},
+                clear=True,
+            ),
+            patch.object(meta, "_build_combined_docx", return_value=b"safe-docx"),
+        ):
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "hero",
+                job,
+                "user-1",
+                sb,
+            )
+
+        provider.assert_called_once()
+        self.assertEqual(
+            provider.call_args.kwargs["max_tokens"],
+            copy_gen.PAGE_SECTION_MAX_TOKENS,
+        )
+        self.assertEqual(
+            provider.call_args.kwargs["effort"],
+            copy_gen.PAGE_COPY_CORRECTION_CLAUDE_EFFORT,
+        )
+        self.assertEqual(
+            provider.call_args.kwargs["model"],
+            "claude-sonnet-5",
+        )
 
     def test_versioned_blog_intro_rerun_keeps_canonical_h1(self):
         job = {
@@ -1278,7 +1352,11 @@ class RuntimePathTests(unittest.TestCase):
         rank_keywords.assert_not_called()
         assign_keywords.assert_not_called()
         scrape_owned_page.assert_not_called()
-        self.assertNotIn("max_tokens", provider.call_args.kwargs)
+        self.assertEqual(
+            provider.call_args.kwargs["max_tokens"],
+            copy_gen.PAGE_SECTION_MAX_TOKENS,
+        )
+        self.assertNotIn("effort", provider.call_args.kwargs)
         generated_template = build_docx.call_args.kwargs["template"]
         process_section = next(
             section for section in generated_template["sections"] if section["name"] == "process"
