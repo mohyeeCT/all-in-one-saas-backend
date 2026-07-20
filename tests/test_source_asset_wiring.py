@@ -3102,14 +3102,20 @@ def test_page_copy_correction_uses_exact_excerpt_not_model_expansion():
         "conclusion"
     ) in corrected_prompt
     assert (
-        "Before returning, check the authored word range once"
+        "Address every supported point below; omit any point whose "
+        "client-specific claim lacks an exact claim ceiling."
+    ) in corrected_prompt
+    assert (
+        "Before returning, count the authored words once"
         in corrected_prompt
     )
     assert (
-        "State each supported proposition once. Merge overlapping coverage "
-        "points and do not recap the same proposition in the conclusion."
+        "State each supported proposition and its distinctive source phrase "
+        "once. Merge overlapping coverage points and do not recap the same "
+        "proposition in the conclusion."
     ) in corrected_prompt
     assert "supplier continuity" not in legacy_prompt
+    assert "Address every supported point below" not in legacy_prompt
     assert strategy["primary_positioning"] not in corrected_prompt
     assert strategy["page_goal"] not in corrected_prompt
     assert strategy["search_intent"] not in corrected_prompt
@@ -3119,7 +3125,126 @@ def test_page_copy_correction_uses_exact_excerpt_not_model_expansion():
     assert corrected_prompt.count(
         "Who makes the custom soft goods"
     ) == 1
-    assert len(corrected_prompt) < len(legacy_prompt)
+    assert len(corrected_prompt) <= len(legacy_prompt) + 1100
+
+
+def test_page_copy_correction_closes_source_descriptor_and_path_inference():
+    section = _section("cta_close")
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1", "A2"],
+        },
+        "section_guidance": [{
+            "section": "cta_close",
+            "responsibility": "Preserve the supported next-step path.",
+            "source_asset_ids": ["A1", "A2"],
+            "source_assets": [
+                {
+                    "id": "A1",
+                    "kind": "direct_statement",
+                    "statement": (
+                        "Choose from ready-to-ship products or custom solutions."
+                    ),
+                },
+                {
+                    "id": "A2",
+                    "kind": "named_list",
+                    "items": ["Quote Request", "Fabric Finder"],
+                },
+            ],
+            "required_named_items": ["Quote Request", "Fabric Finder"],
+            "proof_facts": [{
+                "fact": "Ready-to-ship and custom products are offered.",
+                "source": "current_page",
+                "source_excerpt": (
+                    "Choose from ready-to-ship products or custom solutions."
+                ),
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    assert (
+        "Preserve source quantifiers and time scope. Never broaden a list or "
+        "limited statement into all, every, any, always, or currently."
+    ) in corrected_prompt
+    assert (
+        "Ready-to-ship does not prove current stock, immediate selection, "
+        "dispatch timing, or guaranteed availability."
+    ) in corrected_prompt
+    assert (
+        "Custom, expert, or specialist does not prove exact specifications, "
+        "from-scratch construction, direct access to builders, no handoff, "
+        "or a required buyer workflow."
+    ) in corrected_prompt
+    assert (
+        "A form, finder, resource, portfolio, or navigation label proves only "
+        "that captured label. Never invent its fields, filters, inputs, "
+        "pricing logic, destination behavior, resource coverage, or workflow."
+    ) in corrected_prompt
+    assert (
+        "[[COPYPILOT_SOURCE_A2]] (secondary options; 2 exact items)"
+        in corrected_prompt
+    )
+    assert (
+        "at least 94 words and must not exceed 154 words"
+        in corrected_prompt
+    )
+    assert "at least 100 words and must not exceed 160 words" not in corrected_prompt
+    assert "Ready-to-ship does not prove current stock" not in legacy_prompt
+    assert "A form, finder, resource, portfolio" not in legacy_prompt
+
+
+def test_page_copy_correction_repeats_numeric_authored_minimum_in_final_check():
+    section = {
+        **_section("hero", heading_level="h1"),
+        "word_count": [120, 220],
+    }
+    strategy = {
+        "section_guidance": [{
+            "section": "hero",
+            "responsibility": "Introduce the supported offer.",
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    assert (
+        "Before returning, count the authored words once. When the assigned "
+        "evidence supports the approved range, the authored body must reach "
+        "at least 120 words and must not exceed 220 words."
+    ) in corrected_prompt
+    assert (
+        "If it is short, deepen already supported material with clarification, "
+        "distinctions, conditional decision guidance, or another "
+        "evidence-neutral explanation."
+    ) in corrected_prompt
+    assert (
+        "First use any safe, unused assigned claim ceiling or direct source "
+        "proposition once."
+    ) in corrected_prompt
+    assert (
+        "If the evidence cannot support the minimum, stay shorter rather than "
+        "invent, repeat, or pad."
+    ) in corrected_prompt
+    assert "count the authored words once" not in legacy_prompt
 
 
 def test_page_copy_correction_keeps_narrow_assets_secondary_in_closing():
@@ -3511,10 +3636,17 @@ def test_correction_later_sections_receive_bounded_prior_phrase_guidance(
     assert "Earlier authored phrases already repeated" in prompts[1]
     assert "- rose brand" in prompts[1]
     assert (
-        "If a phrase overlaps this section's assigned keyword or canonical "
-        "heading, satisfy that contract once"
+        "These phrases have reached the page-wide authored repetition limit."
     ) in prompts[1]
-    assert "This advisory never changes keyword assignment" in prompts[1]
+    assert (
+        "Do not use a listed phrase again in authored prose when an accurate "
+        "natural alternative exists."
+    ) in prompts[1]
+    assert (
+        "If an assigned keyword or canonical heading requires one, use it "
+        "once for that contract"
+    ) in prompts[1]
+    assert "This constraint never changes keyword assignment" in prompts[1]
     assert keyword_assignment == original_keyword_assignment
 
     legacy_prompt = copy_gen._build_section_prompt(
@@ -3534,6 +3666,30 @@ def test_prior_repeated_authored_phrases_preserves_curly_apostrophes():
     assert phrases
     assert any("venue\u2019s" in phrase for phrase in phrases)
     assert all("venue s" not in phrase for phrase in phrases)
+
+
+def test_prior_repeated_authored_phrases_is_bounded_and_ignores_headings():
+    repeated_lines = [
+        "venue planning teams coordinate",
+        "fabric selection supports masking",
+        "project details guide decisions",
+        "curtain options suit productions",
+        "technical resources explain choices",
+    ]
+    authored = "\n".join([
+        "## Exact Resource Heading",
+        "## Exact Resource Heading",
+        *[
+            f"{phrase}. {phrase}."
+            for phrase in repeated_lines
+        ],
+    ])
+
+    phrases = copy_gen._prior_repeated_authored_phrases(authored)
+
+    assert len(phrases) == copy_gen.SECTION_PRIOR_REPEATED_PHRASE_LIMIT
+    assert all("exact resource heading" not in phrase for phrase in phrases)
+    assert any("curtain options suit productions" in phrase for phrase in phrases)
 
 
 def test_page_copy_correction_materialises_exact_structured_assets_once(

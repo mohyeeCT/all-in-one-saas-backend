@@ -150,12 +150,13 @@ class ProviderRoutingTests(unittest.TestCase):
 
             def fake_claude(
                 _api_key,
-                _prompt,
+                prompt,
                 max_tokens=1500,
                 model=None,
                 effort=None,
             ):
                 captured.append({
+                    "prompt": prompt,
                     "max_tokens": max_tokens,
                     "model": model,
                     "effort": effort,
@@ -251,6 +252,14 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIsNone(other_model["effort"])
         self.assertIsNone(no_policy["effort"])
         self.assertIsNone(other_policy["effort"])
+        correction_contract_marker = (
+            "Ready-to-ship does not prove current stock"
+        )
+        self.assertIn(correction_contract_marker, active["prompt"])
+        self.assertIn(correction_contract_marker, other_model["prompt"])
+        self.assertNotIn(correction_contract_marker, legacy["prompt"])
+        self.assertNotIn(correction_contract_marker, no_policy["prompt"])
+        self.assertNotIn(correction_contract_marker, other_policy["prompt"])
 
     def test_quality_v1_non_claude_page_sections_keep_legacy_call_signature(self):
         captured = []

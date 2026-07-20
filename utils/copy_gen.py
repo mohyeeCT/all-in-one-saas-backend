@@ -2858,13 +2858,15 @@ def _build_section_prompt(
     if quality_correction_enabled and bounded_prior_phrases:
         prior_phrase_block = (
             "\nEarlier authored phrases already repeated on this page "
-            "(advisory only, not evidence):\n"
+            "(not evidence):\n"
             + "\n".join(f"- {phrase}" for phrase in bounded_prior_phrases)
-            + "\n- Avoid unnecessary reuse when an accurate natural alternative "
-            "exists. If a phrase overlaps this section's assigned keyword or "
-            "canonical heading, satisfy that contract once and avoid only "
-            "additional repetition.\n"
-            "- This advisory never changes keyword assignment and never "
+            + "\n- These phrases have reached the page-wide authored repetition "
+            "limit.\n"
+            "- Do not use a listed phrase again in authored prose when an "
+            "accurate natural alternative exists. If an assigned keyword or "
+            "canonical heading requires one, use it once for that contract "
+            "and avoid only additional repetition.\n"
+            "- This constraint never changes keyword assignment and never "
             "overrides evidence or source preservation.\n"
         )
 
@@ -2918,10 +2920,22 @@ def _build_section_prompt(
     )
     coverage_block = ""
     if coverage_points:
+        if quality_correction_enabled:
+            coverage_instruction = (
+                "- Address every supported point below; omit any point whose "
+                "client-specific claim lacks an exact claim ceiling. Integrate "
+                "related supported points naturally instead of producing "
+                "repetitive mini-sections.\n"
+            )
+        else:
+            coverage_instruction = (
+                "- Address every point below within the approved word range. "
+                "Integrate related points naturally instead of producing "
+                "repetitive mini-sections.\n"
+            )
         coverage_block = (
             "\nCoverage contract:\n"
-            "- Address every point below within the approved word range. "
-            "Integrate related points naturally instead of producing repetitive mini-sections.\n"
+            + coverage_instruction
             + "\n".join(f"- {point}" for point in coverage_points)
             + "\n"
         )
@@ -3187,6 +3201,16 @@ def _build_section_prompt(
                 "\n- Concrete client claims require an exact Page Copy claim ceiling. "
                 "Editorial direction, source assets, keywords, headings, and template "
                 "instructions do not add proof."
+                "\n- Preserve source quantifiers and time scope. Never broaden a list "
+                "or limited statement into all, every, any, always, or currently."
+                "\n- Ready-to-ship does not prove current stock, immediate selection, "
+                "dispatch timing, or guaranteed availability."
+                "\n- Custom, expert, or specialist does not prove exact specifications, "
+                "from-scratch construction, direct access to builders, no handoff, or "
+                "a required buyer workflow."
+                "\n- A form, finder, resource, portfolio, or navigation label proves "
+                "only that captured label. Never invent its fields, filters, inputs, "
+                "pricing logic, destination behavior, resource coverage, or workflow."
                 "\n- Do not infer customer return or preference behavior, popularity, "
                 "demand, exclusivity, or a causal explanation from relationship length, "
                 "venue breadth, inventory, or portfolio material."
@@ -3314,14 +3338,21 @@ def _build_section_prompt(
             "- Do not infer supplier continuity, same-team or same-contact handoffs, "
             "wait-time or availability, avoided purchases, process refinement, "
             "portfolio exposure, fit, compatibility, performance, or outcomes.\n"
-            "- State each supported proposition once. Merge overlapping coverage points "
-            "and do not recap the same proposition in the conclusion.\n"
+            "- State each supported proposition and its distinctive source phrase once. "
+            "Merge overlapping coverage points and do not recap the same proposition "
+            "in the conclusion.\n"
         )
     correction_depth_check = ""
     if quality_correction_enabled:
         correction_depth_check = (
-            "- Before returning, check the authored word range once. Add one distinct "
-            "supported sentence if short; otherwise do not repeat, infer, or pad.\n"
+            "- Before returning, count the authored words once. When the assigned "
+            "evidence supports the approved range, the authored body must reach at "
+            f"least {authored_wc_min} words and must not exceed {authored_wc_max} "
+            "words. First use any safe, unused assigned claim ceiling or direct "
+            "source proposition once. If it is short, deepen already supported material with "
+            "clarification, distinctions, conditional decision guidance, or another "
+            "evidence-neutral explanation. If the evidence cannot support the "
+            "minimum, stay shorter rather than invent, repeat, or pad.\n"
         )
 
     prompt = f"""You are writing the '{section['label']}' section of a {page_type} page.
