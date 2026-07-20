@@ -2,9 +2,14 @@ import json
 import sys
 import types
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from utils import copy_gen
+from utils.page_quality import (
+    PAGE_QUALITY_POLICY_VERSION,
+    get_page_quality_policy,
+)
 from utils.templates import get_template
 
 
@@ -128,6 +133,180 @@ class ProviderRoutingTests(unittest.TestCase):
             captured["extra_body"]["output_config"],
             {"effort": copy_gen.STRATEGY_BRIEF_CLAUDE_EFFORT},
         )
+
+    def test_quality_v1_sonnet_5_page_sections_use_low_effort_only_when_active(self):
+        page_quality_policy = get_page_quality_policy(
+            PAGE_QUALITY_POLICY_VERSION
+        )
+
+        def run_case(
+            *,
+            model,
+            correction_enabled,
+            with_policy=True,
+            policy_override=None,
+        ):
+            captured = []
+
+            def fake_claude(
+                _api_key,
+                _prompt,
+                max_tokens=1500,
+                model=None,
+                effort=None,
+            ):
+                captured.append({
+                    "max_tokens": max_tokens,
+                    "model": model,
+                    "effort": effort,
+                })
+                return "Generated section copy."
+
+            with patch.object(
+                copy_gen,
+                "_call_claude",
+                side_effect=fake_claude,
+            ) as provider:
+                with patch.dict(
+                    copy_gen.PROVIDER_FN,
+                    {"Claude": provider},
+                ):
+                    copy_gen.generate_page(
+                        template={
+                            "sections": [{
+                                "name": "intro",
+                                "label": "Introduction",
+                                "purpose": "Introduce the topic.",
+                                "word_count": [20, 40],
+                                "keyword_slot": "none",
+                                "heading_level": "none",
+                                "prompt_rules": "Write directly.",
+                            }]
+                        },
+                        keyword_assignment={"intro": {}},
+                        lsi_keywords={},
+                        business_type="service",
+                        brand_name="Example",
+                        h1="Production Supplies",
+                        page_type="homepage",
+                        paa_questions=[],
+                        ai_overview="",
+                        competitor_section_map={},
+                        client_brief="",
+                        client_existing_content="",
+                        provider="Claude",
+                        api_key="key",
+                        model=model,
+                        strategy_brief={
+                            "section_guidance": [{
+                                "section": "intro",
+                                "responsibility": "Introduce the topic.",
+                            }],
+                        },
+                        page_quality_policy=(
+                            (
+                                policy_override
+                                if policy_override is not None
+                                else page_quality_policy
+                            )
+                            if with_policy
+                            else None
+                        ),
+                        page_copy_correction_enabled=correction_enabled,
+                    )
+
+            self.assertEqual(len(captured), 1)
+            return captured[0]
+
+        active = run_case(
+            model="claude-sonnet-5",
+            correction_enabled=True,
+        )
+        legacy = run_case(
+            model="claude-sonnet-5",
+            correction_enabled=False,
+        )
+        other_model = run_case(
+            model="claude-sonnet-4-6",
+            correction_enabled=True,
+        )
+        no_policy = run_case(
+            model="claude-sonnet-5",
+            correction_enabled=True,
+            with_policy=False,
+        )
+        other_policy = run_case(
+            model="claude-sonnet-5",
+            correction_enabled=True,
+            policy_override=replace(
+                page_quality_policy,
+                version="future-page-quality-policy",
+            ),
+        )
+
+        self.assertEqual(active["max_tokens"], copy_gen.PAGE_SECTION_MAX_TOKENS)
+        self.assertEqual(active["model"], "claude-sonnet-5")
+        self.assertEqual(active["effort"], "low")
+        self.assertIsNone(legacy["effort"])
+        self.assertIsNone(other_model["effort"])
+        self.assertIsNone(no_policy["effort"])
+        self.assertIsNone(other_policy["effort"])
+
+    def test_quality_v1_non_claude_page_sections_keep_legacy_call_signature(self):
+        captured = []
+
+        def strict_provider(api_key, prompt, max_tokens=1500, model=None):
+            captured.append({
+                "api_key": api_key,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "model": model,
+            })
+            return "Generated section copy."
+
+        copy_gen.PROVIDER_FN["Test"] = strict_provider
+        result = copy_gen.generate_page(
+            template={
+                "sections": [{
+                    "name": "intro",
+                    "label": "Introduction",
+                    "purpose": "Introduce the topic.",
+                    "word_count": [20, 40],
+                    "keyword_slot": "none",
+                    "heading_level": "none",
+                    "prompt_rules": "Write directly.",
+                }]
+            },
+            keyword_assignment={"intro": {}},
+            lsi_keywords={},
+            business_type="service",
+            brand_name="Example",
+            h1="Production Supplies",
+            page_type="homepage",
+            paa_questions=[],
+            ai_overview="",
+            competitor_section_map={},
+            client_brief="",
+            client_existing_content="",
+            provider="Test",
+            api_key="key",
+            model="strict-test-model",
+            strategy_brief={
+                "section_guidance": [{
+                    "section": "intro",
+                    "responsibility": "Introduce the topic.",
+                }],
+            },
+            page_quality_policy=get_page_quality_policy(
+                PAGE_QUALITY_POLICY_VERSION
+            ),
+            page_copy_correction_enabled=True,
+        )
+
+        self.assertEqual(result["intro"], "Generated section copy.")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["max_tokens"], copy_gen.PAGE_SECTION_MAX_TOKENS)
+        self.assertEqual(captured[0]["model"], "strict-test-model")
 
     def test_openai_gpt5_uses_max_completion_tokens(self):
         captured = {}

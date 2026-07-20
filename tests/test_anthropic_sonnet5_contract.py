@@ -203,6 +203,45 @@ class AnthropicSonnet5ContractTests(unittest.TestCase):
         self.assertNotIn(PRIVATE_THINKING, visible_text)
         self.assertNotIn(PRIVATE_SIGNATURE, visible_text)
 
+    def test_real_sdk_stream_serializes_low_effort_page_section_request(self):
+        captured_requests = []
+
+        def handler(request):
+            captured_requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=_sse_payload(),
+                request=request,
+            )
+
+        client = _client(handler)
+        self.addCleanup(client.close)
+        with patch.object(anthropic, "Anthropic", return_value=client):
+            visible_text = copy_gen._call_claude(
+                TEST_API_KEY,
+                TEST_PROMPT,
+                max_tokens=copy_gen.PAGE_SECTION_MAX_TOKENS,
+                model=MODEL,
+                effort=copy_gen.PAGE_COPY_CORRECTION_CLAUDE_EFFORT,
+            )
+
+        self.assertEqual(visible_text, VISIBLE_TEXT)
+        self.assertEqual(len(captured_requests), 1)
+        self.assertEqual(
+            captured_requests[0],
+            {
+                "max_tokens": copy_gen.PAGE_SECTION_MAX_TOKENS,
+                "messages": [{"role": "user", "content": TEST_PROMPT}],
+                "model": MODEL,
+                "output_config": {
+                    "effort": copy_gen.PAGE_COPY_CORRECTION_CLAUDE_EFFORT,
+                },
+                "stream": True,
+                "thinking": {"type": "adaptive"},
+            },
+        )
+
     def test_current_stop_reasons_are_accessible(self):
         for stop_reason in ("end_turn", "max_tokens", "refusal", "pause_turn"):
             with self.subTest(stop_reason=stop_reason):

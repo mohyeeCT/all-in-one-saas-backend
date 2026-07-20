@@ -11,6 +11,7 @@ from utils.owned_page import (
     hydrate_owned_blocks,
     validate_owned_block_ids,
 )
+from utils.page_quality import PAGE_QUALITY_POLICY_VERSION
 from utils.templates import SHARED_SECTION_CRAFT_GUIDANCE
 from safe_logging import log_safe_exception
 
@@ -36,8 +37,12 @@ SECTION_PLAN_NOTE_CHAR_LIMIT = 240
 SECTION_PLANNED_HEADING_CHAR_LIMIT = 120
 STRATEGY_BRIEF_MAX_TOKENS = 12288
 STRATEGY_BRIEF_CLAUDE_EFFORT = "medium"
+PAGE_COPY_CORRECTION_CLAUDE_EFFORT = "low"
 STRATEGY_BRIEF_CONTEXT_CHAR_LIMIT = 2500
 STRATEGY_BRIEF_PAGE_CONTEXT_CHAR_LIMIT = 10000
+SECTION_PRIOR_REPEATED_PHRASE_LIMIT = 4
+PRIMARY_CTA_LABEL = "**Primary next step:**"
+SECONDARY_OPTIONS_LABEL = "**Additional options**"
 META_TITLE_PREFERRED_MIN = 50
 META_TITLE_PREFERRED_MAX = 80
 META_DESCRIPTION_PREFERRED_MIN = 140
@@ -1864,6 +1869,13 @@ def format_strategy_brief_for_prompt(
                                         details.append(
                                             f"    - {asset_id}: {statement}"
                                         )
+                                        details.append(
+                                            "      Preserve only this direct source "
+                                            "proposition. Do not extend it with a cause, "
+                                            "inferred customer choice or repeat behavior, "
+                                            "popularity or demand, or stock or current "
+                                            "availability."
+                                        )
                                 else:
                                     details.append(
                                         f"    - {asset_id} source proposition: preserve its "
@@ -2159,6 +2171,10 @@ def _structured_source_asset_render_plan(
         strategy_brief,
         normalized_section_name,
     )
+    closing_cta_section = (
+        normalized_section_name in PAGE_CLOSING_CTA_SECTION_NAMES
+    )
+    secondary_options_label_assigned = False
     plan = []
     for asset in (contract.get("source_assets") or [])[
         :SECTION_SOURCE_ASSET_LIMIT
@@ -2178,13 +2194,28 @@ def _structured_source_asset_render_plan(
             if not items:
                 continue
             rendered = "\n".join(f"- {item}" for item in items)
+            role = (
+                "secondary_options"
+                if closing_cta_section
+                else "named_list"
+            )
+            group_label = ""
+            if role == "secondary_options" and not secondary_options_label_assigned:
+                group_label = SECONDARY_OPTIONS_LABEL
+                secondary_options_label_assigned = True
             plan.append({
                 "asset_id": asset_id,
                 "kind": kind,
+                "role": role,
+                "group_label": group_label,
                 "marker": _structured_source_asset_marker(asset_id),
                 "rendered": rendered,
                 "items": items,
-                "visible_words": _visible_word_count(rendered),
+                "item_count": len(items),
+                "visible_words": (
+                    _visible_word_count(rendered)
+                    + _visible_word_count(group_label)
+                ),
             })
             continue
         if kind != "testimonial":
@@ -2209,19 +2240,51 @@ def _structured_source_asset_render_plan(
 def _structured_source_asset_prompt_block(render_plan: list[dict]) -> str:
     if not render_plan:
         return ""
-    rows = "\n".join(
-        f"- {item['marker']} ({item['kind'].replace('_', ' ')})"
-        for item in render_plan
-    )
-    return (
+    rows = []
+    for item in render_plan:
+        if item.get("kind") == "named_list":
+            item_count = int(item.get("item_count") or 0)
+            item_label = "item" if item_count == 1 else "items"
+            marker_type = (
+                "secondary options"
+                if item.get("role") == "secondary_options"
+                else "named list"
+            )
+            descriptor = f"{marker_type}; {item_count} exact {item_label}"
+        else:
+            descriptor = item["kind"].replace("_", " ")
+        rows.append(f"- {item['marker']} ({descriptor})")
+
+    block = (
         "\nServer-materialized source units:\n"
         "- Place every marker below exactly once, alone on its own line, where "
         "that source unit fits naturally.\n"
         "- Do not quote, paraphrase, describe, or reconstruct a marker's hidden "
         "content. The server replaces markers with canonical source text after "
         "generation.\n"
-        f"{rows}\n"
+        + "\n".join(rows)
+        + "\n"
     )
+    if any(
+        item.get("kind") == "named_list"
+        and int(item.get("item_count") or 0) == 1
+        for item in render_plan
+    ):
+        block += (
+            "- A one-item named-list marker is singular. Introduce it only with "
+            "a complete sentence, and never use an unfinished plural lead-in "
+            "ending in a colon.\n"
+        )
+    if any(
+        item.get("role") == "secondary_options"
+        for item in render_plan
+    ):
+        block += (
+            "- Secondary-option markers must follow the primary action. The "
+            f"server supplies the {SECONDARY_OPTIONS_LABEL} label and all exact "
+            "items as one final group; do not author the label or items.\n"
+        )
+    return block
 
 
 def _remove_partial_named_list_lines(text: str, items: list[str]) -> str:
@@ -2247,12 +2310,140 @@ def _strip_structured_source_markers(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", value).strip()
 
 
+def _remove_single_item_marker_colon_lead_ins(
+    text: str,
+    render_plan: list[dict],
+    protected_exact_phrases: list[str] | None = None,
+) -> str:
+    """Drop only an immediate prose fragment before a one-item list marker."""
+    singleton_items = [
+        item
+        for item in render_plan
+        if (
+            item.get("kind") == "named_list"
+            and int(item.get("item_count") or 0) == 1
+            and item.get("marker")
+        )
+    ]
+    if not singleton_items:
+        return str(text or "")
+
+    lines = str(text or "").splitlines()
+    protected_lead_ins = {
+        re.sub(r"\s+", " ", str(phrase or "")).strip().casefold()
+        for phrase in (protected_exact_phrases or [])
+        if str(phrase or "").strip()
+    }
+
+    def removable_colon_line(candidate: str) -> bool:
+        return bool(
+            len(candidate) <= 240
+            and candidate.endswith(":")
+            and re.sub(
+                r"\s+",
+                " ",
+                candidate,
+            ).strip().casefold() not in protected_lead_ins
+            and not re.match(
+                r"^(?:#{1,6}\s|[-+*]\s|>\s|\d+[.)]\s|```)",
+                candidate,
+            )
+        )
+
+    missing_singleton = False
+    for item in singleton_items:
+        targets = {str(item["marker"]).strip()}
+        rendered = str(item.get("rendered") or "").strip()
+        if rendered and "\n" not in rendered:
+            targets.add(rendered)
+        target_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if line.strip() in targets
+        ]
+        if not target_indexes:
+            missing_singleton = True
+            continue
+        for index in target_indexes:
+            prior_index = index - 1
+            while prior_index >= 0 and not lines[prior_index].strip():
+                prior_index -= 1
+            if (
+                prior_index >= 0
+                and removable_colon_line(lines[prior_index].strip())
+            ):
+                lines[prior_index] = ""
+
+    if missing_singleton:
+        trailing_index = len(lines) - 1
+        while trailing_index >= 0 and not lines[trailing_index].strip():
+            trailing_index -= 1
+        if (
+            trailing_index >= 0
+            and removable_colon_line(lines[trailing_index].strip())
+        ):
+            lines[trailing_index] = ""
+    return "\n".join(lines)
+
+
+def _normalise_closing_primary_cta_label(
+    text: str,
+    *,
+    heading_level: str,
+) -> str:
+    """Place one formatting-only primary label on the first authored action."""
+    value = re.sub(
+        r"\*\*[ \t]*primary[ \t]+next[ \t]+step:[ \t]*\*\*",
+        "",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    lines = value.splitlines()
+    search_start = 0
+    if heading_level in {"h1", "h2", "h3"}:
+        for index, line in enumerate(lines):
+            if re.match(r"^\s*#{1,3}\s+\S", line):
+                search_start = index + 1
+                break
+
+    target_index = None
+    for index in range(search_start, len(lines)):
+        candidate = lines[index].strip()
+        if (
+            not candidate
+            or re.match(r"^#{1,6}\s+\S", candidate)
+            or _STRUCTURED_SOURCE_MARKER_RE.fullmatch(candidate)
+            or re.match(r"^(?:[-+*]\s|>\s|\d+[.)]\s|```)", candidate)
+        ):
+            continue
+        target_index = index
+        break
+    if target_index is not None:
+        lines[target_index] = (
+            f"{PRIMARY_CTA_LABEL} {lines[target_index].strip()}"
+        )
+    value = "\n".join(lines)
+    value = re.sub(r"\n[ \t]+\n", "\n\n", value)
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
 def _materialise_structured_source_assets(
     text: str,
     render_plan: list[dict],
+    *,
+    protected_exact_phrases: list[str] | None = None,
 ) -> str:
     """Replace model placement markers with one canonical source unit each."""
-    value = str(text or "")
+    value = _remove_single_item_marker_colon_lead_ins(
+        text,
+        render_plan,
+        protected_exact_phrases,
+    )
+    secondary_option_items = [
+        item
+        for item in render_plan
+        if item.get("role") == "secondary_options"
+    ]
     initially_placeable_markers = {
         item["marker"]
         for item in render_plan
@@ -2269,6 +2460,13 @@ def _materialise_structured_source_assets(
         rendered = str(item.get("rendered") or "")
         if rendered:
             value = value.replace(rendered, "")
+    if secondary_option_items:
+        value = re.sub(
+            rf"(?im)^[ \t]*{re.escape(SECONDARY_OPTIONS_LABEL)}"
+            r"[ \t]*(?:\r?\n|$)",
+            "",
+            value,
+        )
     for item in render_plan:
         if item.get("kind") == "named_list":
             value = _remove_partial_named_list_lines(
@@ -2283,6 +2481,10 @@ def _materialise_structured_source_assets(
         marker_line = re.compile(
             rf"(?m)^[ \t]*{re.escape(marker)}[ \t]*$"
         )
+        if item.get("role") == "secondary_options":
+            value = marker_line.sub("", value)
+            value = value.replace(marker, "")
+            continue
         if marker in initially_placeable_markers:
             value = marker_line.sub(
                 lambda _match: f"\n\n{rendered}\n\n",
@@ -2294,6 +2496,18 @@ def _materialise_structured_source_assets(
             append_blocks.append(rendered)
         value = value.replace(marker, "")
 
+    secondary_option_blocks = [
+        str(item.get("rendered") or "")
+        for item in secondary_option_items
+        if str(item.get("rendered") or "")
+    ]
+    if secondary_option_blocks:
+        append_blocks.append(
+            SECONDARY_OPTIONS_LABEL
+            + "\n\n"
+            + "\n\n".join(secondary_option_blocks)
+        )
+
     value = _strip_structured_source_markers(value)
     if append_blocks:
         value = "\n\n".join(
@@ -2302,6 +2516,69 @@ def _materialise_structured_source_assets(
             if block
         )
     return value
+
+
+def _prior_repeated_authored_phrases(text: str) -> list[str]:
+    """Return a small authored-only phrase list for later-section guidance."""
+    body = "\n".join(
+        line
+        for line in str(text or "").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    tokens = re.findall(
+        r"[^\W_]+(?:['\u2019-][^\W_]+)*",
+        body.casefold(),
+        re.UNICODE,
+    )
+    if len(tokens) < 4:
+        return []
+
+    stopwords = {
+        "a", "an", "and", "as", "at", "by", "for", "from", "in", "is",
+        "of", "on", "or", "that", "the", "this", "to", "with",
+    }
+    counts = {}
+    for size in (4, 3, 2):
+        for index in range(len(tokens) - size + 1):
+            phrase = tuple(tokens[index:index + size])
+            meaningful = [
+                token
+                for token in phrase
+                if token not in stopwords and len(token) > 2
+            ]
+            if len(set(meaningful)) < 2:
+                continue
+            counts[phrase] = counts.get(phrase, 0) + 1
+
+    repeated = [
+        (phrase, count)
+        for phrase, count in counts.items()
+        if count >= 2
+    ]
+    repeated.sort(
+        key=lambda item: (-len(item[0]), -item[1], " ".join(item[0]))
+    )
+
+    def contains(container, candidate):
+        return (
+            len(candidate) <= len(container)
+            and any(
+                container[index:index + len(candidate)] == candidate
+                for index in range(len(container) - len(candidate) + 1)
+            )
+        )
+
+    selected = []
+    for phrase, _count in repeated:
+        if any(
+            contains(existing, phrase) or contains(phrase, existing)
+            for existing in selected
+        ):
+            continue
+        selected.append(phrase)
+        if len(selected) >= SECTION_PRIOR_REPEATED_PHRASE_LIMIT:
+            break
+    return [" ".join(phrase) for phrase in selected]
 
 
 def _build_section_prompt(
@@ -2319,6 +2596,7 @@ def _build_section_prompt(
     previous_section_text: str,
     client_existing_content: str,
     completed_section_outline: list[str] | None = None,
+    prior_repeated_phrases: list[str] | None = None,
     ai_overview: str = "",
     forbidden_phrases: str = "",
     reviewer_corrections: list[str] | None = None,
@@ -2569,6 +2847,26 @@ def _build_section_prompt(
             "\nCompleted page outline (section labels only):\n"
             + "\n".join(f"- {item}" for item in outline_items[:10])
         )
+    bounded_prior_phrases = [
+        _clean_strategy_text(phrase, 100)
+        for phrase in (prior_repeated_phrases or [])[
+            :SECTION_PRIOR_REPEATED_PHRASE_LIMIT
+        ]
+        if _clean_strategy_text(phrase, 100)
+    ]
+    prior_phrase_block = ""
+    if quality_correction_enabled and bounded_prior_phrases:
+        prior_phrase_block = (
+            "\nEarlier authored phrases already repeated on this page "
+            "(advisory only, not evidence):\n"
+            + "\n".join(f"- {phrase}" for phrase in bounded_prior_phrases)
+            + "\n- Avoid unnecessary reuse when an accurate natural alternative "
+            "exists. If a phrase overlaps this section's assigned keyword or "
+            "canonical heading, satisfy that contract once and avoid only "
+            "additional repetition.\n"
+            "- This advisory never changes keyword assignment and never "
+            "overrides evidence or source preservation.\n"
+        )
 
     heading_instruction = ""
     planned_heading = (
@@ -2787,6 +3085,12 @@ def _build_section_prompt(
                 )
                 if closing_page_goal[-1] not in ".!?":
                     closing_page_goal_clause += "."
+            primary_start_instruction = (
+                " Immediately after the required heading, begin the authored "
+                "body with exactly this label: "
+                if heading_level in {"h1", "h2", "h3"}
+                else " Begin the authored copy with exactly this label: "
+            )
             cta_rule += (
                 " The Page H1 controls the closing scope."
                 + closing_page_goal_clause
@@ -2795,11 +3099,23 @@ def _build_section_prompt(
                 "the H1 topic. Lead with the supported next-step category or paths; "
                 "do not let a narrow example become the heading, opening focus, or "
                 "only next step. Lead with exactly one primary next-step sentence "
-                "tied to the Page H1 and page goal. Treat marker-backed paths and "
-                "resources as secondary choices. Group every marker-backed secondary "
-                "path or resource under no more than three descriptive labels. Do not "
-                "repeat an exact path label in authored prose."
+                "tied to the Page H1 and page goal."
+                + primary_start_instruction
+                + "**Primary next step:** Follow it on the same line "
+                "with one complete supported action sentence."
             )
+            if any(
+                item.get("role") == "secondary_options"
+                for item in structured_source_render_plan
+            ):
+                cta_rule += (
+                    " Treat marker-backed paths and resources as secondary choices. "
+                    "The server groups every marker-backed secondary option under "
+                    f"exactly one {SECONDARY_OPTIONS_LABEL} label at the end. "
+                    "Place each marker after the primary action, do not author "
+                    "another group label, and do not repeat an exact item in "
+                    "authored prose."
+                )
     else:
         cta_rule = (
             "- Do not include a CTA in this section. Keep it informational and let the "
@@ -2868,17 +3184,16 @@ def _build_section_prompt(
     if initial_quality_enabled:
         if quality_correction_enabled:
             initial_evidence_rules = (
-                "\n- Exact claim ceilings in the Page Copy contract are the only "
-                "authority for concrete client claims. Editorial direction, source "
-                "assets, keywords, headings, and template instructions are not evidence."
-                "\n- Do not turn evidence about what exists, who did it, relationship "
-                "length, inventory, scale, portfolio breadth, or expertise into an "
-                "unstated mechanism, workflow, availability, comparison, benefit, "
-                "performance conclusion, or outcome."
-                "\n- Testimonials support only their attributed wording. Names, paths, "
-                "and lists support only their exact captured presence."
-                "\n- Decision guidance must stay conditional and evidence-neutral when "
-                "an exact claim ceiling does not state that the client satisfies it."
+                "\n- Concrete client claims require an exact Page Copy claim ceiling. "
+                "Editorial direction, source assets, keywords, headings, and template "
+                "instructions do not add proof."
+                "\n- Do not infer customer return or preference behavior, popularity, "
+                "demand, exclusivity, or a causal explanation from relationship length, "
+                "venue breadth, inventory, or portfolio material."
+                "\n- Do not combine two supported statements into a third unstated "
+                "conclusion."
+                "\n- Testimonials, names, paths, and lists support only their exact "
+                "captured content. Keep all other decision guidance conditional."
             )
         else:
             initial_evidence_rules += (
@@ -3002,6 +3317,12 @@ def _build_section_prompt(
             "- State each supported proposition once. Merge overlapping coverage points "
             "and do not recap the same proposition in the conclusion.\n"
         )
+    correction_depth_check = ""
+    if quality_correction_enabled:
+        correction_depth_check = (
+            "- Before returning, check the authored word range once. Add one distinct "
+            "supported sentence if short; otherwise do not repeat, infer, or pad.\n"
+        )
 
     prompt = f"""You are writing the '{section['label']}' section of a {page_type} page.
 
@@ -3036,6 +3357,7 @@ Hard rules for all output:
 - Treat owned proof points as the complete evidence allowlist for concrete claims in this section. Do not infer adjacent details such as recipes, counts, ratings, timelines, locations, availability, or operational practices.
 {conditional_outcome_rule}
 {claim_sensitive_contract_rule}
+{correction_depth_check}
 {initial_evidence_rules}
 - The target keyword, URL, search intent, and location words in an award name are not evidence that the business operates in, serves, is near, or is a destination for that location.
 - A list of locations does not prove proximity, coverage across an area, or which location is closest.
@@ -3055,7 +3377,7 @@ Hard rules for all output:
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
 - Return only the section copy. No preamble, no notes, no explanations.
-{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{outline_block}{prev_block}{correction_block}"""
+{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{outline_block}{prior_phrase_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
 
@@ -3306,6 +3628,12 @@ def generate_page(
     previous_section_text = ""
     brand_mention_budget = _page_brand_mention_budget(len(sections)) if brand_name else None
     brand_mentions_used = 0
+    page_copy_correction_active = bool(
+        page_copy_correction_enabled
+        and getattr(page_quality_policy, "version", "")
+        == PAGE_QUALITY_POLICY_VERSION
+    )
+    authored_page_context = ""
 
     for i, section in enumerate(sections):
         if progress_callback:
@@ -3319,6 +3647,11 @@ def generate_page(
         lsi_kws = lsi_keywords.get(supporting_kw or primary_kw, [])
         evidence_bound = bool(_verified_fact_map(strategy_brief))
         comp_excerpts = [] if evidence_bound else competitor_section_map.get(sec_name, [])
+        prior_repeated_phrases = (
+            _prior_repeated_authored_phrases(authored_page_context)
+            if page_copy_correction_active
+            else []
+        )
 
         prompt = _build_section_prompt(
             section=section,
@@ -3335,6 +3668,7 @@ def generate_page(
             previous_section_text=previous_section_text,
             client_existing_content=client_existing_content if i == 0 and not evidence_bound else "",
             completed_section_outline=completed_section_outline,
+            prior_repeated_phrases=prior_repeated_phrases,
             ai_overview="" if evidence_bound else ai_overview,
             forbidden_phrases=forbidden_phrases,
             strategy_brief=strategy_brief,
@@ -3344,16 +3678,12 @@ def generate_page(
             page_copy_guidance=page_copy_guidance,
             page_quality_policy=page_quality_policy,
             initial_generation_quality_contract=page_quality_policy is not None,
-            page_copy_correction_enabled=page_copy_correction_enabled,
+            page_copy_correction_enabled=page_copy_correction_active,
         )
 
         protected_exact_phrases = _source_asset_exact_phrases(
             strategy_brief,
             sec_name,
-        )
-        page_copy_correction_active = bool(
-            page_copy_correction_enabled
-            and page_quality_policy is not None
         )
         structured_source_render_plan = (
             _structured_source_asset_render_plan(
@@ -3365,16 +3695,40 @@ def generate_page(
             else []
         )
         try:
-            raw = fn(api_key, prompt, max_tokens=PAGE_SECTION_MAX_TOKENS, model=resolved_model)
+            provider_options = {
+                "max_tokens": PAGE_SECTION_MAX_TOKENS,
+                "model": resolved_model,
+            }
+            if (
+                page_copy_correction_active
+                and provider == "Claude"
+                and fn is _call_claude
+                and resolved_model == "claude-sonnet-5"
+            ):
+                provider_options["effort"] = (
+                    PAGE_COPY_CORRECTION_CLAUDE_EFFORT
+                )
+            raw = fn(api_key, prompt, **provider_options)
             authored_text = sanitise(
                 raw,
                 brand_name,
                 protected_exact_phrases=protected_exact_phrases,
             )
+            if (
+                page_copy_correction_active
+                and sec_name in PAGE_CLOSING_CTA_SECTION_NAMES
+            ):
+                authored_text = _normalise_closing_primary_cta_label(
+                    authored_text,
+                    heading_level=str(
+                        section.get("heading_level") or "none"
+                    ).strip().casefold(),
+                )
             text = (
                 _materialise_structured_source_assets(
                     authored_text,
                     structured_source_render_plan,
+                    protected_exact_phrases=protected_exact_phrases,
                 )
                 if page_copy_correction_active
                 else authored_text
@@ -3395,11 +3749,18 @@ def generate_page(
             if page_quality_policy is not None
             else section.get("label") or sec_name
         )
-        previous_section_text = (
+        authored_context = (
             _strip_structured_source_markers(authored_text)
             if page_copy_correction_active
             else authored_text
         )
+        previous_section_text = authored_context
+        if page_copy_correction_active:
+            authored_page_context = "\n\n".join(
+                value
+                for value in (authored_page_context, authored_context)
+                if value
+            )[-8000:]
         brand_mentions_used += _count_brand_mentions(
             text,
             brand_name,
