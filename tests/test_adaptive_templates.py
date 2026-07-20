@@ -153,6 +153,98 @@ def test_sections_without_explicit_strategy_contracts_are_not_shrunk_or_removed(
         section["name"] for section in template["sections"]
     ]
     assert all(item["reason"] == "no_section_contract" for item in plan)
+    assert all(item["mode"] == "full" for item in plan)
+    assert [section["word_count"] for section in adapted["sections"]] == [
+        section["word_count"] for section in template["sections"]
+    ]
+
+
+def test_v1_omits_uncontracted_proof_only_sections_when_strategy_is_unavailable():
+    template = TEMPLATES["local_service_page"]
+    adapted, plan = adapt_template_for_generation(
+        template,
+        "local_service_page",
+        {},
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+    )
+    plan_by_section = _plan_by_section(plan)
+
+    assert "local_social_proof" not in {
+        section["name"] for section in adapted["sections"]
+    }
+    assert plan_by_section["local_social_proof"]["mode"] == "omit"
+    assert plan_by_section["local_social_proof"]["reason"] == "no_owned_proof"
+    assert plan_by_section["local_social_proof"]["depth_policy"] == "proof_only"
+    assert plan_by_section["local_intro"]["mode"] == "full"
+    assert plan_by_section["local_intro"]["reason"] == "no_section_contract"
+
+
+def test_v1_keeps_keyword_proof_sections_compact_when_strategy_is_unavailable():
+    cases = {
+        "about_us": ("company_story", "credibility"),
+        "case_study_b2b": ("results",),
+    }
+
+    for template_key, section_names in cases.items():
+        template = TEMPLATES[template_key]
+        adapted, plan = adapt_template_for_generation(
+            template,
+            template_key,
+            {},
+            adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        )
+        original_by_name = {
+            section["name"]: section for section in template["sections"]
+        }
+        adapted_by_name = {
+            section["name"]: section for section in adapted["sections"]
+        }
+        plan_by_section = _plan_by_section(plan)
+
+        for section_name in section_names:
+            assert plan_by_section[section_name]["depth_policy"] == "proof_only"
+            assert plan_by_section[section_name]["mode"] == "compact"
+            assert (
+                plan_by_section[section_name]["reason"]
+                == "keyword_section_without_owned_proof"
+            )
+            assert (
+                adapted_by_name[section_name]["keyword_slot"]
+                == original_by_name[section_name]["keyword_slot"]
+            )
+
+
+def test_v1_missing_contract_obeys_proof_policy_across_builtin_templates():
+    for template_key, template in TEMPLATES.items():
+        adapted, plan = adapt_template_for_generation(
+            template,
+            template_key,
+            {},
+            adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        )
+        original_by_name = {
+            section["name"]: section for section in template["sections"]
+        }
+        adapted_by_name = {
+            section["name"]: section for section in adapted["sections"]
+        }
+
+        for item in plan:
+            if item["depth_policy"] != "proof_only":
+                continue
+            section_name = item["section"]
+            keyword_slot = original_by_name[section_name]["keyword_slot"]
+            if keyword_slot == "none":
+                assert item["mode"] == "omit"
+                assert item["reason"] == "no_owned_proof"
+                assert section_name not in adapted_by_name
+            else:
+                assert item["mode"] == "compact"
+                assert item["reason"] == "keyword_section_without_owned_proof"
+                assert (
+                    adapted_by_name[section_name]["keyword_slot"]
+                    == keyword_slot
+                )
 
 
 def test_empty_proof_contracts_preserve_order_and_never_omit_keyword_sections():

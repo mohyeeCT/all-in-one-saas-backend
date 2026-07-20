@@ -291,9 +291,7 @@ def adapt_template_for_generation(
             depth_instruction = versioned_policy.depth_policy(depth_policy).prompt_instruction
             instruction = f"{instruction} {depth_instruction}".strip()
 
-        if contract is None:
-            reason = "no_section_contract"
-        elif (
+        if (
             versioned_policy
             and depth_policy == "proof_only"
             and proof_count == 0
@@ -304,6 +302,8 @@ def adapt_template_for_generation(
             else:
                 mode = "compact"
                 reason = "keyword_section_without_owned_proof"
+        elif contract is None:
+            reason = "no_section_contract"
         elif (
             versioned_policy
             and depth_policy == "claim_sensitive"

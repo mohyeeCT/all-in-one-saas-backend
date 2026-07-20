@@ -2128,13 +2128,40 @@ def _build_page_quality_diagnostics(
     }
 
 
-def _template_for_page_copy(template: dict, separate_faq_output_enabled: bool) -> dict:
+def _template_for_page_copy(
+    template: dict,
+    separate_faq_output_enabled: bool,
+    *,
+    versioned_blog_h1: bool = False,
+) -> dict:
     page_template = deepcopy(template)
+    sections = page_template.get("sections") or []
+    if (
+        versioned_blog_h1
+        and str(page_template.get("page_type") or "").casefold() == "blog"
+        and not any(
+            str(section.get("heading_level") or "").casefold() == "h1"
+            for section in sections
+        )
+    ):
+        intro = next(
+            (
+                section
+                for section in sections
+                if str(section.get("name") or "").casefold() == "intro"
+                and str(section.get("heading_level") or "none").casefold()
+                == "none"
+            ),
+            None,
+        )
+        if intro is not None:
+            intro["heading_level"] = "h1"
+
     if not separate_faq_output_enabled:
         return page_template
 
     adjusted_sections = []
-    for section in page_template.get("sections") or []:
+    for section in sections:
         name = str(section.get("name", "")).lower()
         label = str(section.get("label", "")).lower()
         is_faq_section = "faq" in name or label == "frequently asked questions"
@@ -3050,7 +3077,15 @@ def _process_single_row(
             except ValueError:
                 resolved_template_key = default_template_key_for_page_type(page_type)
                 template = get_template(resolved_template_key)
-        template = _template_for_page_copy(template, bool(gen_faqs))
+        template = _template_for_page_copy(
+            template,
+            bool(gen_faqs),
+            versioned_blog_h1=bool(
+                page_quality_policy
+                and page_quality_policy.exact_planned_headings
+                and not custom_template_text
+            ),
+        )
 
         kw_assignment = assign_keywords_to_sections(ranked, template["sections"])
         competitor_section_map = {s["name"]: [] for s in template["sections"]}

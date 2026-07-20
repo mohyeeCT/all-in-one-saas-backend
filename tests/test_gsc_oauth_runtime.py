@@ -1026,6 +1026,157 @@ class RuntimePathTests(unittest.TestCase):
         self.assertNotIn(private_api_key, repr(final.payload))
         self.assertNotIn("_gsc_credentials", repr(final.payload))
 
+    def test_versioned_blog_intro_rerun_keeps_canonical_h1(self):
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/stage-curtain-fabric-guide",
+                "page_type": "blog",
+                "template_key": "blog_standard",
+                "gen_meta": False,
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "url": "https://example.com/stage-curtain-fabric-guide",
+                "primary_keyword": "stage curtain fabric guide",
+                "h1": "Stage Curtain Fabric Guide",
+                "input_h1": "Stage Curtain Fabric Guide",
+                "keyword_assignment": {
+                    "intro": {
+                        "primary": "stage curtain fabric guide",
+                        "supporting": "",
+                    },
+                },
+                "section_results": {"intro": "Existing introduction."},
+                "strategy_brief": {},
+                "strategy_status": "unavailable",
+                "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+                "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+                "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+                "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+                "page_copy_guidance": {
+                    "id": "editorial_refresh",
+                    "label": "Editorial Refresh",
+                    "version": "1",
+                },
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "dfs_login": "",
+            "provider": "Claude",
+            "brand_name": "CopyPilot",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "page_copy_guidance": {
+                "id": "editorial_refresh",
+                "version": "1",
+            },
+        }
+        provider = Mock(return_value="A revised introduction.")
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
+            patch.object(
+                meta,
+                "_build_combined_docx",
+                return_value=b"safe-docx",
+            ) as build_docx,
+        ):
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "intro",
+                job,
+                "user-1",
+                sb,
+            )
+
+        final = [
+            query for query in sb.executed
+            if query.operation == "update"
+            and query.payload
+            and "results" in query.payload
+        ][-1]
+        persisted = final.payload["results"][0]
+        generated_template = build_docx.call_args.kwargs["template"]
+        intro = next(
+            section for section in generated_template["sections"]
+            if section["name"] == "intro"
+        )
+
+        self.assertEqual(intro["heading_level"], "h1")
+        self.assertTrue(
+            persisted["section_results"]["intro"].startswith(
+                "# Stage Curtain Fabric Guide\n"
+            )
+        )
+
+    def test_custom_blog_rerun_does_not_enable_builtin_h1_promotion(self):
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/custom-blog",
+                "page_type": "blog",
+                "template_key": "blog_standard",
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "primary_keyword": "custom blog",
+                "h1": "Custom Blog",
+                "section_results": {"intro": "Existing introduction."},
+                "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+                "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+                "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+                "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+                "page_copy_guidance": {
+                    "id": "editorial_refresh",
+                    "label": "Editorial Refresh",
+                    "version": "1",
+                },
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "custom_template_text": "Introduction\nDetails\nNext Steps",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "page_copy_guidance": {
+                "id": "editorial_refresh",
+                "version": "1",
+            },
+        }
+        stop_after_template_gate = RuntimeError("stop after template gate")
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch.object(
+                meta,
+                "_template_for_page_copy",
+                side_effect=stop_after_template_gate,
+            ) as template_for_page_copy,
+        ):
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "intro",
+                job,
+                "user-1",
+                sb,
+            )
+
+        self.assertIs(
+            template_for_page_copy.call_args.kwargs["versioned_blog_h1"],
+            False,
+        )
+
     def test_section_rerun_reuses_expanded_range_and_pagewide_brand_budget(self):
         job = {
             **_stored_job(),

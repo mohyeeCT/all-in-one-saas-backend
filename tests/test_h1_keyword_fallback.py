@@ -496,6 +496,220 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
 
         self.assertGreater(templates_with_faq, 0)
 
+    def test_versioned_blog_h1_is_added_on_a_copy_without_mutating_templates(self):
+        adjusted = all_in_one._template_for_page_copy(
+            TEMPLATES["blog_standard"],
+            False,
+            versioned_blog_h1=True,
+        )
+        legacy = all_in_one._template_for_page_copy(
+            TEMPLATES["blog_standard"],
+            False,
+        )
+        non_blog = all_in_one._template_for_page_copy(
+            TEMPLATES["about_us"],
+            False,
+            versioned_blog_h1=True,
+        )
+
+        self.assertEqual(adjusted["sections"][0]["name"], "intro")
+        self.assertEqual(adjusted["sections"][0]["heading_level"], "h1")
+        self.assertEqual(legacy["sections"][0]["heading_level"], "none")
+        self.assertEqual(
+            TEMPLATES["blog_standard"]["sections"][0]["heading_level"],
+            "none",
+        )
+        self.assertTrue(
+            all(
+                section.get("heading_level") != "h1"
+                for section in non_blog["sections"]
+            )
+        )
+
+    def test_versioned_blog_generation_enforces_h1_without_reassigning_keywords(self):
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "brand_name": "Example",
+                    "business_type": "b2b",
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+        ranked = [{
+            "keyword": "stage curtain fabric guide",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={
+                "intro": "Useful opening copy.",
+                "_full_page": "Useful opening copy.",
+                "_word_count": 3,
+            },
+        ) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/stage-curtain-fabric-guide",
+                    "keyword": "stage curtain fabric guide",
+                    "page_type": "blog",
+                    "h1": "Stage Curtain Fabric Guide",
+                    "template_key": "blog_standard",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        template = generate_page.call_args.kwargs["template"]
+        intro = next(
+            section for section in template["sections"]
+            if section["name"] == "intro"
+        )
+        assignment = generate_page.call_args.kwargs["keyword_assignment"]
+
+        self.assertEqual(intro["heading_level"], "h1")
+        self.assertEqual(
+            assignment["intro"]["primary"],
+            "stage curtain fabric guide",
+        )
+        self.assertTrue(
+            result["section_results"]["intro"].startswith(
+                "# Stage Curtain Fabric Guide\n"
+            )
+        )
+
+    def test_versioned_custom_blog_keeps_its_user_defined_heading_structure(self):
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "brand_name": "Example",
+                    "business_type": "b2b",
+                    "custom_template_text": (
+                        "Introduction | 100-160\n"
+                        "Technical Details | 200-300"
+                    ),
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+        ranked = [{
+            "keyword": "stage curtain fabric guide",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={
+                "introduction": "Useful opening copy.",
+                "_full_page": "Useful opening copy.",
+                "_word_count": 3,
+            },
+        ) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/custom-stage-curtain-guide",
+                    "keyword": "stage curtain fabric guide",
+                    "page_type": "blog",
+                    "h1": "Stage Curtain Fabric Guide",
+                    "template_key": "blog_standard",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        introduction = next(
+            section
+            for section in generate_page.call_args.kwargs["template"]["sections"]
+            if section["name"] == "introduction"
+        )
+
+        self.assertEqual(introduction["heading_level"], "none")
+        self.assertEqual(
+            result["section_results"]["introduction"],
+            "Useful opening copy.",
+        )
+
+    def test_versioned_local_page_omits_proof_section_when_strategy_is_unavailable(self):
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "brand_name": "Example",
+                    "business_type": "local",
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+        ranked = [{
+            "keyword": "curtain cleaning houston",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "generate_strategy_brief",
+            side_effect=RuntimeError("strategy unavailable"),
+        ), patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={
+                "hero": "# Curtain Cleaning Houston\nUseful opening copy.",
+                "_full_page": "# Curtain Cleaning Houston\nUseful opening copy.",
+                "_word_count": 6,
+            },
+        ) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/curtain-cleaning-houston",
+                    "keyword": "curtain cleaning houston",
+                    "page_type": "local_service",
+                    "h1": "Curtain Cleaning Houston",
+                    "template_key": "local_service_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        generated_sections = {
+            section["name"]
+            for section in generate_page.call_args.kwargs["template"]["sections"]
+        }
+        proof_plan = next(
+            item for item in result["adaptive_section_plan"]
+            if item["section"] == "local_social_proof"
+        )
+
+        self.assertEqual(result["strategy_status"], "unavailable")
+        self.assertNotIn("local_social_proof", generated_sections)
+        self.assertEqual(proof_plan["mode"], "omit")
+        self.assertEqual(proof_plan["reason"], "no_owned_proof")
+
     def test_page_copy_adapts_sections_after_keyword_assignment_without_reassigning_keywords(self):
         settings = {
             **_settings(),

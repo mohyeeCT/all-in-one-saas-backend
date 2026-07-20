@@ -3128,6 +3128,46 @@ def test_page_copy_correction_uses_exact_excerpt_not_model_expansion():
     assert len(corrected_prompt) <= len(legacy_prompt) + 1100
 
 
+def test_page_copy_correction_preserves_logical_alternatives_and_category_boundaries():
+    exact_excerpt = (
+        "Synthetic velours may be inherently or durably flame-retardant. "
+        "Treated cotton velour should be checked periodically."
+    )
+    section = _section("differentiators")
+    strategy = {
+        "section_guidance": [{
+            "section": "differentiators",
+            "responsibility": "Explain the supported material distinctions.",
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    logical_rule = "Keep A-or-B alternatives and categories exact"
+    category_rule = (
+        "One category's condition does not prove another avoids it; never "
+        "infer mechanism, inspection duties, or maintenance relief"
+    )
+
+    assert logical_rule in corrected_prompt
+    assert category_rule in corrected_prompt
+    assert logical_rule not in legacy_prompt
+    assert category_rule not in legacy_prompt
+
+
 def test_page_copy_correction_closes_source_descriptor_and_path_inference():
     section = _section("cta_close")
     strategy = {

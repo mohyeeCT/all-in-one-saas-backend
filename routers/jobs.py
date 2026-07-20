@@ -935,7 +935,14 @@ def _rerun_single_section(
             template = get_template(resolved_template_key)
 
         separate_faq_output = bool(stored_row.get("gen_faqs", settings.get("gen_faqs", True)))
-        template = _template_for_page_copy(template, separate_faq_output)
+        template = _template_for_page_copy(
+            template,
+            separate_faq_output,
+            versioned_blog_h1=bool(
+                exact_headings_enabled
+                and not str(settings.get("custom_template_text") or "").strip()
+            ),
+        )
         stored_strategy_brief = row_result.get("strategy_brief") or {}
         source_asset_rerun_enabled = bool(
             page_quality.get("source_asset_manifest_version")
