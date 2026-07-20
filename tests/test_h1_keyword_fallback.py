@@ -1037,6 +1037,42 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         scrape_url.assert_not_called()
         self.assertEqual(generate_page.call_args.kwargs["client_existing_content"], scraped_content)
 
+    def test_page_copy_does_not_scrape_existing_content_when_scraping_is_disabled(self):
+        settings = {
+            **_settings(),
+            "gen_page_copy": True,
+            "scrape_pages": False,
+            "scrape_provider": "jina",
+            "business_type": "service",
+            "brand_name": "Example",
+        }
+
+        with patch.object(all_in_one, "scrape_page_context") as owned_scrape, \
+             patch.object(all_in_one, "scrape_url") as scrape_url, \
+             patch.object(
+                 all_in_one,
+                 "generate_page",
+                 return_value={"hero": "Hero copy", "_word_count": 2},
+             ) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.invalid/",
+                    "keyword": "estate planning services in texas",
+                    "page_type": "homepage",
+                    "h1": "",
+                    "template_key": "homepage",
+                },
+                settings=settings,
+            )
+
+        owned_scrape.assert_not_called()
+        scrape_url.assert_not_called()
+        self.assertEqual(
+            generate_page.call_args.kwargs["client_existing_content"],
+            "",
+        )
+        self.assertEqual(result["scrape_status"], "Disabled")
+
     def test_page_copy_only_reads_owned_page_before_strategy_generation(self):
         settings = {
             **_settings(),

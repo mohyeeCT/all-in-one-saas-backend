@@ -3632,7 +3632,11 @@ def _process_single_row(
         if scraped_page_content:
             client_existing_content = scraped_page_content[:800]
             run_diagnostics["scrape"]["client_existing_content_success"] = True
-        elif settings.get("scrape_provider", "jina") == "jina" and scraper_override != "firecrawl":
+        elif (
+            settings.get("scrape_pages", True)
+            and settings.get("scrape_provider", "jina") == "jina"
+            and scraper_override != "firecrawl"
+        ):
             try:
                 existing = scrape_url(url, api_key=jina_key)
                 if existing["success"]:
