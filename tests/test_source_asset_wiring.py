@@ -206,6 +206,10 @@ def test_correction_only_strategy_prompt_requests_keyword_h2_and_asset_audit(
         "verify every relevant source asset ID is assigned exactly once",
         "same-heading direct statement",
         "rebalance suitable assignments within the existing three-asset",
+        "A responsibility, guidance item, or coverage point may request a "
+        "factual topic only when that section owns its proof fact or source asset",
+        "Otherwise plan a concise evidence-neutral transition or withhold the "
+        "claim area",
     )
     for rule in correction_only_rules:
         assert rule in correction_prompt
@@ -3125,7 +3129,7 @@ def test_page_copy_correction_uses_exact_excerpt_not_model_expansion():
     assert corrected_prompt.count(
         "Who makes the custom soft goods"
     ) == 1
-    assert len(corrected_prompt) <= len(legacy_prompt) + 1100
+    assert len(corrected_prompt) <= len(legacy_prompt) + 1750
 
 
 def test_page_copy_correction_preserves_logical_alternatives_and_category_boundaries():
@@ -3161,11 +3165,260 @@ def test_page_copy_correction_preserves_logical_alternatives_and_category_bounda
         "One category's condition does not prove another avoids it; never "
         "infer mechanism, inspection duties, or maintenance relief"
     )
+    modality_rule = (
+        "Keep scope, quantifiers, and modality: do not broaden limited "
+        "claims to all, every, any, always, or currently; can is not will or "
+        "eliminates; preferred is not required"
+    )
 
     assert logical_rule in corrected_prompt
     assert category_rule in corrected_prompt
+    assert modality_rule in corrected_prompt
     assert logical_rule not in legacy_prompt
     assert category_rule not in legacy_prompt
+    assert modality_rule not in legacy_prompt
+
+
+def test_page_copy_correction_requires_evidence_for_general_advice():
+    exact_excerpt = (
+        "Lining is recommended for synthetic velours and is optional for "
+        "cotton velours."
+    )
+    section = _section("differentiators")
+    strategy = {
+        "section_guidance": [{
+            "section": "differentiators",
+            "responsibility": "Explain the supported lining distinctions.",
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    evidence_rule = (
+        "An authored fact must preserve one assigned direct-source proposition "
+        "at the same scope or follow directly from one claim ceiling"
+    )
+    assertion_scope_rule = (
+        "This includes advice, FAQs, examples, comparisons, causes, and processes"
+    )
+    qualifier_rule = (
+        "General knowledge, common practice, and hedges add no proof"
+    )
+
+    assert evidence_rule in corrected_prompt
+    assert assertion_scope_rule in corrected_prompt
+    assert qualifier_rule in corrected_prompt
+    assert evidence_rule not in legacy_prompt
+    assert assertion_scope_rule not in legacy_prompt
+    assert qualifier_rule not in legacy_prompt
+
+
+def test_page_copy_correction_reasserts_evidence_after_strategy_guidance():
+    exact_excerpt = "Weekend appointments are available on request."
+    unsupported_guidance = (
+        "Explain flexible scheduling and the firm's intake process."
+    )
+    section = _section("faq")
+    strategy = {
+        "section_guidance": [{
+            "section": "faq",
+            "responsibility": "Answer supported scheduling questions.",
+            "guidance": unsupported_guidance,
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+    evidence_rule = (
+        "An authored fact must preserve one assigned direct-source proposition "
+        "at the same scope or follow directly from one claim ceiling"
+    )
+
+    assert corrected_prompt.count(unsupported_guidance) == 1
+    assert corrected_prompt.index(unsupported_guidance) < corrected_prompt.index(
+        evidence_rule
+    )
+    assert legacy_prompt.index(unsupported_guidance) > legacy_prompt.index(
+        "Hard rules for all output:"
+    )
+
+
+def test_page_copy_correction_blocks_supplier_and_budget_inference():
+    exact_excerpt = (
+        "Lining can block light bleeding from upstage when the face fabric is "
+        "not opaque and can protect the back of the main curtain."
+    )
+    section = _section("differentiators")
+    strategy = {
+        "section_guidance": [{
+            "section": "differentiators",
+            "responsibility": "Explain the supported lining decision.",
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    supplier_rule = (
+        "Supplier asks, assumptions, recommendations, pricing, next steps"
+    )
+    consequence_rule = (
+        "necessity, exclusive remedies, added cost or labor, savings, and "
+        "budget reallocation"
+    )
+
+    assert supplier_rule in corrected_prompt
+    assert consequence_rule in corrected_prompt
+    assert supplier_rule not in legacy_prompt
+    assert consequence_rule not in legacy_prompt
+
+
+def test_page_copy_correction_cannot_weaken_assigned_facts():
+    exact_excerpt = (
+        "Free consultation. Monday through Friday, 8:00 AM to 5:00 PM. "
+        "Saturday and Sunday appointments are available upon request."
+    )
+    section = _section("faq")
+    strategy = {
+        "section_guidance": [{
+            "section": "faq",
+            "responsibility": "Answer only from the supported consultation facts.",
+            "proof_points": [exact_excerpt],
+            "proof_facts": [{
+                "fact": exact_excerpt,
+                "source": "current_page",
+                "source_excerpt": exact_excerpt,
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    contradiction_rule = (
+        "Do not contradict or weaken an assigned fact, call it unknown or "
+        "unpublished, or add unsupported flexibility, variability, caveats, "
+        "or exceptions"
+    )
+    missing_proof_rule = (
+        "Without either support, omit the claim; missing proof does not mean "
+        "absent, unpublished, unknown, unavailable, or variable"
+    )
+
+    assert contradiction_rule in corrected_prompt
+    assert missing_proof_rule in corrected_prompt
+    assert contradiction_rule not in legacy_prompt
+    assert missing_proof_rule not in legacy_prompt
+
+
+def test_page_copy_correction_treats_hidden_source_units_as_truth_constraints():
+    appointment_items = [
+        "Free consultation",
+        "Monday to Friday, 8:00 AM to 5:00 PM",
+        "Saturday and Sunday appointments available upon request",
+    ]
+    section = _section("faq")
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "faq",
+            "responsibility": "Answer the supported consultation questions.",
+            "coverage_points": [
+                "Consultation cost",
+                "Standard hours",
+                "Weekend appointments",
+            ],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": appointment_items,
+            }],
+        }],
+    }
+
+    legacy_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=False,
+    )
+    corrected_prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(section, strategy),
+        page_copy_correction_enabled=True,
+    )
+
+    marker_scope_rule = (
+        "A server-materialized marker means captured source content will be "
+        "inserted; it is not a claim ceiling"
+    )
+    marker_contradiction_rule = (
+        "Do not describe the assigned topic as absent, unpublished, unknown, "
+        "unavailable, variable, or requiring confirmation"
+    )
+    marker_omit_rule = (
+        "If neither a claim ceiling nor an assigned direct-source proposition "
+        "supports authored commentary, place the marker neutrally and omit that "
+        "commentary"
+    )
+
+    assert (
+        "[[COPYPILOT_SOURCE_A1]] (named list; 3 exact items)"
+        in corrected_prompt
+    )
+    assert all(item not in corrected_prompt for item in appointment_items)
+    assert marker_scope_rule in corrected_prompt
+    assert marker_contradiction_rule in corrected_prompt
+    assert marker_omit_rule in corrected_prompt
+    assert marker_scope_rule not in legacy_prompt
+    assert marker_contradiction_rule not in legacy_prompt
+    assert marker_omit_rule not in legacy_prompt
+    assert "[[COPYPILOT_SOURCE_A1]]" not in legacy_prompt
 
 
 def test_page_copy_correction_closes_source_descriptor_and_path_inference():
@@ -3195,13 +3448,6 @@ def test_page_copy_correction_closes_source_descriptor_and_path_inference():
                 },
             ],
             "required_named_items": ["Quote Request", "Fabric Finder"],
-            "proof_facts": [{
-                "fact": "Ready-to-ship and custom products are offered.",
-                "source": "current_page",
-                "source_excerpt": (
-                    "Choose from ready-to-ship products or custom solutions."
-                ),
-            }],
         }],
     }
 
@@ -3215,8 +3461,9 @@ def test_page_copy_correction_closes_source_descriptor_and_path_inference():
     )
 
     assert (
-        "Preserve source quantifiers and time scope. Never broaden a list or "
-        "limited statement into all, every, any, always, or currently."
+        "Keep scope, quantifiers, and modality: do not broaden limited "
+        "claims to all, every, any, always, or currently; can is not will or "
+        "eliminates; preferred is not required."
     ) in corrected_prompt
     assert (
         "Ready-to-ship does not prove current stock, immediate selection, "
@@ -3227,11 +3474,13 @@ def test_page_copy_correction_closes_source_descriptor_and_path_inference():
         "from-scratch construction, direct access to builders, no handoff, "
         "or a required buyer workflow."
     ) in corrected_prompt
-    assert (
-        "A form, finder, resource, portfolio, or navigation label proves only "
-        "that captured label. Never invent its fields, filters, inputs, "
-        "pricing logic, destination behavior, resource coverage, or workflow."
-    ) in corrected_prompt
+    path_label_rule = (
+        "A captured form, finder, resource, portfolio, navigation, contact, or "
+        "location label proves only its label. Never invent fields, filters, inputs, "
+        "pricing logic, destination content or behavior, phone, office, local team, "
+        "coverage, or workflow."
+    )
+    assert path_label_rule in corrected_prompt
     assert (
         "[[COPYPILOT_SOURCE_A2]] (secondary options; 2 exact items)"
         in corrected_prompt
@@ -3242,7 +3491,7 @@ def test_page_copy_correction_closes_source_descriptor_and_path_inference():
     )
     assert "at least 100 words and must not exceed 160 words" not in corrected_prompt
     assert "Ready-to-ship does not prove current stock" not in legacy_prompt
-    assert "A form, finder, resource, portfolio" not in legacy_prompt
+    assert path_label_rule not in legacy_prompt
 
 
 def test_page_copy_correction_repeats_numeric_authored_minimum_in_final_check():
@@ -3296,6 +3545,12 @@ def test_page_copy_correction_keeps_narrow_assets_secondary_in_closing():
             "guidance": (
                 "Lead with one narrow masking-fabric example before the close."
             ),
+            "proof_points": ["Visitors can submit project details."],
+            "proof_facts": [{
+                "fact": "Visitors can submit project details.",
+                "source": "current_page",
+                "source_excerpt": "Visitors can submit project details.",
+            }],
         }],
     }
     closing_prompt = copy_gen._build_section_prompt(
@@ -3338,6 +3593,137 @@ def test_page_copy_correction_keeps_narrow_assets_secondary_in_closing():
     )
     assert "Lead with exactly one primary next-step sentence" not in hero_prompt
     assert "**Primary next step:**" not in hero_prompt
+
+
+def test_page_copy_correction_uses_marker_paths_when_primary_action_has_no_proof():
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta_close",
+            "responsibility": "Close with the captured next-step paths.",
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": ["Contact", "View Our Service Area"],
+            }],
+        }],
+    }
+
+    prompt = copy_gen._build_section_prompt(
+        **_correction_prompt_kwargs(
+            _section("cta_close"),
+            strategy,
+        ),
+        page_copy_correction_enabled=True,
+    )
+    fallback_rule = (
+        "If no same-section claim ceiling or direct-source proposition supports "
+        "an authored primary action, do not invent one. Let the exact "
+        "marker-backed paths supply the next steps, introduced only with a "
+        "neutral sentence"
+    )
+
+    assert (
+        "[[COPYPILOT_SOURCE_A1]] (named list; 2 exact items)"
+        in prompt
+    )
+    assert "(secondary options;" not in prompt
+    assert fallback_rule in prompt
+    assert "**Primary next step:**" not in prompt
+    assert "Additional options" not in prompt
+
+
+@pytest.mark.parametrize(
+    "unrelated_fact",
+    [
+        (
+            "Using this site or communicating with the firm does not create an "
+            "attorney-client relationship."
+        ),
+        (
+            "Use of this website does not create an attorney-client "
+            "relationship."
+        ),
+        "Clients may reach a settlement.",
+    ],
+)
+def test_page_copy_correction_does_not_treat_unrelated_fact_as_cta_support(
+    monkeypatch,
+    unrelated_fact,
+):
+    paths = ["Contact", "View Our Service Area"]
+    strategy = {
+        "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "source_asset_mapping_diagnostics": {
+            "active": True,
+            "assigned_asset_ids": ["A1"],
+        },
+        "section_guidance": [{
+            "section": "cta_close",
+            "responsibility": "Close with the captured next-step paths.",
+            "proof_points": [unrelated_fact],
+            "proof_facts": [{
+                "fact": unrelated_fact,
+                "source": "current_page",
+                "source_excerpt": unrelated_fact,
+            }],
+            "source_asset_ids": ["A1"],
+            "source_assets": [{
+                "id": "A1",
+                "kind": "named_list",
+                "items": paths,
+            }],
+        }],
+    }
+    captured_prompts = []
+
+    def provider(_api_key, prompt, **_kwargs):
+        captured_prompts.append(prompt)
+        return (
+            "## Explore the Available Paths\n\n"
+            "Use the captured paths below.\n\n"
+            "[[COPYPILOT_SOURCE_A1]]"
+        )
+
+    provider_name = "UnrelatedClosingFactTest"
+    monkeypatch.setitem(copy_gen.PROVIDER_FN, provider_name, provider)
+    monkeypatch.setitem(copy_gen.PROVIDER_DELAY, provider_name, 0)
+    result = copy_gen.generate_page(
+        template={"sections": [_section("cta_close")]},
+        keyword_assignment={"cta_close": {}},
+        lsi_keywords={},
+        business_type="b2b",
+        brand_name="Example",
+        h1="Houston Legal Services",
+        page_type="service",
+        paa_questions=[],
+        ai_overview="",
+        competitor_section_map={},
+        client_brief="",
+        client_existing_content="",
+        provider=provider_name,
+        api_key="test-key",
+        model="fixed-test-model",
+        strategy_brief=strategy,
+        page_quality_policy=_PAGE_POLICY,
+        page_copy_correction_enabled=True,
+    )
+
+    assert len(captured_prompts) == 1
+    assert (
+        "[[COPYPILOT_SOURCE_A1]] (named list; 2 exact items)"
+        in captured_prompts[0]
+    )
+    assert "(secondary options;" not in captured_prompts[0]
+    assert "**Primary next step:**" not in captured_prompts[0]
+    assert "**Additional options**" not in result["cta_close"]
+    assert "**Primary next step:**" not in result["cta_close"]
+    assert all(result["cta_close"].count(f"- {path}") == 1 for path in paths)
 
 
 def test_page_copy_correction_describes_single_item_marker_as_singular():
@@ -3534,6 +3920,18 @@ def test_closing_cta_materialises_exact_paths_under_secondary_label(
         "section_guidance": [{
             "section": "cta_close",
             "responsibility": "Guide visitors to one primary next step.",
+            "proof_points": [
+                "Visitors can submit project details for a custom curtain quote."
+            ],
+            "proof_facts": [{
+                "fact": (
+                    "Visitors can submit project details for a custom curtain quote."
+                ),
+                "source": "current_page",
+                "source_excerpt": (
+                    "Visitors can submit project details for a custom curtain quote."
+                ),
+            }],
             "source_asset_ids": ["A1", "A2"],
             "source_assets": [
                 {

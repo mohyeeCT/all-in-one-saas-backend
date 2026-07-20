@@ -1954,6 +1954,60 @@ def _strategy_section_contract(
     return {}
 
 
+_PRIMARY_ACTION_SUPPORT_PATTERN = re.compile(
+    r"\b(?:contact|call|email)\s+"
+    r"(?:us|our\s+(?:team|office|firm|company|staff))\b"
+    r"|\bsubmit\s+(?:your|a|an|the|project|contact)\b"
+    r"|\brequest\s+(?:a|an|your|the)\b"
+    r"|\b(?:book|schedule)\s+(?:a|an|your|the)\b"
+    r"|\bvisit\s+(?:us|our|the)\b"
+    r"|\bshop\s+(?:now|online|our|the)\b"
+    r"|\border\s+(?:now|online|a|an|your|the)\b"
+    r"|\bchoose\s+from\b"
+    r"|\b(?:apply|register)\s+(?:now|online|for|to)\b"
+    r"|\bdownload\s+(?:a|an|your|the|our)\b"
+    r"|\b(?:view|explore)\s+(?:our|the)\b"
+    r"|\bget\s+(?:a|an|your|the|in touch|started)\b"
+    r"|\b(?:talk|speak)\s+(?:to|with)\s+"
+    r"(?:us|our\s+(?:team|staff))\b"
+    r"|\breach\s+us\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _contract_has_authored_primary_action_support(
+    contract: dict | None,
+) -> bool:
+    section_contract = contract if isinstance(contract, dict) else {}
+    support_texts = []
+    for item in section_contract.get("proof_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        source_text = str(
+            item.get("source_excerpt") or item.get("fact") or ""
+        ).strip()
+        if source_text:
+            support_texts.append(source_text)
+    for asset in section_contract.get("source_assets") or []:
+        if not isinstance(asset, dict) or asset.get("kind") != "direct_statement":
+            continue
+        statement = str(asset.get("statement") or "").strip()
+        if statement:
+            support_texts.append(statement)
+        support_texts.extend(
+            text
+            for text in (
+                str(value or "").strip()
+                for value in asset.get("source_texts") or []
+            )
+            if text
+        )
+    return any(
+        _PRIMARY_ACTION_SUPPORT_PATTERN.search(text)
+        for text in support_texts
+    )
+
+
 def _validated_source_asset_section_names(
     strategy_brief: dict | None,
 ) -> set[str]:
@@ -2171,6 +2225,9 @@ def _structured_source_asset_render_plan(
         strategy_brief,
         normalized_section_name,
     )
+    authored_primary_action_support = (
+        _contract_has_authored_primary_action_support(contract)
+    )
     closing_cta_section = (
         normalized_section_name in PAGE_CLOSING_CTA_SECTION_NAMES
     )
@@ -2196,7 +2253,7 @@ def _structured_source_asset_render_plan(
             rendered = "\n".join(f"- {item}" for item in items)
             role = (
                 "secondary_options"
-                if closing_cta_section
+                if closing_cta_section and authored_primary_action_support
                 else "named_list"
             )
             group_label = ""
@@ -2262,6 +2319,13 @@ def _structured_source_asset_prompt_block(render_plan: list[dict]) -> str:
         "- Do not quote, paraphrase, describe, or reconstruct a marker's hidden "
         "content. The server replaces markers with canonical source text after "
         "generation.\n"
+        "- A server-materialized marker means captured source content will be "
+        "inserted; it is not a claim ceiling. Do not characterize or infer from "
+        "its hidden content.\n"
+        "- Do not describe the assigned topic as absent, unpublished, unknown, "
+        "unavailable, variable, or requiring confirmation. If neither a claim "
+        "ceiling nor an assigned direct-source proposition supports authored "
+        "commentary, place the marker neutrally and omit that commentary.\n"
         + "\n".join(rows)
         + "\n"
     )
@@ -2660,6 +2724,9 @@ def _build_section_prompt(
         and section_contract.get("source_asset_ids")
         and section_contract.get("source_assets")
     )
+    authored_primary_action_support = (
+        _contract_has_authored_primary_action_support(section_contract)
+    )
     structured_source_render_plan = (
         _structured_source_asset_render_plan(
             strategy_brief,
@@ -2828,6 +2895,8 @@ def _build_section_prompt(
     )
     if formatted_strategy:
         strategy_block = f"\n{formatted_strategy}"
+    early_strategy_block = strategy_block if quality_correction_enabled else ""
+    late_strategy_block = "" if quality_correction_enabled else strategy_block
 
     prev_block = ""
     if previous_section_text and previous_section_text.strip():
@@ -3071,7 +3140,12 @@ def _build_section_prompt(
                 "- A CTA is allowed in this section, but it may mention only a contact, "
                 "ordering, or visit method supported by this section's assigned proof points."
             )
-        if initial_quality_enabled:
+        unsupported_closing_action = bool(
+            quality_correction_enabled
+            and section_name in PAGE_CLOSING_CTA_SECTION_NAMES
+            and not authored_primary_action_support
+        )
+        if initial_quality_enabled and not unsupported_closing_action:
             cta_rule += (
                 " Every CTA instruction must be a complete grammatical sentence with "
                 "an explicit action and supported destination. Do not use a dangling "
@@ -3087,49 +3161,57 @@ def _build_section_prompt(
             quality_correction_enabled
             and section_name in PAGE_CLOSING_CTA_SECTION_NAMES
         ):
-            closing_page_goal = _clean_strategy_text(
-                (strategy_brief or {}).get("page_goal"),
-                300,
-            )
-            closing_page_goal_clause = ""
-            if closing_page_goal:
-                closing_page_goal_clause = (
-                    " Page goal (scope only, never factual evidence): "
-                    f"{closing_page_goal}"
-                )
-                if closing_page_goal[-1] not in ".!?":
-                    closing_page_goal_clause += "."
-            primary_start_instruction = (
-                " Immediately after the required heading, begin the authored "
-                "body with exactly this label: "
-                if heading_level in {"h1", "h2", "h3"}
-                else " Begin the authored copy with exactly this label: "
-            )
-            cta_rule += (
-                " The Page H1 controls the closing scope."
-                + closing_page_goal_clause
-                + " A narrower "
-                "product example or source asset must remain secondary unless it is "
-                "the H1 topic. Lead with the supported next-step category or paths; "
-                "do not let a narrow example become the heading, opening focus, or "
-                "only next step. Lead with exactly one primary next-step sentence "
-                "tied to the Page H1 and page goal."
-                + primary_start_instruction
-                + "**Primary next step:** Follow it on the same line "
-                "with one complete supported action sentence."
-            )
-            if any(
-                item.get("role") == "secondary_options"
-                for item in structured_source_render_plan
-            ):
+            if unsupported_closing_action:
                 cta_rule += (
-                    " Treat marker-backed paths and resources as secondary choices. "
-                    "The server groups every marker-backed secondary option under "
-                    f"exactly one {SECONDARY_OPTIONS_LABEL} label at the end. "
-                    "Place each marker after the primary action, do not author "
-                    "another group label, and do not repeat an exact item in "
-                    "authored prose."
+                    " If no same-section claim ceiling or direct-source proposition "
+                    "supports an authored primary action, do not invent one. Let the "
+                    "exact marker-backed paths supply the next steps, introduced only "
+                    "with a neutral sentence. Do not add a CTA hierarchy label."
                 )
+            else:
+                closing_page_goal = _clean_strategy_text(
+                    (strategy_brief or {}).get("page_goal"),
+                    300,
+                )
+                closing_page_goal_clause = ""
+                if closing_page_goal:
+                    closing_page_goal_clause = (
+                        " Page goal (scope only, never factual evidence): "
+                        f"{closing_page_goal}"
+                    )
+                    if closing_page_goal[-1] not in ".!?":
+                        closing_page_goal_clause += "."
+                primary_start_instruction = (
+                    " Immediately after the required heading, begin the authored "
+                    "body with exactly this label: "
+                    if heading_level in {"h1", "h2", "h3"}
+                    else " Begin the authored copy with exactly this label: "
+                )
+                cta_rule += (
+                    " The Page H1 controls the closing scope."
+                    + closing_page_goal_clause
+                    + " A narrower "
+                    "product example or source asset must remain secondary unless it is "
+                    "the H1 topic. Lead with the supported next-step category or paths; "
+                    "do not let a narrow example become the heading, opening focus, or "
+                    "only next step. Lead with exactly one primary next-step sentence "
+                    "tied to the Page H1 and page goal."
+                    + primary_start_instruction
+                    + "**Primary next step:** Follow it on the same line "
+                    "with one complete supported action sentence."
+                )
+                if any(
+                    item.get("role") == "secondary_options"
+                    for item in structured_source_render_plan
+                ):
+                    cta_rule += (
+                        " Treat marker-backed paths and resources as secondary choices. "
+                        "The server groups every marker-backed secondary option under "
+                        f"exactly one {SECONDARY_OPTIONS_LABEL} label at the end. "
+                        "Place each marker after the primary action, do not author "
+                        "another group label, and do not repeat an exact item in "
+                        "authored prose."
+                    )
     else:
         cta_rule = (
             "- Do not include a CTA in this section. Keep it informational and let the "
@@ -3198,11 +3280,20 @@ def _build_section_prompt(
     if initial_quality_enabled:
         if quality_correction_enabled:
             initial_evidence_rules = (
-                "\n- Concrete client claims require an exact Page Copy claim ceiling. "
-                "Editorial direction, source assets, keywords, headings, and template "
-                "instructions do not add proof."
-                "\n- Preserve source quantifiers and time scope. Never broaden a list "
-                "or limited statement into all, every, any, always, or currently."
+                "\n- An authored fact must preserve one assigned direct-source proposition "
+                "at the same scope or follow directly from one claim ceiling. This includes "
+                "advice, FAQs, examples, comparisons, causes, and processes. General "
+                "knowledge, common practice, and hedges add no proof."
+                "\n- Supplier asks, assumptions, recommendations, pricing, next steps, "
+                "necessity, exclusive remedies, added cost or labor, savings, and budget "
+                "reallocation need evidence; never infer from adjacent facts."
+                "\n- Keep scope, quantifiers, and modality: do not broaden limited "
+                "claims to all, every, any, always, or currently; can is not will or "
+                "eliminates; preferred is not required."
+                "\n- Do not contradict or weaken an assigned fact, call it unknown or "
+                "unpublished, or add unsupported flexibility, variability, caveats, or "
+                "exceptions. Without either support, omit the claim; missing proof does not "
+                "mean absent, unpublished, unknown, unavailable, or variable."
                 "\n- Keep A-or-B alternatives and categories exact. One category's "
                 "condition does not prove another avoids it; never infer mechanism, "
                 "inspection duties, or maintenance relief."
@@ -3211,9 +3302,10 @@ def _build_section_prompt(
                 "\n- Custom, expert, or specialist does not prove exact specifications, "
                 "from-scratch construction, direct access to builders, no handoff, or "
                 "a required buyer workflow."
-                "\n- A form, finder, resource, portfolio, or navigation label proves "
-                "only that captured label. Never invent its fields, filters, inputs, "
-                "pricing logic, destination behavior, resource coverage, or workflow."
+                "\n- A captured form, finder, resource, portfolio, navigation, contact, or "
+                "location label proves only its label. Never invent fields, filters, inputs, "
+                "pricing logic, destination content or behavior, phone, office, local team, "
+                "coverage, or workflow."
                 "\n- Do not infer customer return or preference behavior, popularity, "
                 "demand, exclusivity, or a causal explanation from relationship length, "
                 "venue breadth, inventory, or portfolio material."
@@ -3375,6 +3467,7 @@ Section-specific rules:
 {coverage_block}
 {guidance_block}
 {structured_source_block}
+{early_strategy_block}
 
 Positive writing guidance:
 {SHARED_SECTION_CRAFT_GUIDANCE}
@@ -3411,7 +3504,7 @@ Hard rules for all output:
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
 - Return only the section copy. No preamble, no notes, no explanations.
-{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{strategy_block}{outline_block}{prior_phrase_block}{prev_block}{correction_block}"""
+{paa_block}{ai_overview_block}{competitor_block}{existing_block}{brief_block}{style_block}{late_strategy_block}{outline_block}{prior_phrase_block}{prev_block}{correction_block}"""
 
     return prompt.strip()
 
@@ -3751,6 +3844,9 @@ def generate_page(
             if (
                 page_copy_correction_active
                 and sec_name in PAGE_CLOSING_CTA_SECTION_NAMES
+                and _contract_has_authored_primary_action_support(
+                    _strategy_section_contract(strategy_brief, sec_name)
+                )
             ):
                 authored_text = _normalise_closing_primary_cta_label(
                     authored_text,
@@ -4896,6 +4992,10 @@ def generate_strategy_brief(
                 "\n- For exactly one appropriate H2 planned_heading, naturally include "
                 "the already-selected target keyword or a close grammatical variant. "
                 "Do not replace, rerank, or select a different keyword."
+                "\n- A responsibility, guidance item, or coverage point may request a "
+                "factual topic only when that section owns its proof fact or source "
+                "asset. Otherwise plan a concise evidence-neutral transition or "
+                "withhold the claim area."
             )
         if initial_quality_enabled:
             if source_asset_contract_enabled:
