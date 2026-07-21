@@ -7,10 +7,12 @@ from fastapi import HTTPException, Response
 from routers import all_in_one
 from utils.owned_page import (
     OWNED_PAGE_MAPPING_VERSION,
+    SOURCE_BLOCK_PLAN_VERSION,
     SOURCE_ASSET_MANIFEST_VERSION,
 )
 from utils.page_quality import (
     ADAPTIVE_POLICY_VERSION,
+    CLAIM_BOUND_RENDERER_VERSION,
     DEFAULT_GUIDANCE_PROFILE_ID,
     PAGE_QUALITY_POLICY_VERSION,
     PageQualityConfigurationError,
@@ -24,6 +26,7 @@ from utils.page_quality import (
     is_legacy_quality_job,
     page_quality_creation_enabled,
     page_quality_reruns_enabled,
+    resolve_claim_bound_renderer_version,
     resolve_stored_guidance_profile,
     select_guidance_profile,
 )
@@ -111,6 +114,8 @@ def test_gate2_capability_and_creation_contract_follows_the_allowlist(monkeypatc
         "adaptive": ADAPTIVE_POLICY_VERSION,
         "owned_page_mapping": OWNED_PAGE_MAPPING_VERSION,
         "source_asset_manifest": SOURCE_ASSET_MANIFEST_VERSION,
+        "claim_bound_renderer": CLAIM_BOUND_RENDERER_VERSION,
+        "source_block_plan": SOURCE_BLOCK_PLAN_VERSION,
     }
     assert "prompt" not in repr(member_capability).casefold()
     assert "instruction" not in repr(member_capability).casefold()
@@ -128,6 +133,14 @@ def test_gate2_capability_and_creation_contract_follows_the_allowlist(monkeypatc
     assert (
         member_settings["source_asset_manifest_version"]
         == SOURCE_ASSET_MANIFEST_VERSION
+    )
+    assert (
+        member_settings["claim_bound_renderer_version"]
+        == CLAIM_BOUND_RENDERER_VERSION
+    )
+    assert (
+        member_settings["source_block_plan_version"]
+        == SOURCE_BLOCK_PLAN_VERSION
     )
 
     nonmember_response = Response()
@@ -215,6 +228,36 @@ def test_page_quality_and_adaptive_policies_resolve_by_exact_version():
         "claim_sensitive",
         "proof_only",
     ]
+
+
+def test_claim_bound_renderer_version_is_optional_legacy_and_exact_when_stored():
+    assert resolve_claim_bound_renderer_version("") == ""
+    assert (
+        resolve_claim_bound_renderer_version(CLAIM_BOUND_RENDERER_VERSION)
+        == CLAIM_BOUND_RENDERER_VERSION
+    )
+
+    with pytest.raises(UnsupportedPolicyVersionError, match="unavailable"):
+        resolve_claim_bound_renderer_version("future-renderer")
+
+
+def test_dangling_claim_bound_versions_cannot_downgrade_to_legacy():
+    dangling_settings = {
+        "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+        "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
+    }
+
+    with pytest.raises(PageQualityConfigurationError, match="missing its page-quality"):
+        all_in_one._stored_page_quality_context(
+            dangling_settings,
+            page_copy_requested=True,
+        )
+
+    context = all_in_one._stored_page_quality_context(
+        dangling_settings,
+        page_copy_requested=False,
+    )
+    assert context["enabled"] is False
 
 
 @pytest.mark.parametrize(

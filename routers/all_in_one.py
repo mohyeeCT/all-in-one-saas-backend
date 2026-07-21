@@ -35,24 +35,29 @@ from utils.adaptive_templates import (
 )
 from utils.owned_page import (
     OWNED_PAGE_MAPPING_VERSION,
+    SOURCE_BLOCK_PLAN_VERSION,
     SOURCE_ASSET_MANIFEST_VERSION,
     build_owned_page_registry,
     build_source_asset_manifest,
     get_owned_page_mapping_policy,
+    resolve_source_block_plan_version,
 )
 from utils.page_quality import (
     ADAPTIVE_POLICY_VERSION,
+    CLAIM_BOUND_RENDERER_VERSION,
     PAGE_QUALITY_POLICY_VERSION,
     PageQualityConfigurationError,
     get_adaptive_policy,
     get_page_quality_policy,
     guidance_capability_payload,
     page_quality_creation_enabled,
+    resolve_claim_bound_renderer_version,
     resolve_stored_guidance_profile,
     select_guidance_profile,
 )
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
 from utils.copy_gen import (
+    _claim_bound_canonical_h1,
     _has_non_negated_action_match,
     _supported_page_action_types,
     _source_asset_exact_phrases,
@@ -175,6 +180,8 @@ def _new_job_page_quality_settings(
         "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
         "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
         "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+        "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+        "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
     })
     return settings, profile
 
@@ -189,6 +196,22 @@ def _stored_page_quality_context(
         settings.get("page_quality_policy_version") or ""
     ).strip()
     if not page_quality_version:
+        dependent_version_fields = (
+            "adaptive_policy_version",
+            "owned_page_mapping_version",
+            "source_asset_manifest_version",
+            "claim_bound_renderer_version",
+            "source_block_plan_version",
+            "page_copy_guidance",
+        )
+        if page_copy_requested and any(
+            settings.get(field)
+            for field in dependent_version_fields
+        ):
+            raise PageQualityConfigurationError(
+                "Stored page-copy quality configuration is missing its "
+                "page-quality policy version."
+            )
         return {
             "enabled": False,
             "guidance": None,
@@ -198,6 +221,8 @@ def _stored_page_quality_context(
             "adaptive_policy_version": "",
             "owned_page_mapping_version": "",
             "source_asset_manifest_version": "",
+            "claim_bound_renderer_version": "",
+            "source_block_plan_version": "",
         }
     if not page_copy_requested:
         return {
@@ -214,6 +239,12 @@ def _stored_page_quality_context(
             ).strip(),
             "source_asset_manifest_version": str(
                 settings.get("source_asset_manifest_version") or ""
+            ).strip(),
+            "claim_bound_renderer_version": str(
+                settings.get("claim_bound_renderer_version") or ""
+            ).strip(),
+            "source_block_plan_version": str(
+                settings.get("source_block_plan_version") or ""
             ).strip(),
         }
 
@@ -242,6 +273,16 @@ def _stored_page_quality_context(
         settings.get("page_copy_guidance"),
         versioned_job=True,
     )
+    claim_bound_renderer_version = resolve_claim_bound_renderer_version(
+        settings.get("claim_bound_renderer_version")
+    )
+    source_block_plan_version = resolve_source_block_plan_version(
+        settings.get("source_block_plan_version")
+    )
+    if bool(claim_bound_renderer_version) != bool(source_block_plan_version):
+        raise PageQualityConfigurationError(
+            "Stored claim-bound renderer and source-block plan versions do not match."
+        )
     return {
         "enabled": True,
         "guidance": guidance,
@@ -251,6 +292,8 @@ def _stored_page_quality_context(
         "adaptive_policy_version": adaptive_policy.version,
         "owned_page_mapping_version": mapping_version,
         "source_asset_manifest_version": source_asset_version,
+        "claim_bound_renderer_version": claim_bound_renderer_version,
+        "source_block_plan_version": source_block_plan_version,
     }
 
 
@@ -1867,15 +1910,24 @@ def _add_page_plan_qa_flags(
 ):
     if not section_results or not template:
         return
+    claim_bound_rendering = bool(
+        isinstance(strategy_brief, dict)
+        and strategy_brief.get("claim_bound_renderer_version")
+        == CLAIM_BOUND_RENDERER_VERSION
+        and strategy_brief.get("source_block_plan_version")
+        == SOURCE_BLOCK_PLAN_VERSION
+    )
     contracts = _page_plan_contracts(strategy_brief)
     actual_headings: dict[str, dict] = {}
     exact_headings_enabled = bool(
         page_quality_policy
         and page_quality_policy.exact_planned_headings
+        and not claim_bound_rendering
     )
     coverage_enabled = bool(
         page_quality_policy
         and page_quality_policy.coverage_points
+        and not claim_bound_rendering
     )
     source_asset_quality_enabled = bool(
         (
@@ -1909,6 +1961,7 @@ def _add_page_plan_qa_flags(
     ]
     if (
         source_asset_quality_enabled
+        and not claim_bound_rendering
         and source_asset_diagnostics.get("active")
         and unassigned_source_asset_ids
     ):
@@ -2369,6 +2422,17 @@ def _build_page_quality_diagnostics(
             "source_asset_manifest_version",
             "",
         ),
+        "claim_bound_renderer_version": page_quality.get(
+            "claim_bound_renderer_version",
+            "",
+        ),
+        "source_block_plan_version": page_quality.get(
+            "source_block_plan_version",
+            "",
+        ),
+        "source_block_plan": deepcopy(
+            (strategy_brief or {}).get("source_block_plan")
+        ) if isinstance(strategy_brief, dict) else None,
         "guidance_profile": (
             {
                 "id": guidance.id,
@@ -2681,8 +2745,33 @@ def _collect_qa_flags(
     strategy_brief: dict | None = None,
     page_quality_policy_version: str = "",
     page_copy_correction_enabled: bool = False,
+    page_copy_quality_block_reasons: list[str] | None = None,
 ) -> list[dict]:
     flags = []
+    claim_bound_rendering = bool(
+        isinstance(strategy_brief, dict)
+        and strategy_brief.get("claim_bound_renderer_version")
+        == CLAIM_BOUND_RENDERER_VERSION
+        and strategy_brief.get("source_block_plan_version")
+        == SOURCE_BLOCK_PLAN_VERSION
+    )
+
+    if gen_page_copy and page_copy_quality_block_reasons:
+        _add_qa_flag(
+            flags,
+            "page_copy_quality_blocked",
+            (
+                "Page copy was withheld because the evidence-locked source "
+                "contract could not be completed safely."
+            ),
+            "page_copy",
+            severity="error",
+        )
+        flags[-1]["details"] = [
+            str(reason)
+            for reason in page_copy_quality_block_reasons[:10]
+            if str(reason or "")
+        ]
 
     if gen_meta:
         if not (generated_title or "").strip():
@@ -2724,7 +2813,7 @@ def _collect_qa_flags(
                 "page_copy",
                 severity="review",
             )
-        if page_copy_correction_enabled:
+        if page_copy_correction_enabled and not claim_bound_rendering:
             for finding in _structured_source_duplicate_findings(
                 section_results,
                 strategy_brief,
@@ -2751,7 +2840,8 @@ def _collect_qa_flags(
                 page_type=page_type,
                 brand_name=brand_name,
             )
-        _add_section_word_count_flags(flags, section_results, template)
+        if not claim_bound_rendering:
+            _add_section_word_count_flags(flags, section_results, template)
         page_quality_policy = (
             get_page_quality_policy(page_quality_policy_version)
             if page_quality_policy_version
@@ -2781,7 +2871,7 @@ def _collect_qa_flags(
                     and str(flag.get("section") or "") in planned_depth_sections
                 )
             ]
-        authored_page_copy_text = (
+        authored_page_copy_text = "" if claim_bound_rendering else (
             _page_copy_without_materialized_source_units(
                 section_results,
                 strategy_brief,
@@ -2957,6 +3047,14 @@ def _process_single_row(
             and gen_page_copy
         ),
     )
+    claim_bound_rendering_active = bool(
+        gen_page_copy
+        and page_quality.get("enabled")
+        and page_quality.get("claim_bound_renderer_version")
+        == CLAIM_BOUND_RENDERER_VERSION
+        and page_quality.get("source_block_plan_version")
+        == SOURCE_BLOCK_PLAN_VERSION
+    )
     page_planning_enabled = bool(
         page_quality_policy
         and (
@@ -3024,6 +3122,15 @@ def _process_single_row(
                 "source_asset_manifest_version",
                 "",
             ),
+            "claim_bound_renderer_version": page_quality.get(
+                "claim_bound_renderer_version",
+                "",
+            ),
+            "source_block_plan_version": page_quality.get(
+                "source_block_plan_version",
+                "",
+            ),
+            "claim_bound_rendering": claim_bound_rendering_active,
             "guidance_profile_id": (
                 page_copy_guidance.id if page_copy_guidance else ""
             ),
@@ -3438,6 +3545,14 @@ def _process_single_row(
                 source_asset_manifest=source_asset_manifest,
                 page_quality_policy=page_quality_policy,
                 page_copy_correction_enabled=page_copy_correction_active,
+                claim_bound_renderer_version=page_quality.get(
+                    "claim_bound_renderer_version",
+                    "",
+                ),
+                source_block_plan_version=page_quality.get(
+                    "source_block_plan_version",
+                    "",
+                ),
             )
             if page_quality_enabled:
                 strategy_brief = attach_depth_policies(
@@ -3605,14 +3720,25 @@ def _process_single_row(
     section_results = {}
     full_page       = ""
     word_count      = 0
-    page_copy_canonical_h1 = (
-        (optimised_h1 or h1)
-        if (
-            page_quality_policy
-            and page_quality_policy.exact_planned_headings
+    page_copy_quality_blocked = False
+    page_copy_quality_block_reasons = []
+    source_block_plan = None
+    if claim_bound_rendering_active:
+        page_copy_canonical_h1 = _claim_bound_canonical_h1(
+            source_asset_manifest,
+            input_h1_for_qa,
+            primary_keyword,
+            forbidden_phrase_list,
         )
-        else h1
-    )
+    else:
+        page_copy_canonical_h1 = (
+            (optimised_h1 or h1)
+            if (
+                page_quality_policy
+                and page_quality_policy.exact_planned_headings
+            )
+            else h1
+        )
 
     if gen_page_copy and template:
         step("generating page copy (" + str(len(template["sections"])) + " sections)...")
@@ -3674,9 +3800,30 @@ def _process_single_row(
                 page_copy_guidance=page_copy_guidance,
                 page_quality_policy=page_quality_policy,
                 page_copy_correction_enabled=page_copy_correction_active,
+                claim_bound_renderer_version=page_quality.get(
+                    "claim_bound_renderer_version",
+                    "",
+                ),
+                source_block_plan_version=page_quality.get(
+                    "source_block_plan_version",
+                    "",
+                ),
+                source_asset_manifest=source_asset_manifest,
             )
+            page_copy_quality_blocked = bool(
+                page_result.get("_quality_blocked")
+            )
+            page_copy_quality_block_reasons = [
+                str(reason)
+                for reason in page_result.get("_quality_block_reasons") or []
+                if str(reason or "")
+            ]
+            source_block_plan = page_result.get("_source_block_plan")
             section_results = {k: v for k, v in page_result.items() if not k.startswith("_")}
-            if resolved_template_key == "collection_page":
+            if (
+                resolved_template_key == "collection_page"
+                and not claim_bound_rendering_active
+            ):
                 section_results = {
                     name: normalise_collection_references(
                         text,
@@ -3692,7 +3839,9 @@ def _process_single_row(
                 }
             full_page       = page_result.get("_full_page", "")
             word_count      = page_result.get("_word_count", 0)
-            if (
+            if claim_bound_rendering_active:
+                h1_replaced = False
+            elif (
                 page_quality_policy
                 and page_quality_policy.exact_planned_headings
             ):
@@ -3724,13 +3873,28 @@ def _process_single_row(
             raise
         except Exception as exc:
             log_safe_exception(logger, "aio.page_copy.failed", exc)
-            step("Page copy could not be generated; continuing with other requested outputs.")
+            if claim_bound_rendering_active:
+                page_copy_quality_blocked = True
+                page_copy_quality_block_reasons = [
+                    "claim_bound_renderer_failed"
+                ]
+                section_results = {}
+                full_page = ""
+                word_count = 0
+                step(
+                    "Evidence-locked page copy was withheld because its "
+                    "source contract could not be completed safely."
+                )
+            else:
+                step("Page copy could not be generated; continuing with other requested outputs.")
 
     # ─────────────────────────────────────────────────────────────────────
     # STEP 8 — Finalise generated output
     # ─────────────────────────────────────────────────────────────────────
     if gen_page_copy and section_results:
-        if (
+        if claim_bound_rendering_active:
+            pass
+        elif (
             page_quality_policy
             and page_quality_policy.exact_planned_headings
         ):
@@ -3776,6 +3940,11 @@ def _process_single_row(
             gen_page_copy=gen_page_copy,
             keyword_assignment=kw_assignment,
             page_quality_policy_version=page_quality["page_quality_policy_version"],
+            claim_bound_renderer_version=page_quality.get(
+                "claim_bound_renderer_version",
+                "",
+            ),
+            page_copy_canonical_h1=page_copy_canonical_h1,
         )
         docx_b64 = base64.b64encode(docx_bytes).decode("utf-8")
         step("✓ done")
@@ -3809,6 +3978,7 @@ def _process_single_row(
         strategy_brief=strategy_brief,
         page_quality_policy_version=page_quality["page_quality_policy_version"],
         page_copy_correction_enabled=page_copy_correction_active,
+        page_copy_quality_block_reasons=page_copy_quality_block_reasons,
     )
     _add_strategy_qa_flag(qa_flags, strategy_status, strategy_issues)
     quality_diagnostics = (
@@ -3875,6 +4045,15 @@ def _process_single_row(
         "source_asset_manifest_version": page_quality.get(
             "source_asset_manifest_version"
         ) or None,
+        "claim_bound_renderer_version": page_quality.get(
+            "claim_bound_renderer_version"
+        ) or None,
+        "source_block_plan_version": page_quality.get(
+            "source_block_plan_version"
+        ) or None,
+        "page_copy_quality_blocked": page_copy_quality_blocked,
+        "page_copy_quality_block_reasons": page_copy_quality_block_reasons,
+        "source_block_plan": source_block_plan,
         "page_copy_guidance": (
             {
                 "id": page_copy_guidance.id,
@@ -3948,10 +4127,21 @@ def _build_combined_docx(
     gen_meta, gen_faqs, gen_page_copy,
     keyword_assignment=None,
     page_quality_policy_version="",
+    claim_bound_renderer_version="",
+    page_copy_canonical_h1="",
 ):
     """Build a single docx with meta, FAQs, and page copy in one document."""
     keyword_assignment = keyword_assignment or {}
     is_versioned_page_copy = bool(str(page_quality_policy_version or "").strip())
+    claim_bound_page_copy = bool(
+        gen_page_copy
+        and claim_bound_renderer_version == CLAIM_BOUND_RENDERER_VERSION
+    )
+    canonical_document_h1 = (
+        page_copy_canonical_h1
+        if claim_bound_page_copy
+        else ((optimised_h1 or h1) if is_versioned_page_copy else h1)
+    )
     if gen_page_copy and not gen_meta and not gen_faqs and template:
         return build_docx(
             url=url,
@@ -3963,7 +4153,7 @@ def _build_combined_docx(
             keyword_assignment=keyword_assignment,
             word_count=word_count,
             competitor_urls=competitor_urls,
-            h1=h1,
+            h1=canonical_document_h1,
         )
 
     from docx import Document
@@ -3974,7 +4164,6 @@ def _build_combined_docx(
     doc = Document()
 
     # Title
-    canonical_document_h1 = (optimised_h1 or h1) if is_versioned_page_copy else h1
     title_para = doc.add_heading(canonical_document_h1 or url, level=1)
 
     # Metadata table
@@ -4363,6 +4552,8 @@ def page_copy_capabilities(
         "adaptive": ADAPTIVE_POLICY_VERSION,
         "owned_page_mapping": OWNED_PAGE_MAPPING_VERSION,
         "source_asset_manifest": SOURCE_ASSET_MANIFEST_VERSION,
+        "claim_bound_renderer": CLAIM_BOUND_RENDERER_VERSION,
+        "source_block_plan": SOURCE_BLOCK_PLAN_VERSION,
     }
     return payload
 
