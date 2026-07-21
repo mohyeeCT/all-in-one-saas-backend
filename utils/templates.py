@@ -1260,7 +1260,7 @@ TEMPLATES = {
                 "name": "product_intro",
                 "label": "Product Introduction",
                 "purpose": "Product name as H1 with key attribute. Short benefit-led description: what it does for the customer and why it matters. Primary keyword in first sentence.",
-                "word_count": [120, 220],
+                "word_count": [60, 110],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -1276,7 +1276,7 @@ TEMPLATES = {
                 "name": "benefits_features",
                 "label": "Key Features and Benefits",
                 "purpose": "Benefit-led bullet list followed by technical specifications when available. Benefits first, specs second.",
-                "word_count": [330, 560],
+                "word_count": [140, 240],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1293,7 +1293,7 @@ TEMPLATES = {
                 "name": "use_cases",
                 "label": "Who It's For",
                 "purpose": "Help the shopper see themselves using this product. Use cases and ideal customer scenarios.",
-                "word_count": [200, 350],
+                "word_count": [80, 140],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1308,7 +1308,7 @@ TEMPLATES = {
                 "name": "social_proof",
                 "label": "What Customers Say",
                 "purpose": "Customer review highlights. Social proof that validates product claims and builds purchase confidence.",
-                "word_count": [130, 240],
+                "word_count": [60, 100],
                 "keyword_slot": "none",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1323,7 +1323,7 @@ TEMPLATES = {
                 "name": "faq",
                 "label": "Frequently Asked Questions",
                 "purpose": "Answer real pre-purchase questions from customers. Pulls from PAA data. Reduces hesitation and return rates.",
-                "word_count": [340, 560],
+                "word_count": [120, 200],
                 "keyword_slot": "lsi",
                 "heading_level": "h2",
                 "prompt_rules": (
@@ -1350,7 +1350,7 @@ TEMPLATES = {
                 "name": "category_intro",
                 "label": "Category Introduction",
                 "purpose": "Focused category description. Keyword in H1 and opening paragraph. Quickly tells shoppers what the category offers and why it matters.",
-                "word_count": [150, 260],
+                "word_count": [70, 130],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -1367,7 +1367,7 @@ TEMPLATES = {
                 "name": "collection_guidance",
                 "label": "Helpful Buying Notes",
                 "purpose": "A focused guidance section that develops useful selection criteria, available product angles, and brand value only when supported by the page or brief.",
-                "word_count": [500, 850],
+                "word_count": [60, 120],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (

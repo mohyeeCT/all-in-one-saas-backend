@@ -5,7 +5,6 @@ import re
 from types import MappingProxyType
 
 from utils.page_quality import (
-    ADAPTIVE_POLICY_V1,
     ADAPTIVE_POLICY_VERSION,
     PageQualityConfigurationError,
     get_adaptive_policy,
@@ -139,113 +138,11 @@ ADAPTIVE_TEMPLATE_POLICIES = {
 }
 
 _ADAPTIVE_TEMPLATE_POLICIES_BY_VERSION = MappingProxyType({
-    version: MappingProxyType({
+    ADAPTIVE_POLICY_VERSION: MappingProxyType({
         template_key: MappingProxyType(dict(template_policy))
         for template_key, template_policy in ADAPTIVE_TEMPLATE_POLICIES.items()
-    })
-    for version in (ADAPTIVE_POLICY_V1, ADAPTIVE_POLICY_VERSION)
-})
-
-_COMPACT_ECOMMERCE_SECTIONS = MappingProxyType({
-    "product_page": MappingProxyType({
-        "product_intro": MappingProxyType({
-            "word_count": (60, 110),
-            "prompt_rules": (
-                "Write the product H1 and one concise intro paragraph of 2 to 3 sentences. "
-                "Keep the exact product name, state one supported customer-relevant benefit, "
-                "and use at most one confirmed quality detail. Do not repeat a color from the "
-                "product name in the body. If the assigned keyword or canonical H1 contains a "
-                "color, use it only where that contract requires it. Do not add options, prices, "
-                "availability, shipping, guarantees, materials, or specifications that are not "
-                "explicitly supported. No em dashes or exclamation marks."
-            ),
-        }),
-        "benefits_features": MappingProxyType({
-            "word_count": (140, 240),
-            "prompt_rules": (
-                "Use no more than 3 to 4 concise benefit-led bullets. Tie each benefit to one "
-                "confirmed feature. Add one compact specifications list only when the details "
-                "are explicitly supported. Treat product-card, option, and filter values as "
-                "inventory context only. Do not enumerate colors, finishes, sizes, variants, "
-                "prices, stock, shipping, or guarantees. No em dashes or exclamation marks."
-            ),
-        }),
-        "use_cases": MappingProxyType({
-            "word_count": (80, 140),
-            "prompt_rules": (
-                "Write one short paragraph, with a second only when distinct evidence supports "
-                "it. Describe the buyer need without inventing personas, occasions, settings, "
-                "results, product groupings, or color and variant preferences. Keep it focused "
-                "and non-repetitive. No em dashes."
-            ),
-        }),
-        "social_proof": MappingProxyType({
-            "word_count": (60, 100),
-            "prompt_rules": (
-                "Write one concise proof summary only when exact reviews or ratings are provided. "
-                "Never fabricate quotations, names, locations, verified-buyer labels, ratings, "
-                "counts, outcomes, or sentiment. Do not replace missing proof with product-card "
-                "details. No em dashes."
-            ),
-        }),
-        "faq": MappingProxyType({
-            "word_count": (120, 200),
-            "prompt_rules": (
-                "Write 2 to 3 concise pre-purchase questions using supported PAA or product "
-                "evidence. Keep each answer to 1 or 2 direct sentences. Do not infer or enumerate "
-                "colors, variants, size charts, compatibility, shipping, returns, warranties, "
-                "pricing, or availability. Format each question as H3 followed by its answer. "
-                "No em dashes."
-            ),
-        }),
-    }),
-    "collection_page": MappingProxyType({
-        "category_intro": MappingProxyType({
-            "word_count": (70, 130),
-            "prompt_rules": (
-                "Write the category H1 and one concise introductory paragraph of 2 to 3 "
-                "sentences. Name the category directly, explain the main shopper need, and use "
-                "the primary keyword naturally when it fits. Do not list products, colors, "
-                "finishes, sizes, variants, prices, stock, or filter options. Do not write "
-                "'this collection', 'this category', or 'this range'. No em dashes."
-            ),
-        }),
-        "collection_guidance": MappingProxyType({
-            "word_count": (60, 120),
-            "prompt_rules": (
-                "Write one short paragraph only when the page or client brief supports distinct, "
-                "useful selection guidance. Otherwise use the shortest evidence-neutral sentence. "
-                "Treat product-card names, prices, option labels, and filter values as inventory "
-                "context only, not topics to expand into narrative copy. Do not enumerate colors, "
-                "finishes, sizes, variants, product groups, prices, stock, shipping, returns, or "
-                "guarantees. Do not repeat the introduction. No em dashes."
-            ),
-        }),
     }),
 })
-
-
-def apply_runtime_template_policy(
-    template: dict,
-    template_key: str,
-    adaptive_policy_version: str,
-) -> dict:
-    """Apply new-job depth rules without changing historical template records."""
-    adapted = deepcopy(template)
-    policy = get_adaptive_policy(adaptive_policy_version)
-    if not policy.compact_ecommerce_templates:
-        return adapted
-
-    section_overrides = _COMPACT_ECOMMERCE_SECTIONS.get(template_key)
-    if not section_overrides:
-        return adapted
-    for section in adapted.get("sections") or []:
-        override = section_overrides.get(str(section.get("name") or ""))
-        if not override:
-            continue
-        section["word_count"] = list(override["word_count"])
-        section["prompt_rules"] = override["prompt_rules"]
-    return adapted
 
 
 def _versioned_template_policy(

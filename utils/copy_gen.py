@@ -18,7 +18,6 @@ from utils.owned_page import (
 )
 from utils.page_quality import (
     CLAIM_BOUND_RENDERER_VERSION,
-    PAGE_QUALITY_POLICY_V1,
     PAGE_QUALITY_POLICY_VERSION,
 )
 from utils.templates import SHARED_SECTION_CRAFT_GUIDANCE
@@ -4988,21 +4987,6 @@ def _build_section_prompt(
             "points."
         )
     )
-    ecommerce_inventory_rule = ""
-    if str(page_type or "").strip().casefold() in {
-        "product",
-        "collection",
-        "category",
-    }:
-        ecommerce_inventory_rule = (
-            "Ecommerce inventory boundary:\n"
-            "- Treat scraped product cards, option labels, and filter values as context for "
-            "recognising the page, not as topics to expand into prose.\n"
-            "- Do not introduce or enumerate product colors, colour names, finishes, sizes, "
-            "variants, prices, stock states, or shipping statements from that inventory.\n"
-            "- If an assigned keyword or canonical H1 contains a color, use it only where the "
-            "keyword or canonical H1 requires it, and do not repeat it elsewhere.\n"
-        )
     correction_depth_check = ""
     if evidence_sparse:
         correction_depth_check = (
@@ -5076,7 +5060,6 @@ Hard rules for all output:
 {prior_claim_restatement_rule}
 {generic_page_reference_rule}
 {concrete_claim_rule}
-{ecommerce_inventory_rule}
 - Competitor context is topic inspiration, not proof of client facts.
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}
@@ -5373,11 +5356,8 @@ def generate_page(
     brand_mentions_used = 0
     page_copy_correction_active = bool(
         page_copy_correction_enabled
-        and getattr(page_quality_policy, "correction_contract", False)
-        and getattr(page_quality_policy, "version", "") in {
-            PAGE_QUALITY_POLICY_V1,
-            PAGE_QUALITY_POLICY_VERSION,
-        }
+        and getattr(page_quality_policy, "version", "")
+        == PAGE_QUALITY_POLICY_VERSION
     )
     authored_page_context = ""
 

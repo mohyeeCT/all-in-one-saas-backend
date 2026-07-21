@@ -30,13 +30,11 @@ from utils.scraper import (
 from utils.faq_scraper import (
     AIO_OWNED_PAGE_CAPTURE_VERSION,
     is_ecommerce_collection_page,
-    is_ecommerce_product_page,
     scrape_page_context,
 )
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.adaptive_templates import (
     adapt_template_for_generation,
-    apply_runtime_template_policy,
     attach_depth_policies,
 )
 from utils.owned_page import (
@@ -432,56 +430,6 @@ def _adapt_page_template_for_generation(
     return adapted_template, adapted_plan
 
 
-_ECOMMERCE_TEMPLATE_KEYS = frozenset({"product_page", "collection_page"})
-
-
-def _owned_source_for_page_copy(
-    scrape_result: dict,
-    page_quality_policy,
-    template_key: str,
-    *,
-    custom_template: bool,
-) -> str:
-    """Select editorial source without changing shared scrape or keyword inputs."""
-    full_content = str((scrape_result or {}).get("content") or "").strip()
-    inventory_context_only = bool(
-        page_quality_policy
-        and page_quality_policy.ecommerce_inventory_context_only
-        and not custom_template
-        and template_key in _ECOMMERCE_TEMPLATE_KEYS
-    )
-    if not inventory_context_only:
-        return full_content
-    return str((scrape_result or {}).get("page_copy_content") or "").strip()
-
-
-def _claim_bound_rendering_enabled(
-    *,
-    requested: bool,
-    page_quality_policy,
-    template_key: str,
-    custom_template: bool,
-    source_asset_manifest: dict | None,
-) -> bool:
-    """Use concise generation only for new-policy, inventory-only ecommerce pages."""
-    if not requested:
-        return False
-    sparse_ecommerce_generation = bool(
-        page_quality_policy
-        and page_quality_policy.allow_sparse_ecommerce_generation
-        and not custom_template
-        and template_key in _ECOMMERCE_TEMPLATE_KEYS
-    )
-    assets = (
-        source_asset_manifest.get("assets")
-        if isinstance(source_asset_manifest, dict)
-        else None
-    )
-    if sparse_ecommerce_generation and isinstance(assets, list) and not assets:
-        return False
-    return True
-
-
 def _scrape_owned_page_for_settings(
     settings: dict,
     url: str,
@@ -490,12 +438,7 @@ def _scrape_owned_page_for_settings(
     page_type: str = "general",
 ) -> dict:
     firecrawl_key = settings.get("firecrawl_api_key", "")
-    if is_ecommerce_collection_page(business_type, page_type):
-        mode = "ecommerce_collection"
-    elif is_ecommerce_product_page(business_type, page_type):
-        mode = "ecommerce_product"
-    else:
-        mode = "default"
+    mode = "ecommerce_collection" if is_ecommerce_collection_page(business_type, page_type) else "default"
     requested_provider = (
         "firecrawl"
         if scraper_override == "firecrawl" or settings.get("scrape_provider", "jina") == "firecrawl"
@@ -3165,9 +3108,6 @@ def _process_single_row(
     h1           = "" if h1_raw.lower() == "none" else h1_raw
     page_type    = normalize_page_type(row.get("page_type") or settings.get("page_type", "service"), default="service")
     template_key = row.get("template_key") or settings.get("template_key") or default_template_key_for_page_type(page_type)
-    custom_template_requested = bool(
-        str(settings.get("custom_template_text") or "").strip()
-    )
     if page_type == "landing_page" and template_key == "service_page":
         template_key = default_template_key_for_page_type(page_type)
 
@@ -3191,7 +3131,7 @@ def _process_single_row(
             and gen_page_copy
         ),
     )
-    claim_bound_rendering_requested = bool(
+    claim_bound_rendering_active = bool(
         gen_page_copy
         and page_quality.get("enabled")
         and page_quality.get("claim_bound_renderer_version")
@@ -3199,7 +3139,6 @@ def _process_single_row(
         and page_quality.get("source_block_plan_version")
         == SOURCE_BLOCK_PLAN_VERSION
     )
-    claim_bound_rendering_active = claim_bound_rendering_requested
     page_planning_enabled = bool(
         page_quality_policy
         and (
@@ -3478,8 +3417,6 @@ def _process_single_row(
     # ─────────────────────────────────────────────────────────────────────
     page_context = ""
     scraped_page_content = ""
-    page_copy_owned_source = ""
-    editorial_page_context = ""
     owned_page_scrape = {}
     owned_page_registry = None
     source_asset_manifest = None
@@ -3544,15 +3481,7 @@ def _process_single_row(
                     "error": _OWNED_PAGE_CONTEXT_ERROR,
                     "source": "",
                     "requested_provider": settings.get("scrape_provider", "jina"),
-                    "mode": (
-                        "ecommerce_collection"
-                        if is_ecommerce_collection_page(business_type, page_type)
-                        else (
-                            "ecommerce_product"
-                            if is_ecommerce_product_page(business_type, page_type)
-                            else "default"
-                        )
-                    ),
+                    "mode": "ecommerce_collection" if is_ecommerce_collection_page(business_type, page_type) else "default",
                 }
                 run_diagnostics["scrape"]["page_context_error"] = (
                     _OWNED_PAGE_CONTEXT_ERROR
@@ -3562,26 +3491,12 @@ def _process_single_row(
         if client_brief:
             page_context = (page_context + "\n\n" + client_brief).strip()
         run_diagnostics["input_signal_counts"]["page_context_chars"] = len(page_context)
-        page_copy_owned_source = _owned_source_for_page_copy(
-            owned_page_scrape,
-            page_quality_policy,
-            template_key,
-            custom_template=custom_template_requested,
-        )
-        editorial_page_context = page_copy_owned_source
-        if client_brief:
-            editorial_page_context = (
-                editorial_page_context + "\n\n" + client_brief
-            ).strip()
-        run_diagnostics["input_signal_counts"]["page_copy_owned_source_chars"] = len(
-            page_copy_owned_source
-        )
         if (
             page_quality_policy
             and page_quality_policy.bounded_owned_page_reuse
         ):
             owned_page_registry = build_owned_page_registry(
-                page_copy_owned_source,
+                scraped_page_content,
                 mapping_version=page_quality["owned_page_mapping_version"],
             )
             run_diagnostics["owned_page_mapping"] = {
@@ -3616,17 +3531,6 @@ def _process_single_row(
                     ],
                 }
 
-        claim_bound_rendering_active = _claim_bound_rendering_enabled(
-            requested=claim_bound_rendering_requested,
-            page_quality_policy=page_quality_policy,
-            template_key=template_key,
-            custom_template=custom_template_requested,
-            source_asset_manifest=source_asset_manifest,
-        )
-        run_diagnostics["page_copy_quality"]["claim_bound_rendering"] = (
-            claim_bound_rendering_active
-        )
-
     # ─────────────────────────────────────────────────────────────────────
     # STEP 4 — Competitor scraping (for page copy)
     # ─────────────────────────────────────────────────────────────────────
@@ -3657,12 +3561,6 @@ def _process_single_row(
                 and not custom_template_text
             ),
         )
-        if page_quality_enabled and not custom_template_text:
-            template = apply_runtime_template_policy(
-                template,
-                resolved_template_key,
-                page_quality["adaptive_policy_version"],
-            )
 
         kw_assignment = assign_keywords_to_sections(ranked, template["sections"])
         competitor_section_map = {s["name"]: [] for s in template["sections"]}
@@ -3735,7 +3633,7 @@ def _process_single_row(
                 brand_context=brand_context,
                 client_brief=client_brief,
                 evidence_client_brief=explicit_client_brief,
-                page_context=page_copy_owned_source,
+                page_context=scraped_page_content,
                 ai_overview=ai_overview,
                 paa_questions=paa_questions,
                 competitor_section_map=competitor_section_map,
@@ -3746,15 +3644,13 @@ def _process_single_row(
                 source_asset_manifest=source_asset_manifest,
                 page_quality_policy=page_quality_policy,
                 page_copy_correction_enabled=page_copy_correction_active,
-                claim_bound_renderer_version=(
-                    page_quality.get("claim_bound_renderer_version", "")
-                    if claim_bound_rendering_active
-                    else ""
+                claim_bound_renderer_version=page_quality.get(
+                    "claim_bound_renderer_version",
+                    "",
                 ),
-                source_block_plan_version=(
-                    page_quality.get("source_block_plan_version", "")
-                    if claim_bound_rendering_active
-                    else ""
+                source_block_plan_version=page_quality.get(
+                    "source_block_plan_version",
+                    "",
                 ),
             )
             if page_quality_enabled:
@@ -3829,10 +3725,8 @@ def _process_single_row(
         step("generating meta copy...")
         try:
             meta_context_parts = []
-            if page_copy_owned_source and not evidence_contract_ready:
-                meta_context_parts.append(
-                    "SCRAPED PAGE CONTENT:\n" + page_copy_owned_source[:10000]
-                )
+            if scraped_page_content and not evidence_contract_ready:
+                meta_context_parts.append("SCRAPED PAGE CONTENT:\n" + scraped_page_content[:10000])
             if client_brief and not evidence_contract_ready:
                 meta_context_parts.append("CLIENT BRIEF:\n" + client_brief)
             meta_result = generate_copy(
@@ -3888,7 +3782,7 @@ def _process_single_row(
                 ai_overview_sections=ai_overview_sections,
                 ai_overview_raw=ai_ov_for_faq,
                 forbidden_phrases=forbidden_phrases,
-                page_context=editorial_page_context,
+                page_context=page_context,
                 brand_profile=brand_profile,
             )
             faq_items, faqs_trimmed = _limit_faq_items(faq_items, num_faqs)
@@ -3960,12 +3854,11 @@ def _process_single_row(
 
         # Client existing content
         client_existing_content = ""
-        if page_copy_owned_source:
-            client_existing_content = page_copy_owned_source[:800]
+        if scraped_page_content:
+            client_existing_content = scraped_page_content[:800]
             run_diagnostics["scrape"]["client_existing_content_success"] = True
         elif (
-            not scraped_page_content
-            and settings.get("scrape_pages", True)
+            settings.get("scrape_pages", True)
             and settings.get("scrape_provider", "jina") == "jina"
             and scraper_override != "firecrawl"
         ):
@@ -4006,15 +3899,13 @@ def _process_single_row(
                 page_copy_guidance=page_copy_guidance,
                 page_quality_policy=page_quality_policy,
                 page_copy_correction_enabled=page_copy_correction_active,
-                claim_bound_renderer_version=(
-                    page_quality.get("claim_bound_renderer_version", "")
-                    if claim_bound_rendering_active
-                    else ""
+                claim_bound_renderer_version=page_quality.get(
+                    "claim_bound_renderer_version",
+                    "",
                 ),
-                source_block_plan_version=(
-                    page_quality.get("source_block_plan_version", "")
-                    if claim_bound_rendering_active
-                    else ""
+                source_block_plan_version=page_quality.get(
+                    "source_block_plan_version",
+                    "",
                 ),
                 source_asset_manifest=source_asset_manifest,
             )
@@ -4148,10 +4039,9 @@ def _process_single_row(
             gen_page_copy=gen_page_copy,
             keyword_assignment=kw_assignment,
             page_quality_policy_version=page_quality["page_quality_policy_version"],
-            claim_bound_renderer_version=(
-                page_quality.get("claim_bound_renderer_version", "")
-                if claim_bound_rendering_active
-                else ""
+            claim_bound_renderer_version=page_quality.get(
+                "claim_bound_renderer_version",
+                "",
             ),
             page_copy_canonical_h1=page_copy_canonical_h1,
         )

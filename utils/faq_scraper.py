@@ -122,21 +122,6 @@ _AIO_BOILERPLATE_TEXT_RE = re.compile(
     r"powered by|privacy policy|subscribe|terms of service)\b",
     re.IGNORECASE,
 )
-_AIO_ECOMMERCE_INVENTORY_HEADING_RE = re.compile(
-    r"^(?:available\s+)?(?:colors?|colours?|shades?|finishes?|sizes?|variants?|"
-    r"options?|filters?|price|pricing|availability)$",
-    re.IGNORECASE,
-)
-_AIO_ECOMMERCE_INVENTORY_TEXT_RE = re.compile(
-    r"^(?:in stock|out of stock|sold out|available|unavailable|free shipping|"
-    r"shipping calculated at checkout|check availability|pickup available|"
-    r"usually ready|select (?:a |an )?(?:color|colour|size|variant|option))\.?$",
-    re.IGNORECASE,
-)
-_AIO_ECOMMERCE_COLOR_OR_OPTION_RE = re.compile(
-    r"\b(?:colors?|colours?|shades?|finishes?|variants?|filter options?)\b",
-    re.IGNORECASE,
-)
 _FILTER_LABELS = {
     "brand", "brands", "size", "sizes", "color", "colour", "colors", "colours",
     "price", "material", "materials", "style", "styles", "type", "types",
@@ -162,12 +147,6 @@ def is_ecommerce_collection_page(business_type: str, page_type: str) -> bool:
         return False
     normalised_page_type = (page_type or "").strip().lower()
     return "category" in normalised_page_type or "collection" in normalised_page_type
-
-
-def is_ecommerce_product_page(business_type: str, page_type: str) -> bool:
-    if (business_type or "").strip().lower() != "ecommerce":
-        return False
-    return (page_type or "").strip().lower() == "product"
 
 
 def _extract_title(text: str) -> str:
@@ -669,42 +648,7 @@ def _aio_collection_excerpt(text: str, product_urls: set[str]) -> tuple[str, int
     return "\n".join(kept), navigation_links_rejected
 
 
-def _aio_ecommerce_editorial_context(content: str) -> str:
-    """Keep authored ecommerce prose while excluding inventory and option UI."""
-    kept = []
-    pending_heading = ""
-    inventory_section = False
-    for paragraph in re.split(r"\n[ \t]*\n+", str(content or "")):
-        value = paragraph.strip()
-        if not value:
-            continue
-        heading_match = re.fullmatch(r"(?P<marks>#{1,6})\s+(?P<label>.+)", value)
-        if heading_match:
-            label = heading_match.group("label").strip().rstrip(":")
-            inventory_section = bool(
-                _AIO_ECOMMERCE_INVENTORY_HEADING_RE.fullmatch(label)
-            )
-            pending_heading = "" if inventory_section else value
-            continue
-        if inventory_section:
-            continue
-        if (
-            _PRICE_RE.fullmatch(value)
-            or _AIO_ECOMMERCE_INVENTORY_TEXT_RE.fullmatch(value)
-            or _AIO_ECOMMERCE_COLOR_OR_OPTION_RE.search(value)
-        ):
-            continue
-        if pending_heading:
-            kept.append(pending_heading)
-            pending_heading = ""
-        kept.append(value)
-    return "\n\n".join(kept).strip()
-
-
-def _build_aio_collection_context(
-    text: str,
-    max_chars: int,
-) -> tuple[str, str, dict, str]:
+def _build_aio_collection_context(text: str, max_chars: int) -> tuple[str, str, dict]:
     title = _extract_title(text)
     lines = _normalise_lines(text, _COLLECTION_NOISE_LINE_PATTERNS)
     products = _extract_aio_collection_products(lines)
@@ -771,7 +715,7 @@ def _build_aio_collection_context(
         not products
         or (quality.get("sparse") and not collection_has_core_evidence)
     )
-    return combined, title, quality, _aio_ecommerce_editorial_context(excerpt)
+    return combined, title, quality
 
 
 def _scrape_result(content: str, title: str, raw_chars: int, mode: str, error: str = "") -> dict:
@@ -807,16 +751,11 @@ def _process_reader_text(
             raise ValueError(
                 f'Owned-page capture version "{capture_version}" is unavailable.'
             )
-        page_copy_content = None
         if mode == "ecommerce_collection":
-            content, title, quality, page_copy_content = (
-                _build_aio_collection_context(text, max_chars)
-            )
+            content, title, quality = _build_aio_collection_context(text, max_chars)
         else:
             title = _extract_title(text)
             content, quality = _curate_aio_page_context(text, max_chars)
-            if mode == "ecommerce_product":
-                page_copy_content = _aio_ecommerce_editorial_context(content)
         result = _scrape_result(
             content,
             title,
@@ -825,8 +764,6 @@ def _process_reader_text(
             "" if content else "No substantive content found after versioned capture",
         )
         result["capture_version"] = capture_version
-        if page_copy_content is not None:
-            result["page_copy_content"] = page_copy_content
         quality["raw_chars"] = raw_chars
         retention_ratio = round(len(content) / max(raw_chars, 1), 4)
         quality["retention_ratio"] = retention_ratio

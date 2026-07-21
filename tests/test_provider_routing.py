@@ -1354,7 +1354,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Evidence, format, keyword, and safety constraints remain binding", prompt)
         self.assertIn("fewest complete paragraphs or blocks", prompt)
 
-    def test_collection_template_uses_expanded_intro_and_single_guidance_section(self):
+    def test_collection_template_uses_concise_intro_and_single_guidance_section(self):
         template = get_template("collection_page")
         section_names = [section["name"] for section in template["sections"]]
         section_labels = [section["label"] for section in template["sections"]]
@@ -1362,8 +1362,8 @@ class ProviderRoutingTests(unittest.TestCase):
         guidance = template["sections"][1]
 
         self.assertEqual(intro["name"], "category_intro")
-        self.assertEqual(intro["word_count"], [150, 260])
-        self.assertEqual(guidance["word_count"], [500, 850])
+        self.assertEqual(intro["word_count"], [70, 130])
+        self.assertEqual(guidance["word_count"], [60, 120])
         self.assertIn("under one H2", guidance["prompt_rules"])
         self.assertIn("collection_guidance", section_names)
         self.assertEqual(section_names, ["category_intro", "collection_guidance"])
@@ -1412,9 +1412,6 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("Do not write phrases like 'this page', 'this collection', 'this category'", prompt)
         self.assertIn("Do not invent product groupings, package sizes, event scales", prompt)
-        self.assertIn("Ecommerce inventory boundary", prompt)
-        self.assertIn("Do not introduce or enumerate product colors", prompt)
-        self.assertIn("use it only where the keyword or canonical H1 requires it", prompt)
         self.assertIn("Competitor context is topic inspiration, not proof of client facts", prompt)
         self.assertIn("Finding the right", prompt)
 

@@ -1,5 +1,3 @@
-from utils.adaptive_templates import apply_runtime_template_policy
-from utils.page_quality import ADAPTIVE_POLICY_VERSION
 from utils.templates import TEMPLATES
 
 
@@ -56,8 +54,8 @@ def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
         "local_service_page": (1660, 2890),
         "about_us": (1370, 2350),
         "contact_us": (720, 1220),
-        "product_page": (1120, 1930),
-        "collection_page": (650, 1110),
+        "product_page": (460, 790),
+        "collection_page": (130, 250),
     }
 
     assert sum(len(template["sections"]) for template in TEMPLATES.values()) == 86
@@ -72,36 +70,23 @@ def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
             assert maximum - minimum >= 30
 
 
-def test_active_ecommerce_policy_keeps_product_and_collection_copy_concise():
-    product = apply_runtime_template_policy(
-        TEMPLATES["product_page"],
-        "product_page",
-        ADAPTIVE_POLICY_VERSION,
-    )
-    collection = apply_runtime_template_policy(
-        TEMPLATES["collection_page"],
-        "collection_page",
-        ADAPTIVE_POLICY_VERSION,
-    )
-
-    assert [section["word_count"] for section in product["sections"]] == [
+def test_ecommerce_templates_use_concise_word_ranges():
+    assert [
+        section["word_count"] for section in TEMPLATES["product_page"]["sections"]
+    ] == [
         [60, 110],
         [140, 240],
         [80, 140],
         [60, 100],
         [120, 200],
     ]
-    assert [section["word_count"] for section in collection["sections"]] == [
+    assert [
+        section["word_count"]
+        for section in TEMPLATES["collection_page"]["sections"]
+    ] == [
         [70, 130],
         [60, 120],
     ]
-    assert (_total_word_min("collection_page"), _total_word_max("collection_page")) == (
-        650,
-        1110,
-    )
-    assert "inventory context only" in collection["sections"][1]["prompt_rules"]
-    assert "Do not enumerate colors" in collection["sections"][1]["prompt_rules"]
-    assert "Do not repeat a color" in product["sections"][0]["prompt_rules"]
 
 
 def test_blog_template_labels_are_reader_intent_specific():
