@@ -386,6 +386,121 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             True,
         )
 
+    def test_collection_page_uses_ai_generation_without_exact_source_rendering(self):
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "brand_name": "Example",
+                    "business_type": "ecommerce",
+                    "jina_api_key": "jina-key",
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+        ranked = [{
+            "keyword": "party hats",
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+        captured_page = (
+            "# Party Hats\n\n"
+            "## Products found\n\n"
+            "Pink Cowboy Hat | Pink | $12.99\n\n"
+            "Blue Party Hat | Blue | $14.99\n\n"
+            "## Buying notes\n\nChoose a party hat for the event theme."
+        )
+        strategy_brief = {
+            "search_intent": "Commercial",
+            "page_goal": "Help shoppers evaluate party hats.",
+            "primary_positioning": "Lead with the category need.",
+            "headline_direction": "Use a direct category headline.",
+            "verified_facts": [],
+        }
+
+        with patch.object(
+            all_in_one,
+            "scrape_page_context",
+            return_value={
+                "success": True,
+                "content": captured_page,
+                "source": "jina",
+                "capture_version": settings["owned_page_capture_version"],
+            },
+        ), patch.object(
+            all_in_one,
+            "generate_strategy_brief",
+            return_value=strategy_brief,
+        ) as generate_strategy, patch.object(
+            all_in_one,
+            "generate_page",
+            return_value={
+                "category_intro": "# Party Hats\n\nConcise category introduction.",
+                "collection_guidance": "## Useful Party Hat Details\n\nConcise buying guidance.",
+                "_full_page": "Concise category introduction and buying guidance.",
+                "_word_count": 7,
+            },
+        ) as generate_page:
+            result = self._process(
+                {
+                    "url": "https://example.com/collections/party-hats",
+                    "keyword": "party hats",
+                    "page_type": "collection",
+                    "h1": "Party Hats",
+                    "template_key": "collection_page",
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        for generation_call in (generate_strategy, generate_page):
+            self.assertEqual(
+                generation_call.call_args.kwargs["claim_bound_renderer_version"],
+                "",
+            )
+            self.assertEqual(
+                generation_call.call_args.kwargs["source_block_plan_version"],
+                "",
+            )
+            self.assertIsNone(
+                generation_call.call_args.kwargs["source_asset_manifest"]
+            )
+        owned_page_registry = generate_strategy.call_args.kwargs[
+            "owned_page_registry"
+        ]
+        self.assertGreater(owned_page_registry["source_char_count"], 0)
+        self.assertGreater(len(owned_page_registry["blocks"]), 0)
+        self.assertIsNone(result["claim_bound_renderer_version"])
+        self.assertIsNone(result["source_block_plan_version"])
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "claim_bound_rendering"
+            ],
+            False,
+        )
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "standard_ecommerce_generation"
+            ],
+            True,
+        )
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "exact_source_asset_preservation"
+            ],
+            False,
+        )
+        self.assertGreater(
+            result["run_diagnostics"]["source_asset_manifest"]["asset_count"],
+            0,
+        )
+
     def test_page_copy_removes_template_faq_when_separate_faq_output_is_enabled(self):
         settings = {
             **_settings(),

@@ -78,6 +78,18 @@ def _claim_bound_row_rerun_enabled(settings: dict) -> bool:
     )
 
 
+def _claim_bound_section_rerun_required(
+    settings: dict,
+    row_result: dict,
+) -> bool:
+    """Use the row's actual renderer when available, with a safe legacy fallback."""
+    if isinstance(row_result, dict) and "claim_bound_renderer_version" in row_result:
+        return bool(
+            str(row_result.get("claim_bound_renderer_version") or "").strip()
+        )
+    return _claim_bound_row_rerun_enabled(settings)
+
+
 def _row_requests_page_copy(row: dict, settings: dict) -> bool:
     return bool(
         (row or {}).get(
@@ -779,14 +791,6 @@ def rerun_section(
         stored_settings,
         page_copy_requested=True,
     )
-    if _claim_bound_row_rerun_enabled(stored_settings):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Evidence-locked page copy must be rerun as a complete row so "
-                "its source-block plan can be rebuilt and validated safely."
-            ),
-        )
     results = job.get("results") or []
     row_index = body.row_index
 
@@ -794,6 +798,14 @@ def rerun_section(
         raise HTTPException(status_code=400, detail="Row index out of range")
 
     row_result = results[row_index]
+    if _claim_bound_section_rerun_required(stored_settings, row_result):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Evidence-locked page copy must be rerun as a complete row so "
+                "its source-block plan can be rebuilt and validated safely."
+            ),
+        )
     section_results = row_result.get("section_results") or {}
 
     if not section_results:

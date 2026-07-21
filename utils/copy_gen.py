@@ -432,6 +432,19 @@ _ECOMMERCE_COLLECTION_GUARDRAIL = (
 )
 
 
+_ECOMMERCE_PAGE_COPY_INVENTORY_GUARDRAIL = (
+    "Ecommerce inventory boundary:\n"
+    "- Treat scraped product cards, option labels, and filter values as context "
+    "for recognising the page, not as topics to expand into prose.\n"
+    "- Do not introduce or enumerate product colors, colour names, finishes, "
+    "sizes, variants, prices, stock states, or shipping statements from that "
+    "inventory.\n"
+    "- If an assigned keyword or canonical H1 contains a color, use it only "
+    "where the keyword or canonical H1 requires it, and do not repeat it "
+    "elsewhere."
+)
+
+
 _PRODUCT_NAME_NATURALNESS_GUARDRAIL = (
     "PRODUCT NAME NATURALNESS RULES:\n"
     "- Use the product name 2 or 3 times max across all questions and answers. Across the full FAQ set for this page, count every mention in both questions and answers.\n"
@@ -526,6 +539,15 @@ def _is_ecommerce_collection_context(business_type: str, page_type: str, page_co
 
 def _is_product_page(page_type: str) -> bool:
     return "product" in (page_type or "").strip().lower()
+
+
+def _ecommerce_page_copy_inventory_guardrail(page_type: str) -> str:
+    return (
+        _ECOMMERCE_PAGE_COPY_INVENTORY_GUARDRAIL
+        if str(page_type or "").strip().casefold()
+        in {"product", "collection", "category"}
+        else ""
+    )
 
 
 def _product_name_naturalness_guardrail(page_type: str) -> str:
@@ -4987,6 +5009,9 @@ def _build_section_prompt(
             "points."
         )
     )
+    ecommerce_inventory_rule = _ecommerce_page_copy_inventory_guardrail(
+        page_type
+    )
     correction_depth_check = ""
     if evidence_sparse:
         correction_depth_check = (
@@ -5060,6 +5085,7 @@ Hard rules for all output:
 {prior_claim_restatement_rule}
 {generic_page_reference_rule}
 {concrete_claim_rule}
+{ecommerce_inventory_rule}
 - Competitor context is topic inspiration, not proof of client facts.
 - No fluff. Every sentence must add information or move the argument forward
 {brand_rule.strip()}

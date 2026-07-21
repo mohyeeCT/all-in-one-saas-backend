@@ -91,6 +91,10 @@ _SOURCE_ASSET_ADAPTIVE_REASONS = frozenset({
     "no_owned_proof",
     "keyword_section_without_owned_proof",
 })
+_STANDARD_ECOMMERCE_GENERATION_TEMPLATE_KEYS = frozenset({
+    "collection_page",
+    "product_page",
+})
 _SOURCE_ASSET_ADAPTIVE_INSTRUCTION = (
     "The proof-only omission rule applies to newly authored factual claims, "
     "not to exact assigned source assets. Preserve those assigned assets as "
@@ -343,6 +347,39 @@ def _page_copy_correction_is_active(
         and page_quality.get("enabled")
         and page_quality.get("source_asset_manifest_version")
         == SOURCE_ASSET_MANIFEST_VERSION
+    )
+
+
+def _uses_standard_ecommerce_page_generation(
+    template_key: str,
+    custom_template_text: str,
+) -> bool:
+    """Keep built-in ecommerce copy AI-authored instead of source-rendered."""
+    return bool(
+        not str(custom_template_text or "").strip()
+        and str(template_key or "").strip()
+        in _STANDARD_ECOMMERCE_GENERATION_TEMPLATE_KEYS
+    )
+
+
+def _claim_bound_rendering_is_active(
+    page_quality: dict,
+    *,
+    requested: bool,
+    template_key: str,
+    custom_template_text: str,
+) -> bool:
+    return bool(
+        requested
+        and page_quality.get("enabled")
+        and page_quality.get("claim_bound_renderer_version")
+        == CLAIM_BOUND_RENDERER_VERSION
+        and page_quality.get("source_block_plan_version")
+        == SOURCE_BLOCK_PLAN_VERSION
+        and not _uses_standard_ecommerce_page_generation(
+            template_key,
+            custom_template_text,
+        )
     )
 
 
@@ -3110,6 +3147,9 @@ def _process_single_row(
     template_key = row.get("template_key") or settings.get("template_key") or default_template_key_for_page_type(page_type)
     if page_type == "landing_page" and template_key == "service_page":
         template_key = default_template_key_for_page_type(page_type)
+    custom_template_text = str(
+        settings.get("custom_template_text") or ""
+    ).strip()
 
     # What to generate — from row overrides or job-level settings
     gen_page_copy = row.get("gen_page_copy", settings.get("gen_page_copy", True))
@@ -3131,13 +3171,21 @@ def _process_single_row(
             and gen_page_copy
         ),
     )
-    claim_bound_rendering_active = bool(
-        gen_page_copy
-        and page_quality.get("enabled")
-        and page_quality.get("claim_bound_renderer_version")
-        == CLAIM_BOUND_RENDERER_VERSION
-        and page_quality.get("source_block_plan_version")
-        == SOURCE_BLOCK_PLAN_VERSION
+    claim_bound_rendering_active = _claim_bound_rendering_is_active(
+        page_quality,
+        requested=bool(gen_page_copy),
+        template_key=template_key,
+        custom_template_text=custom_template_text,
+    )
+    active_claim_bound_renderer_version = (
+        page_quality.get("claim_bound_renderer_version", "")
+        if claim_bound_rendering_active
+        else ""
+    )
+    active_source_block_plan_version = (
+        page_quality.get("source_block_plan_version", "")
+        if claim_bound_rendering_active
+        else ""
     )
     page_planning_enabled = bool(
         page_quality_policy
@@ -3206,14 +3254,8 @@ def _process_single_row(
                 "source_asset_manifest_version",
                 "",
             ),
-            "claim_bound_renderer_version": page_quality.get(
-                "claim_bound_renderer_version",
-                "",
-            ),
-            "source_block_plan_version": page_quality.get(
-                "source_block_plan_version",
-                "",
-            ),
+            "claim_bound_renderer_version": active_claim_bound_renderer_version,
+            "source_block_plan_version": active_source_block_plan_version,
             "claim_bound_rendering": claim_bound_rendering_active,
             "guidance_profile_id": (
                 page_copy_guidance.id if page_copy_guidance else ""
@@ -3543,7 +3585,6 @@ def _process_single_row(
 
     if gen_page_copy:
         step("resolving template...")
-        custom_template_text = settings.get("custom_template_text", "").strip()
         if custom_template_text:
             template = parse_custom_template(custom_template_text, page_type)
         else:
@@ -3600,6 +3641,44 @@ def _process_single_row(
         else:
             step("competitors unavailable: no organic results")
 
+    standard_ecommerce_generation_active = bool(
+        gen_page_copy
+        and _uses_standard_ecommerce_page_generation(
+            resolved_template_key,
+            custom_template_text,
+        )
+    )
+    claim_bound_rendering_active = _claim_bound_rendering_is_active(
+        page_quality,
+        requested=bool(gen_page_copy),
+        template_key=resolved_template_key,
+        custom_template_text=custom_template_text,
+    )
+    active_claim_bound_renderer_version = (
+        page_quality.get("claim_bound_renderer_version", "")
+        if claim_bound_rendering_active
+        else ""
+    )
+    active_source_block_plan_version = (
+        page_quality.get("source_block_plan_version", "")
+        if claim_bound_rendering_active
+        else ""
+    )
+    generation_source_asset_manifest = (
+        None
+        if standard_ecommerce_generation_active
+        else source_asset_manifest
+    )
+    run_diagnostics["page_copy_quality"].update({
+        "claim_bound_renderer_version": active_claim_bound_renderer_version,
+        "source_block_plan_version": active_source_block_plan_version,
+        "claim_bound_rendering": claim_bound_rendering_active,
+        "standard_ecommerce_generation": standard_ecommerce_generation_active,
+        "exact_source_asset_preservation": bool(
+            generation_source_asset_manifest
+        ),
+    })
+
     # ─────────────────────────────────────────────────────────────────────
     # STEP 5 — Generate strategy brief, then meta copy
     # ─────────────────────────────────────────────────────────────────────
@@ -3641,17 +3720,11 @@ def _process_single_row(
                 required_outputs=required_strategy_outputs,
                 enable_page_planning=page_planning_enabled,
                 owned_page_registry=owned_page_registry,
-                source_asset_manifest=source_asset_manifest,
+                source_asset_manifest=generation_source_asset_manifest,
                 page_quality_policy=page_quality_policy,
                 page_copy_correction_enabled=page_copy_correction_active,
-                claim_bound_renderer_version=page_quality.get(
-                    "claim_bound_renderer_version",
-                    "",
-                ),
-                source_block_plan_version=page_quality.get(
-                    "source_block_plan_version",
-                    "",
-                ),
+                claim_bound_renderer_version=active_claim_bound_renderer_version,
+                source_block_plan_version=active_source_block_plan_version,
             )
             if page_quality_enabled:
                 strategy_brief = attach_depth_policies(
@@ -3899,15 +3972,9 @@ def _process_single_row(
                 page_copy_guidance=page_copy_guidance,
                 page_quality_policy=page_quality_policy,
                 page_copy_correction_enabled=page_copy_correction_active,
-                claim_bound_renderer_version=page_quality.get(
-                    "claim_bound_renderer_version",
-                    "",
-                ),
-                source_block_plan_version=page_quality.get(
-                    "source_block_plan_version",
-                    "",
-                ),
-                source_asset_manifest=source_asset_manifest,
+                claim_bound_renderer_version=active_claim_bound_renderer_version,
+                source_block_plan_version=active_source_block_plan_version,
+                source_asset_manifest=generation_source_asset_manifest,
             )
             page_copy_quality_blocked = bool(
                 page_result.get("_quality_blocked")
@@ -4039,10 +4106,7 @@ def _process_single_row(
             gen_page_copy=gen_page_copy,
             keyword_assignment=kw_assignment,
             page_quality_policy_version=page_quality["page_quality_policy_version"],
-            claim_bound_renderer_version=page_quality.get(
-                "claim_bound_renderer_version",
-                "",
-            ),
+            claim_bound_renderer_version=active_claim_bound_renderer_version,
             page_copy_canonical_h1=page_copy_canonical_h1,
         )
         docx_b64 = base64.b64encode(docx_bytes).decode("utf-8")
@@ -4144,12 +4208,12 @@ def _process_single_row(
         "source_asset_manifest_version": page_quality.get(
             "source_asset_manifest_version"
         ) or None,
-        "claim_bound_renderer_version": page_quality.get(
-            "claim_bound_renderer_version"
-        ) or None,
-        "source_block_plan_version": page_quality.get(
-            "source_block_plan_version"
-        ) or None,
+        "claim_bound_renderer_version": (
+            active_claim_bound_renderer_version or None
+        ),
+        "source_block_plan_version": (
+            active_source_block_plan_version or None
+        ),
         "page_copy_quality_blocked": page_copy_quality_blocked,
         "page_copy_quality_block_reasons": page_copy_quality_block_reasons,
         "source_block_plan": source_block_plan,

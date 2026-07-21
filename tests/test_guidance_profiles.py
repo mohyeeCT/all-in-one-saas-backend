@@ -247,6 +247,43 @@ def test_claim_bound_renderer_version_is_optional_legacy_and_exact_when_stored()
         resolve_claim_bound_renderer_version("future-renderer")
 
 
+@pytest.mark.parametrize("template_key", ["product_page", "collection_page"])
+def test_builtin_ecommerce_templates_bypass_claim_bound_rendering(template_key):
+    page_quality = {
+        "enabled": True,
+        "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+        "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
+    }
+
+    assert not all_in_one._claim_bound_rendering_is_active(
+        page_quality,
+        requested=True,
+        template_key=template_key,
+        custom_template_text="",
+    )
+
+
+def test_claim_bound_rendering_remains_available_outside_builtin_ecommerce_templates():
+    page_quality = {
+        "enabled": True,
+        "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+        "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
+    }
+
+    assert all_in_one._claim_bound_rendering_is_active(
+        page_quality,
+        requested=True,
+        template_key="service_page",
+        custom_template_text="",
+    )
+    assert all_in_one._claim_bound_rendering_is_active(
+        page_quality,
+        requested=True,
+        template_key="collection_page",
+        custom_template_text="H1: Custom ecommerce structure",
+    )
+
+
 def test_dangling_claim_bound_versions_cannot_downgrade_to_legacy():
     dangling_settings = {
         "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,

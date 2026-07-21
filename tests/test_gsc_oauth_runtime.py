@@ -643,6 +643,49 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(background.calls, [])
         self.assertFalse(any(query.operation == "update" for query in sb.executed))
 
+    def test_standard_ecommerce_result_can_rerun_a_section(self):
+        strict_settings = {
+            "provider": "Claude",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+            "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
+            "page_copy_guidance": {"id": "balanced", "version": "1"},
+        }
+        background = _BackgroundTasks()
+        sb = _Supabase({
+            "jobs": [{
+                **_stored_job(),
+                "settings": strict_settings,
+                "results": [{
+                    "claim_bound_renderer_version": None,
+                    "section_results": {
+                        "category_intro": "# Existing category introduction",
+                    },
+                }],
+            }],
+        })
+
+        with (
+            patch.object(jobs, "enforce_job_start"),
+            patch.object(jobs, "enforce_rate_limit"),
+        ):
+            response = jobs.rerun_section(
+                job_id="job-1",
+                body=jobs.RerunSectionRequest(
+                    row_index=0,
+                    section_name="category_intro",
+                ),
+                background_tasks=background,
+                user=SimpleNamespace(id="user-1"),
+                sb=sb,
+            )
+
+        self.assertEqual(response, {"status": "rerunning"})
+        self.assertEqual(len(background.calls), 1)
+
     def test_successful_single_and_bulk_retry_clear_only_credential_error(self):
         cases = (
             (jobs._rerun_single_row, None),
