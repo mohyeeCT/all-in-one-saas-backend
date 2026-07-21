@@ -27,7 +27,11 @@ from utils.scraper import (
     scrape_url, map_competitor_sections,
     classify_competitor_relevance, is_editorial_competitor,
 )
-from utils.faq_scraper import is_ecommerce_collection_page, scrape_page_context
+from utils.faq_scraper import (
+    AIO_OWNED_PAGE_CAPTURE_VERSION,
+    is_ecommerce_collection_page,
+    scrape_page_context,
+)
 from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
 from utils.adaptive_templates import (
     adapt_template_for_generation,
@@ -93,6 +97,36 @@ _SOURCE_ASSET_ADAPTIVE_INSTRUCTION = (
     "required editorial material, not factual proof, and do not infer any "
     "added claim from them."
 )
+_CAPTURE_QUALITY_INTEGER_FIELDS = frozenset({
+    "empty_blocks_rejected",
+    "duplicate_blocks_rejected",
+    "filter_count",
+    "heading_count",
+    "low_signal_blocks_rejected",
+    "mapped_block_count",
+    "mapped_retained_chars",
+    "navigation_links_rejected",
+    "primary_retained_chars",
+    "product_count",
+    "raw_chars",
+    "recovery_retained_chars",
+    "retained_chars",
+    "short_blocks_retained",
+    "ui_noise_lines_rejected",
+    "visible_link_labels_retained",
+})
+_CAPTURE_QUALITY_BOOLEAN_FIELDS = frozenset({
+    "mapping_truncated",
+    "recovery_attempted",
+    "recovery_selected",
+    "sparse",
+})
+_CAPTURE_SPARSE_REASONS = frozenset({
+    "few_content_blocks",
+    "few_headings",
+    "no_products_detected",
+    "retained_chars_below_target",
+})
 _SOURCE_ASSET_RERUN_ADAPTIVE_INSTRUCTION = (
     "This section remains available for a reviewer rerun, but its source "
     "assets are intentionally excluded from this rerun prompt. Do not "
@@ -153,6 +187,7 @@ def _new_job_page_quality_settings(
 ) -> tuple[dict, object | None]:
     """Resolve server-owned versions once, before a new job is persisted."""
     settings = dict(submitted_settings)
+    settings["owned_page_capture_version"] = AIO_OWNED_PAGE_CAPTURE_VERSION
     if not page_copy_requested:
         settings.pop("page_copy_guidance_profile_id", None)
         return settings, None
@@ -409,6 +444,12 @@ def _scrape_owned_page_for_settings(
         if scraper_override == "firecrawl" or settings.get("scrape_provider", "jina") == "firecrawl"
         else "jina"
     )
+    capture_version = str(settings.get("owned_page_capture_version") or "").strip()
+    capture_options = (
+        {"capture_version": capture_version}
+        if capture_version
+        else {}
+    )
 
     def annotate(result: dict, fallback_used: bool = False) -> dict:
         result["mode"] = result.get("mode") or mode
@@ -423,9 +464,23 @@ def _scrape_owned_page_for_settings(
 
     if requested_provider == "firecrawl":
         from utils.faq_scraper import scrape_page_context_firecrawl
-        return annotate(scrape_page_context_firecrawl(firecrawl_key, url, mode=mode))
+        return annotate(
+            scrape_page_context_firecrawl(
+                firecrawl_key,
+                url,
+                mode=mode,
+                **capture_options,
+            )
+        )
 
-    jina_result = annotate(scrape_page_context(settings.get("jina_api_key", ""), url, mode=mode))
+    jina_result = annotate(
+        scrape_page_context(
+            settings.get("jina_api_key", ""),
+            url,
+            mode=mode,
+            **capture_options,
+        )
+    )
     if jina_result.get("success") or not settings.get("firecrawl_fallback"):
         return jina_result
     if not firecrawl_key:
@@ -433,12 +488,41 @@ def _scrape_owned_page_for_settings(
 
     from utils.faq_scraper import scrape_page_context_firecrawl
     firecrawl_result = annotate(
-        scrape_page_context_firecrawl(firecrawl_key, url, mode=mode),
+        scrape_page_context_firecrawl(
+            firecrawl_key,
+            url,
+            mode=mode,
+            **capture_options,
+        ),
         fallback_used=True,
     )
     if not firecrawl_result.get("success"):
         firecrawl_result["error"] = f"Jina failed; {firecrawl_result.get('error') or 'Firecrawl could not scrape this page.'}"
     return firecrawl_result
+
+
+def _safe_capture_quality_diagnostics(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    safe = {}
+    for field in _CAPTURE_QUALITY_INTEGER_FIELDS:
+        raw_value = value.get(field)
+        if isinstance(raw_value, int) and not isinstance(raw_value, bool):
+            safe[field] = max(0, min(raw_value, 100_000_000))
+    for field in _CAPTURE_QUALITY_BOOLEAN_FIELDS:
+        if isinstance(value.get(field), bool):
+            safe[field] = value[field]
+    retention_ratio = value.get("retention_ratio")
+    if isinstance(retention_ratio, (int, float)) and not isinstance(retention_ratio, bool):
+        safe["retention_ratio"] = max(0.0, min(float(retention_ratio), 1.0))
+    reasons = value.get("sparse_reasons")
+    if isinstance(reasons, list):
+        safe["sparse_reasons"] = [
+            reason
+            for reason in reasons[:8]
+            if reason in _CAPTURE_SPARSE_REASONS
+        ]
+    return safe
 
 
 def _owned_page_scraper_available(settings: dict, scraper_override: str = "") -> bool:
@@ -3168,6 +3252,8 @@ def _process_single_row(
             "fallback_used": False,
             "raw_response_chars": 0,
             "retained_context_chars": 0,
+            "capture_version": "",
+            "quality_diagnostics": {},
             "client_existing_content_success": False,
         },
         "output_counts": {
@@ -3353,6 +3439,19 @@ def _process_single_row(
                 run_diagnostics["scrape"]["raw_response_chars"] = int(scrape_result.get("raw_chars") or 0)
                 run_diagnostics["scrape"]["retained_context_chars"] = int(
                     scrape_result.get("cleaned_chars") or len(scrape_result.get("content") or "")
+                )
+                scrape_capture_version = str(
+                    scrape_result.get("capture_version") or ""
+                )
+                run_diagnostics["scrape"]["capture_version"] = (
+                    scrape_capture_version
+                    if scrape_capture_version == AIO_OWNED_PAGE_CAPTURE_VERSION
+                    else ""
+                )
+                run_diagnostics["scrape"]["quality_diagnostics"] = (
+                    _safe_capture_quality_diagnostics(
+                        scrape_result.get("quality_diagnostics")
+                    )
                 )
                 if scrape_result.get("success"):
                     scraped_page_content = scrape_result["content"]

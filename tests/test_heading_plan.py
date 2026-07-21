@@ -1135,6 +1135,7 @@ def test_meta_faq_only_job_does_not_stamp_page_copy_versions(monkeypatch):
         "gen_page_copy": False,
         "gen_meta": True,
         "gen_faqs": True,
+        "owned_page_capture_version": all_in_one.AIO_OWNED_PAGE_CAPTURE_VERSION,
     }
     assert "page_quality_policy_version" not in settings
     assert "adaptive_policy_version" not in settings

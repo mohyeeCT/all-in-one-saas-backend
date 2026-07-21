@@ -125,6 +125,10 @@ def test_gate2_capability_and_creation_contract_follows_the_allowlist(monkeypatc
         "version": "1",
     }
     assert member_settings["page_quality_policy_version"] == PAGE_QUALITY_POLICY_VERSION
+    assert (
+        member_settings["owned_page_capture_version"]
+        == all_in_one.AIO_OWNED_PAGE_CAPTURE_VERSION
+    )
     assert member_settings["adaptive_policy_version"] == ADAPTIVE_POLICY_VERSION
     assert (
         member_settings["owned_page_mapping_version"]
@@ -155,7 +159,9 @@ def test_gate2_capability_and_creation_contract_follows_the_allowlist(monkeypatc
 
     assert nonmember_response.headers["Cache-Control"] == "private, no-store"
     assert nonmember_capability["enabled"] is False
-    assert legacy_settings == {}
+    assert legacy_settings == {
+        "owned_page_capture_version": all_in_one.AIO_OWNED_PAGE_CAPTURE_VERSION,
+    }
     assert legacy_profile is None
 
     with pytest.raises(HTTPException) as raised:

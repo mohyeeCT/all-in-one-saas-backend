@@ -1915,6 +1915,17 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                  "source": "live",
                  "raw_chars": 100,
                  "cleaned_chars": 21,
+                 "capture_version": all_in_one.AIO_OWNED_PAGE_CAPTURE_VERSION,
+                 "quality_diagnostics": {
+                     "sparse": True,
+                     "sparse_reasons": ["few_content_blocks"],
+                     "duplicate_blocks_rejected": 3,
+                     "mapped_block_count": 2,
+                     "mapping_truncated": False,
+                     "recovery_attempted": True,
+                     "recovery_selected": False,
+                     "source_excerpt": "must not be persisted in diagnostics",
+                 },
              }), \
              patch.object(all_in_one, "scrape_url", return_value={"success": False}), \
              patch.object(all_in_one, "generate_copy", return_value={
@@ -1956,6 +1967,19 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(diagnostics["scrape"]["requested_provider"], "jina")
         self.assertEqual(diagnostics["scrape"]["raw_response_chars"], 100)
         self.assertEqual(diagnostics["scrape"]["retained_context_chars"], 21)
+        self.assertEqual(
+            diagnostics["scrape"]["capture_version"],
+            all_in_one.AIO_OWNED_PAGE_CAPTURE_VERSION,
+        )
+        self.assertEqual(diagnostics["scrape"]["quality_diagnostics"], {
+            "sparse": True,
+            "sparse_reasons": ["few_content_blocks"],
+            "duplicate_blocks_rejected": 3,
+            "mapped_block_count": 2,
+            "mapping_truncated": False,
+            "recovery_attempted": True,
+            "recovery_selected": False,
+        })
         self.assertEqual(result["scrape_status"], "Success: Jina live")
         self.assertEqual(result["page_context_preview"], "Scraped page context.")
         self.assertNotIn("provider-secret", repr(diagnostics))
