@@ -6,9 +6,11 @@ from types import MappingProxyType
 from typing import Mapping
 
 
-PAGE_QUALITY_POLICY_VERSION = "current-aio-page-quality-v1"
+PAGE_QUALITY_POLICY_V1 = "current-aio-page-quality-v1"
+PAGE_QUALITY_POLICY_VERSION = "current-aio-page-quality-v2"
 CLAIM_BOUND_RENDERER_VERSION = "current-aio-claim-bound-v1"
-ADAPTIVE_POLICY_VERSION = "current-aio-adaptive-v1"
+ADAPTIVE_POLICY_V1 = "current-aio-adaptive-v1"
+ADAPTIVE_POLICY_VERSION = "current-aio-adaptive-v2"
 DEFAULT_GUIDANCE_PROFILE_ID = "balanced"
 PAGE_QUALITY_ROLLOUT_MODE_ENV = "AIO_PAGE_COPY_QUALITY_V1_MODE"
 PAGE_QUALITY_ALLOWLIST_ENV = "AIO_PAGE_COPY_QUALITY_V1_USER_IDS"
@@ -64,6 +66,7 @@ class DepthPolicy:
 class AdaptivePolicy:
     version: str
     depth_policies: tuple[DepthPolicy, ...]
+    compact_ecommerce_templates: bool
 
     def depth_policy(self, policy_id: str) -> DepthPolicy:
         normalized_id = str(policy_id or "").strip()
@@ -84,6 +87,9 @@ class PageQualityPolicy:
     exact_planned_headings: bool
     coverage_points: bool
     bounded_owned_page_reuse: bool
+    correction_contract: bool
+    ecommerce_inventory_context_only: bool
+    allow_sparse_ecommerce_generation: bool
 
 
 _GUIDANCE_PROFILES_BY_KEY: Mapping[tuple[str, str], GuidanceProfile] = MappingProxyType({
@@ -170,42 +176,61 @@ _KNOWN_GUIDANCE_PROFILE_IDS = frozenset(
     profile_id for profile_id, _version in _GUIDANCE_PROFILES_BY_KEY
 )
 
+_DEPTH_POLICIES = (
+    DepthPolicy(
+        id="explanatory",
+        unsupported_proof_behavior="retain",
+        prompt_instruction=(
+            "Retain the planned explanatory depth. Explain the topic safely and "
+            "usefully without converting category-level context into a client-specific "
+            "claim."
+        ),
+    ),
+    DepthPolicy(
+        id="claim_sensitive",
+        unsupported_proof_behavior="compact_claim_areas",
+        prompt_instruction=(
+            "Keep the section useful, but compact or withhold areas that would require "
+            "unsupported client-specific claims. Do not replace missing proof with "
+            "generic promotional filler."
+        ),
+    ),
+    DepthPolicy(
+        id="proof_only",
+        unsupported_proof_behavior="omit_or_withhold",
+        prompt_instruction=(
+            "Include only content supported by eligible client proof. If the required "
+            "proof is unavailable, omit or clearly withhold the unsupported content "
+            "rather than inventing it."
+        ),
+    ),
+)
+
 _ADAPTIVE_POLICIES: Mapping[str, AdaptivePolicy] = MappingProxyType({
+    ADAPTIVE_POLICY_V1: AdaptivePolicy(
+        version=ADAPTIVE_POLICY_V1,
+        depth_policies=_DEPTH_POLICIES,
+        compact_ecommerce_templates=False,
+    ),
     ADAPTIVE_POLICY_VERSION: AdaptivePolicy(
         version=ADAPTIVE_POLICY_VERSION,
-        depth_policies=(
-            DepthPolicy(
-                id="explanatory",
-                unsupported_proof_behavior="retain",
-                prompt_instruction=(
-                    "Retain the planned explanatory depth. Explain the topic safely and "
-                    "usefully without converting category-level context into a client-specific "
-                    "claim."
-                ),
-            ),
-            DepthPolicy(
-                id="claim_sensitive",
-                unsupported_proof_behavior="compact_claim_areas",
-                prompt_instruction=(
-                    "Keep the section useful, but compact or withhold areas that would require "
-                    "unsupported client-specific claims. Do not replace missing proof with "
-                    "generic promotional filler."
-                ),
-            ),
-            DepthPolicy(
-                id="proof_only",
-                unsupported_proof_behavior="omit_or_withhold",
-                prompt_instruction=(
-                    "Include only content supported by eligible client proof. If the required "
-                    "proof is unavailable, omit or clearly withhold the unsupported content "
-                    "rather than inventing it."
-                ),
-            ),
-        ),
+        depth_policies=_DEPTH_POLICIES,
+        compact_ecommerce_templates=True,
     ),
 })
 
 _PAGE_QUALITY_POLICIES: Mapping[str, PageQualityPolicy] = MappingProxyType({
+    PAGE_QUALITY_POLICY_V1: PageQualityPolicy(
+        version=PAGE_QUALITY_POLICY_V1,
+        adaptive_policy_version=ADAPTIVE_POLICY_V1,
+        default_guidance_profile_id=DEFAULT_GUIDANCE_PROFILE_ID,
+        exact_planned_headings=True,
+        coverage_points=True,
+        bounded_owned_page_reuse=True,
+        correction_contract=True,
+        ecommerce_inventory_context_only=False,
+        allow_sparse_ecommerce_generation=False,
+    ),
     PAGE_QUALITY_POLICY_VERSION: PageQualityPolicy(
         version=PAGE_QUALITY_POLICY_VERSION,
         adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
@@ -213,6 +238,9 @@ _PAGE_QUALITY_POLICIES: Mapping[str, PageQualityPolicy] = MappingProxyType({
         exact_planned_headings=True,
         coverage_points=True,
         bounded_owned_page_reuse=True,
+        correction_contract=True,
+        ecommerce_inventory_context_only=True,
+        allow_sparse_ecommerce_generation=True,
     ),
 })
 

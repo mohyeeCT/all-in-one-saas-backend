@@ -208,6 +208,11 @@ class ScraperTests(unittest.TestCase):
         self.assertIn("- Brand: Ultimate Party", result["content"])
         self.assertIn("Compare light-up styles", result["content"])
         self.assertNotIn("https://example.com/guides/", result["content"])
+        self.assertNotIn("Products found:", result["page_copy_content"])
+        self.assertNotIn("Filters found:", result["page_copy_content"])
+        self.assertNotIn("Pink Cowboy Hat", result["page_copy_content"])
+        self.assertNotIn("colors", result["page_copy_content"].casefold())
+        self.assertIn("Compare light-up styles", result["page_copy_content"])
         registry = build_owned_page_registry(result["content"])
         self.assertFalse(registry["truncated"])
         self.assertLessEqual(len(registry["blocks"]), 24)
@@ -356,6 +361,7 @@ class ScraperTests(unittest.TestCase):
             result = faq_scraper.scrape_page_context(
                 "jina-key",
                 "https://example.com/products/pink-hat",
+                mode="ecommerce_product",
                 capture_version=faq_scraper.AIO_OWNED_PAGE_CAPTURE_VERSION,
             )
 
@@ -366,6 +372,10 @@ class ScraperTests(unittest.TestCase):
         self.assertIn("Free shipping", result["content"])
         self.assertNotIn("All rights reserved", result["content"])
         self.assertLess(result["content"].index("# Pink Hat"), result["content"].index("## Details"))
+        self.assertNotIn("$12.99", result["page_copy_content"])
+        self.assertNotIn("In stock", result["page_copy_content"])
+        self.assertNotIn("Free shipping", result["page_copy_content"])
+        self.assertIn("A lightweight party hat with an adjustable fit.", result["page_copy_content"])
 
     def test_versioned_capture_keeps_repeated_facts_under_their_original_headings(self):
         result = faq_scraper._process_reader_text(

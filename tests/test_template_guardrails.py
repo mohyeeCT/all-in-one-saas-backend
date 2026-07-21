@@ -1,3 +1,5 @@
+from utils.adaptive_templates import apply_runtime_template_policy
+from utils.page_quality import ADAPTIVE_POLICY_VERSION
 from utils.templates import TEMPLATES
 
 
@@ -68,6 +70,38 @@ def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
             assert minimum >= 40
             assert maximum > minimum
             assert maximum - minimum >= 30
+
+
+def test_active_ecommerce_policy_keeps_product_and_collection_copy_concise():
+    product = apply_runtime_template_policy(
+        TEMPLATES["product_page"],
+        "product_page",
+        ADAPTIVE_POLICY_VERSION,
+    )
+    collection = apply_runtime_template_policy(
+        TEMPLATES["collection_page"],
+        "collection_page",
+        ADAPTIVE_POLICY_VERSION,
+    )
+
+    assert [section["word_count"] for section in product["sections"]] == [
+        [60, 110],
+        [140, 240],
+        [80, 140],
+        [60, 100],
+        [120, 200],
+    ]
+    assert [section["word_count"] for section in collection["sections"]] == [
+        [70, 130],
+        [60, 120],
+    ]
+    assert (_total_word_min("collection_page"), _total_word_max("collection_page")) == (
+        650,
+        1110,
+    )
+    assert "inventory context only" in collection["sections"][1]["prompt_rules"]
+    assert "Do not enumerate colors" in collection["sections"][1]["prompt_rules"]
+    assert "Do not repeat a color" in product["sections"][0]["prompt_rules"]
 
 
 def test_blog_template_labels_are_reader_intent_specific():

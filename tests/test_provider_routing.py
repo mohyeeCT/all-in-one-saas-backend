@@ -1412,6 +1412,9 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertIn("Do not write phrases like 'this page', 'this collection', 'this category'", prompt)
         self.assertIn("Do not invent product groupings, package sizes, event scales", prompt)
+        self.assertIn("Ecommerce inventory boundary", prompt)
+        self.assertIn("Do not introduce or enumerate product colors", prompt)
+        self.assertIn("use it only where the keyword or canonical H1 requires it", prompt)
         self.assertIn("Competitor context is topic inspiration, not proof of client facts", prompt)
         self.assertIn("Finding the right", prompt)
 

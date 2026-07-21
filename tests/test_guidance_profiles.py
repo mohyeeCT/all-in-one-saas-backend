@@ -11,9 +11,11 @@ from utils.owned_page import (
     SOURCE_ASSET_MANIFEST_VERSION,
 )
 from utils.page_quality import (
+    ADAPTIVE_POLICY_V1,
     ADAPTIVE_POLICY_VERSION,
     CLAIM_BOUND_RENDERER_VERSION,
     DEFAULT_GUIDANCE_PROFILE_ID,
+    PAGE_QUALITY_POLICY_V1,
     PAGE_QUALITY_POLICY_VERSION,
     PageQualityConfigurationError,
     UnknownGuidanceProfileError,
@@ -229,11 +231,62 @@ def test_page_quality_and_adaptive_policies_resolve_by_exact_version():
     assert page_policy.exact_planned_headings
     assert page_policy.coverage_points
     assert page_policy.bounded_owned_page_reuse
+    assert page_policy.ecommerce_inventory_context_only
+    assert page_policy.allow_sparse_ecommerce_generation
+    assert adaptive_policy.compact_ecommerce_templates
     assert [policy.id for policy in adaptive_policy.depth_policies] == [
         "explanatory",
         "claim_sensitive",
         "proof_only",
     ]
+
+
+def test_previous_quality_policy_remains_available_for_stored_jobs():
+    page_policy = get_page_quality_policy(PAGE_QUALITY_POLICY_V1)
+    adaptive_policy = get_adaptive_policy(ADAPTIVE_POLICY_V1)
+
+    assert page_policy.version == PAGE_QUALITY_POLICY_V1
+    assert page_policy.adaptive_policy_version == ADAPTIVE_POLICY_V1
+    assert not page_policy.ecommerce_inventory_context_only
+    assert not page_policy.allow_sparse_ecommerce_generation
+    assert not adaptive_policy.compact_ecommerce_templates
+
+
+def test_inventory_only_ecommerce_source_uses_concise_generation_for_new_policy():
+    current_policy = get_page_quality_policy(PAGE_QUALITY_POLICY_VERSION)
+    previous_policy = get_page_quality_policy(PAGE_QUALITY_POLICY_V1)
+    inventory_scrape = {
+        "content": "Products found:\n- Pink Hat | $12.99",
+        "page_copy_content": "",
+    }
+    empty_manifest = {"assets": [], "diagnostics": {"asset_count": 0}}
+
+    assert all_in_one._owned_source_for_page_copy(
+        inventory_scrape,
+        current_policy,
+        "collection_page",
+        custom_template=False,
+    ) == ""
+    assert all_in_one._owned_source_for_page_copy(
+        inventory_scrape,
+        previous_policy,
+        "collection_page",
+        custom_template=False,
+    ) == inventory_scrape["content"]
+    assert not all_in_one._claim_bound_rendering_enabled(
+        requested=True,
+        page_quality_policy=current_policy,
+        template_key="collection_page",
+        custom_template=False,
+        source_asset_manifest=empty_manifest,
+    )
+    assert all_in_one._claim_bound_rendering_enabled(
+        requested=True,
+        page_quality_policy=previous_policy,
+        template_key="collection_page",
+        custom_template=False,
+        source_asset_manifest=empty_manifest,
+    )
 
 
 def test_claim_bound_renderer_version_is_optional_legacy_and_exact_when_stored():
