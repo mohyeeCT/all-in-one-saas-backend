@@ -7,6 +7,7 @@ from typing import Mapping
 
 
 PAGE_QUALITY_POLICY_VERSION = "current-aio-page-quality-v1"
+CLAIM_BOUND_RENDERER_VERSION = "current-aio-claim-bound-v1"
 ADAPTIVE_POLICY_VERSION = "current-aio-adaptive-v1"
 DEFAULT_GUIDANCE_PROFILE_ID = "balanced"
 PAGE_QUALITY_ROLLOUT_MODE_ENV = "AIO_PAGE_COPY_QUALITY_V1_MODE"
@@ -345,3 +346,15 @@ def get_adaptive_policy(version: str) -> AdaptivePolicy:
             f'Adaptive policy version "{normalized_version}" is unavailable'
         )
     return policy
+
+
+def resolve_claim_bound_renderer_version(version: object) -> str:
+    """Resolve the optional stored renderer contract without falling forward."""
+    normalized_version = str(version or "").strip()
+    if not normalized_version:
+        return ""
+    if normalized_version != CLAIM_BOUND_RENDERER_VERSION:
+        raise UnsupportedPolicyVersionError(
+            f'Claim-bound renderer version "{normalized_version}" is unavailable'
+        )
+    return normalized_version

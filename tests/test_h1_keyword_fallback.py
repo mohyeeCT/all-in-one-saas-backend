@@ -553,9 +553,18 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
             all_in_one,
             "generate_page",
             return_value={
-                "intro": "Useful opening copy.",
-                "_full_page": "Useful opening copy.",
-                "_word_count": 3,
+                "intro": (
+                    "# Stage Curtain Fabric Guide\n\n"
+                    "Useful opening copy."
+                ),
+                "_full_page": (
+                    "# Stage Curtain Fabric Guide\n\n"
+                    "Useful opening copy."
+                ),
+                "_word_count": 7,
+                "_quality_blocked": False,
+                "_quality_block_reasons": [],
+                "_source_block_plan": {"valid": True},
             },
         ) as generate_page:
             result = self._process(

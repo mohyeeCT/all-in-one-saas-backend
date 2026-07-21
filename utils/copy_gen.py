@@ -2,16 +2,24 @@ import logging
 import re
 import time
 import json
+import hashlib
 from copy import deepcopy
 
 from utils.owned_page import (
     OWNED_PAGE_MAPPING_VERSION,
+    OWNED_PAGE_BLOCK_MAX_CHARS,
+    OWNED_PAGE_HEADING_MAX_CHARS,
+    OWNED_PAGE_MAX_BLOCKS,
+    SOURCE_BLOCK_PLAN_VERSION,
     SOURCE_ASSET_MANIFEST_VERSION,
     build_source_asset_manifest,
     hydrate_owned_blocks,
     validate_owned_block_ids,
 )
-from utils.page_quality import PAGE_QUALITY_POLICY_VERSION
+from utils.page_quality import (
+    CLAIM_BOUND_RENDERER_VERSION,
+    PAGE_QUALITY_POLICY_VERSION,
+)
 from utils.templates import SHARED_SECTION_CRAFT_GUIDANCE
 from safe_logging import log_safe_exception
 
@@ -976,6 +984,7 @@ def _normalise_strategy_brief(
     source_asset_manifest: dict | None = None,
     source_asset_mapping_diagnostics: dict | None = None,
     page_copy_correction_enabled: bool = False,
+    evidence_locked_reconstruction: bool = False,
 ) -> dict:
     brief = {}
     planning_enabled = template_sections is not None
@@ -1015,12 +1024,29 @@ def _normalise_strategy_brief(
         fact = _clean_strategy_text(item.get("fact"), 400)
         fact_id = _clean_strategy_text(item.get("id"), 24) or f"F{len(verified_facts) + 1}"
         source = _clean_strategy_text(item.get("source"), 40).casefold()
-        source_excerpt = _clean_strategy_text(item.get("source_excerpt"), 300)
+        raw_source_excerpt = (
+            str(item.get("source_excerpt") or "").strip()
+            if not isinstance(item.get("source_excerpt"), (dict, list))
+            else ""
+        )
+        source_excerpt = (
+            (
+                raw_source_excerpt
+                if len(raw_source_excerpt) <= 300
+                else ""
+            )
+            if evidence_locked_reconstruction
+            else _clean_strategy_text(item.get("source_excerpt"), 300)
+        )
         source_text = evidence.get(source, "")
         excerpt_is_supported = bool(
             source_excerpt
             and source_text
-            and _evidence_text(source_excerpt) in _evidence_text(source_text)
+            and (
+                source_excerpt in source_text
+                if evidence_locked_reconstruction
+                else _evidence_text(source_excerpt) in _evidence_text(source_text)
+            )
         )
         instruction_shaped_evidence = bool(
             _source_text_looks_instruction_shaped(fact)
@@ -1320,6 +1346,32 @@ def _normalise_strategy_brief(
             assigned_source_asset_ids,
             template_by_name,
         )
+    if evidence_locked_reconstruction and source_asset_contract_enabled:
+        for section_item in section_items:
+            ordered_assets = sorted(
+                (
+                    asset
+                    for asset in section_item.get("source_assets") or []
+                    if isinstance(asset, dict)
+                ),
+                key=lambda asset: (
+                    int(asset.get("order") or 0),
+                    str(asset.get("id") or ""),
+                ),
+            )
+            if not ordered_assets:
+                continue
+            section_item["source_assets"] = ordered_assets
+            section_item["source_asset_ids"] = [
+                str(asset.get("id") or "")
+                for asset in ordered_assets
+                if str(asset.get("id") or "")
+            ]
+            required_items = _source_asset_required_named_items(ordered_assets)
+            if required_items:
+                section_item["required_named_items"] = required_items
+            else:
+                section_item.pop("required_named_items", None)
     if section_items:
         brief["section_guidance"] = section_items
 
@@ -1329,9 +1381,26 @@ def _normalise_strategy_brief(
             if isinstance(owned_page_registry, dict)
             else owned_page_registry or []
         )
+        covered_source_block_ids = {
+            str(block_id)
+            for section_item in section_items
+            for asset in section_item.get("source_assets") or []
+            if isinstance(asset, dict)
+            for block_id in asset.get("source_block_ids") or []
+            if str(block_id or "")
+        }
         brief["owned_page_mapping_diagnostics"] = {
             "registry_block_count": len(registry_blocks),
-            "assigned_block_count": len(assigned_owned_block_ids),
+            "assigned_block_count": len(
+                assigned_owned_block_ids or covered_source_block_ids
+            ),
+            "assigned_block_ids": sorted(
+                assigned_owned_block_ids or covered_source_block_ids,
+                key=lambda block_id: (
+                    0,
+                    int(block_id[1:]),
+                ) if re.fullmatch(r"O[1-9]\d*", block_id) else (1, block_id),
+            ),
             "rejected_assignments": rejected_owned_assignments[:20],
             "source_char_count": int(
                 owned_page_registry.get("source_char_count") or 0
@@ -1496,6 +1565,14 @@ def page_plan_diagnostics(
     coverage_point_count = 0
     mapped_block_count = 0
     mapped_source_asset_count = 0
+    mapped_source_block_ids = set()
+    claim_bound_rendering = bool(
+        isinstance(brief, dict)
+        and brief.get("claim_bound_renderer_version")
+        == CLAIM_BOUND_RENDERER_VERSION
+        and brief.get("source_block_plan_version")
+        == SOURCE_BLOCK_PLAN_VERSION
+    )
 
     for section in template_sections or []:
         if not isinstance(section, dict):
@@ -1508,9 +1585,18 @@ def page_plan_diagnostics(
         mapped_source_asset_count += len(
             contract.get("source_asset_ids") or []
         )
+        mapped_source_block_ids.update(
+            str(block_id)
+            for asset in contract.get("source_assets") or []
+            if isinstance(asset, dict)
+            for block_id in asset.get("source_block_ids") or []
+            if str(block_id or "")
+        )
         if heading_level not in {"h2", "h3"}:
             continue
         expected_heading_count += 1
+        if claim_bound_rendering:
+            continue
         planned_heading = _clean_strategy_text(contract.get("planned_heading"), 120)
         if not planned_heading:
             findings.append({
@@ -1560,9 +1646,28 @@ def page_plan_diagnostics(
     unassigned_source_asset_ids = list(
         source_asset_mapping_diagnostics.get("unassigned_asset_ids") or []
     )
+    source_block_plan = (
+        brief_values.get("source_block_plan")
+        if isinstance(brief_values.get("source_block_plan"), dict)
+        else {}
+    )
+    source_block_plan_diagnostics = (
+        source_block_plan.get("diagnostics")
+        if isinstance(source_block_plan.get("diagnostics"), dict)
+        else {}
+    )
+    if source_block_plan.get("valid"):
+        mapped_source_block_ids.update(
+            str(block_id)
+            for operation in source_block_plan.get("operations") or []
+            if isinstance(operation, dict)
+            for block_id in operation.get("source_block_ids") or []
+            if str(block_id or "")
+        )
     if (
         source_asset_mapping_diagnostics.get("active")
         and unassigned_source_asset_ids
+        and not source_block_plan.get("valid")
     ):
         findings.append({
             "code": "source_assets_unassigned",
@@ -1576,7 +1681,14 @@ def page_plan_diagnostics(
         "expected_heading_count": expected_heading_count,
         "planned_heading_count": sum(len(names) for names in planned_headings.values()),
         "coverage_point_count": coverage_point_count,
-        "mapped_block_count": mapped_block_count,
+        "mapped_block_count": max(mapped_block_count, len(mapped_source_block_ids)),
+        "mapped_source_block_count": len(mapped_source_block_ids),
+        "unmapped_source_block_ids": list(
+            source_block_plan_diagnostics.get("unaccounted_block_ids") or []
+        ),
+        "duplicate_source_block_ids": list(
+            source_block_plan_diagnostics.get("duplicate_block_ids") or []
+        ),
         "mapped_source_asset_count": mapped_source_asset_count,
         "owned_page_mapping": mapping_diagnostics,
         "source_asset_mapping": source_asset_mapping_diagnostics,
@@ -2430,6 +2542,12 @@ def _source_asset_exact_phrases(
             values = asset.get("items") or []
         elif asset.get("kind") == "testimonial":
             values = [asset.get("quote"), asset.get("attribution")]
+        elif (
+            asset.get("kind") == "direct_statement"
+            and (strategy_brief or {}).get("claim_bound_renderer_version")
+            == CLAIM_BOUND_RENDERER_VERSION
+        ):
+            values = [asset.get("statement")]
         for value in values:
             phrase = value if isinstance(value, str) else ""
             if phrase and phrase not in seen:
@@ -2471,6 +2589,12 @@ def _source_asset_forbidden_conflicts(
                 asset.get("quote"),
                 asset.get("attribution"),
             ]
+        elif (
+            asset.get("kind") == "direct_statement"
+            and (strategy_brief or {}).get("claim_bound_renderer_version")
+            == CLAIM_BOUND_RENDERER_VERSION
+        ):
+            exact_values = [asset.get("statement")]
         for exact_value in exact_values:
             source_phrase = str(exact_value or "").strip()
             normalized_source = _evidence_text(source_phrase)
@@ -2506,7 +2630,7 @@ def _structured_source_asset_render_plan(
     *,
     brand_name: str = "",
 ) -> list[dict]:
-    """Build exact server-owned list/testimonial inserts from a valid contract."""
+    """Build exact server-owned source inserts from a valid contract."""
     normalized_section_name = str(section_name or "").strip().casefold()
     if normalized_section_name not in _validated_source_asset_section_names(
         strategy_brief
@@ -2546,6 +2670,16 @@ def _structured_source_asset_render_plan(
         kind = str(asset.get("kind") or "").strip()
         if not asset_id or asset_id in conflicting_ids:
             continue
+        source_metadata = {
+            "source_order": int(asset.get("order") or 0),
+            "heading_level": str(asset.get("heading_level") or "none"),
+            "heading": str(asset.get("heading") or "").strip(),
+            "source_block_ids": [
+                str(block_id)
+                for block_id in asset.get("source_block_ids") or []
+                if str(block_id or "")
+            ],
+        }
         if kind == "named_list":
             items = [
                 str(item).strip()
@@ -2577,6 +2711,25 @@ def _structured_source_asset_render_plan(
                     _visible_word_count(rendered)
                     + _visible_word_count(group_label)
                 ),
+                **source_metadata,
+            })
+            continue
+        if (
+            kind == "direct_statement"
+            and (strategy_brief or {}).get("claim_bound_renderer_version")
+            == CLAIM_BOUND_RENDERER_VERSION
+        ):
+            statement = str(asset.get("statement") or "").strip()
+            if not statement:
+                continue
+            plan.append({
+                "asset_id": asset_id,
+                "kind": kind,
+                "marker": _structured_source_asset_marker(asset_id),
+                "rendered": statement,
+                "statement": statement,
+                "visible_words": _visible_word_count(statement),
+                **source_metadata,
             })
             continue
         if kind != "testimonial":
@@ -2594,6 +2747,7 @@ def _structured_source_asset_render_plan(
             "quote": quote,
             "attribution": attribution,
             "visible_words": _visible_word_count(rendered),
+            **source_metadata,
         })
     return plan
 
@@ -2922,6 +3076,814 @@ def _materialise_structured_source_assets(
             if block
         )
     return value
+
+
+def _canonical_contract_hash(value: dict) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _claim_bound_forbidden_values(forbidden_phrases) -> list[str]:
+    if isinstance(forbidden_phrases, (list, tuple, set)):
+        values = forbidden_phrases
+    else:
+        values = re.split(r"[\n,;]+", str(forbidden_phrases or ""))
+    return [
+        str(value).strip()
+        for value in values
+        if str(value or "").strip()
+    ]
+
+
+def _claim_bound_text_conflict_reason(
+    text: str,
+    forbidden_values: list[str],
+) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    if _source_text_looks_instruction_shaped(value):
+        return "instruction_shaped_source"
+    normalized_value = _evidence_text(value)
+    for forbidden in forbidden_values:
+        normalized_forbidden = _evidence_text(forbidden)
+        if normalized_forbidden and re.search(
+            rf"(?<!\w){re.escape(normalized_forbidden)}(?!\w)",
+            normalized_value,
+        ):
+            return "forbidden_phrase_conflict"
+    return ""
+
+
+def _claim_bound_asset_order(asset: dict) -> int:
+    try:
+        order = int(asset.get("order"))
+    except (TypeError, ValueError):
+        return 0
+    return order if order > 0 else 0
+
+
+def _claim_bound_nonnegative_int(value) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _claim_bound_block_sort_key(block_id: str) -> tuple[int, object]:
+    value = str(block_id or "")
+    if re.fullmatch(r"O[1-9]\d*", value):
+        return (0, int(value[1:]))
+    return (1, value)
+
+
+def _claim_bound_heading_text(value) -> str:
+    text = str(value or "").strip()
+    if (
+        not text
+        or len(text) > OWNED_PAGE_HEADING_MAX_CHARS
+        or "\n" in text
+        or "\r" in text
+        or text.startswith("#")
+    ):
+        return ""
+    return text
+
+
+def _claim_bound_asset_text(asset: dict) -> str:
+    kind = str(asset.get("kind") or "").strip()
+    if kind == "direct_statement":
+        return str(asset.get("statement") or "").strip()
+    if kind == "named_list":
+        items = [
+            str(item).strip()
+            for item in asset.get("items") or []
+            if isinstance(item, str) and item.strip()
+        ]
+        return "\n".join(f"- {item}" for item in items)
+    if kind == "testimonial":
+        quote = str(asset.get("quote") or "").strip()
+        attribution = str(asset.get("attribution") or "").strip()
+        return f"> {quote}\n\n{attribution}" if quote and attribution else ""
+    return ""
+
+
+def _claim_bound_asset_integrity_valid(asset: dict) -> bool:
+    heading_level = asset.get("heading_level")
+    heading = asset.get("heading")
+    source_texts = asset.get("source_texts")
+    source_hashes = asset.get("source_content_hashes")
+    if (
+        heading_level not in {"none", "h1", "h2", "h3", "h4", "h5", "h6"}
+        or not isinstance(heading, str)
+        or not isinstance(source_texts, list)
+        or not isinstance(source_hashes, list)
+        or len(source_texts) != len(source_hashes)
+        or any(
+            not isinstance(text, str)
+            or not text
+            or len(text) > OWNED_PAGE_BLOCK_MAX_CHARS
+            for text in source_texts
+        )
+    ):
+        return False
+    for source_text, source_hash in zip(source_texts, source_hashes):
+        expected_hash = hashlib.sha256(
+            f"{heading_level}\n{heading}\n{source_text}".encode("utf-8")
+        ).hexdigest()
+        if source_hash != expected_hash:
+            return False
+    hash_payload = {
+        key: value
+        for key, value in asset.items()
+        if key not in {"id", "order", "content_hash"}
+    }
+    return asset.get("content_hash") == _canonical_contract_hash(hash_payload)
+
+
+def _claim_bound_asset_drop_reason(
+    asset: dict,
+    rendered: str,
+    forbidden_values: list[str],
+) -> str:
+    if not rendered:
+        return "invalid_source_asset"
+    return _claim_bound_text_conflict_reason(rendered, forbidden_values)
+
+
+def _claim_bound_canonical_h1(
+    source_asset_manifest: dict | None,
+    input_h1: str,
+    fallback_heading: str,
+    forbidden_phrases="",
+) -> str:
+    """Choose a provenance-bound or neutral H1 without using model meta prose."""
+    manifest = (
+        source_asset_manifest
+        if isinstance(source_asset_manifest, dict)
+        else {}
+    )
+    raw_assets = manifest.get("assets")
+    assets = raw_assets if isinstance(raw_assets, list) else []
+    source_h1s = [
+        str(asset.get("heading") or "").strip()
+        for asset in sorted(
+            (
+                asset
+                for asset in assets
+                if isinstance(asset, dict)
+            ),
+            key=lambda asset: (
+                _claim_bound_asset_order(asset),
+                str(asset.get("id") or ""),
+            ),
+        )
+        if str(asset.get("heading_level") or "").casefold() == "h1"
+    ]
+    forbidden_values = _claim_bound_forbidden_values(forbidden_phrases)
+    for candidate in (*source_h1s, input_h1, fallback_heading):
+        heading = _claim_bound_heading_text(candidate)
+        if (
+            heading
+            and not _claim_bound_text_conflict_reason(
+                heading,
+                forbidden_values,
+            )
+        ):
+            return heading
+    return ""
+
+
+def _claim_bound_source_plan(
+    strategy_brief: dict | None,
+    source_asset_manifest: dict | None,
+    template: dict,
+    forbidden_phrases="",
+) -> dict:
+    """Build one deterministic, exhaustive source-block plan for strict rendering."""
+    issues = []
+    manifest = source_asset_manifest if isinstance(source_asset_manifest, dict) else {}
+    diagnostics = manifest.get("diagnostics")
+    assets = manifest.get("assets")
+    template_sections = [
+        section
+        for section in template.get("sections") or []
+        if isinstance(section, dict) and str(section.get("name") or "").strip()
+    ]
+    section_names = [str(section["name"]) for section in template_sections]
+    section_index = {name.casefold(): index for index, name in enumerate(section_names)}
+    canonical_section_names = {name.casefold(): name for name in section_names}
+
+    if manifest.get("version") != SOURCE_ASSET_MANIFEST_VERSION:
+        issues.append("source_asset_manifest_version_mismatch")
+    if manifest.get("registry_version") != OWNED_PAGE_MAPPING_VERSION:
+        issues.append("source_asset_registry_version_mismatch")
+    manifest_payload = {
+        key: value
+        for key, value in manifest.items()
+        if key != "manifest_hash"
+    }
+    if (
+        manifest
+        and str(manifest.get("manifest_hash") or "")
+        != _canonical_contract_hash(manifest_payload)
+    ):
+        issues.append("source_asset_manifest_hash_mismatch")
+    if not isinstance(diagnostics, dict) or not isinstance(assets, list):
+        issues.append("source_asset_manifest_malformed")
+        diagnostics = {}
+        assets = []
+    if diagnostics.get("source_truncated") or diagnostics.get("registry_truncated"):
+        issues.append("source_asset_manifest_truncated")
+    if diagnostics.get("structured_assets_suppressed"):
+        issues.append("source_asset_manifest_suppressed")
+    if not section_names:
+        issues.append("template_has_no_sections")
+    elif len(section_index) != len(section_names):
+        issues.append("template_section_topology_invalid")
+
+    brief = strategy_brief if isinstance(strategy_brief, dict) else {}
+    forbidden_values = _claim_bound_forbidden_values(forbidden_phrases)
+    verified_proofs = _claim_bound_verified_proofs(brief)
+    safe_proof_excerpt_count = sum(
+        len(
+            _claim_bound_proof_excerpts(
+                contract,
+                forbidden_values=forbidden_values,
+                verified_proofs=verified_proofs,
+            )
+        )
+        for contract in brief.get("section_guidance") or []
+        if isinstance(contract, dict)
+    )
+    canonical_assets = sorted(
+        (asset for asset in assets if isinstance(asset, dict)),
+        key=lambda asset: (
+            _claim_bound_asset_order(asset),
+            str(asset.get("id") or ""),
+        ),
+    )
+    canonical_asset_map = _source_asset_map(manifest)
+    asset_schema_valid = bool(
+        len(assets) <= OWNED_PAGE_MAX_BLOCKS
+        and (
+            not assets
+            or (
+                len(canonical_asset_map) == len(assets)
+                and all(
+                    _claim_bound_asset_integrity_valid(asset)
+                    for asset in canonical_assets
+                )
+            )
+        )
+    )
+    if not asset_schema_valid:
+        issues.append("source_asset_schema_invalid")
+        canonical_assets = []
+    known_asset_ids = [str(asset.get("id") or "") for asset in canonical_assets]
+    source_orders = [
+        _claim_bound_asset_order(asset)
+        for asset in canonical_assets
+    ]
+    if (
+        len(canonical_assets) != len(assets)
+        or (not canonical_assets and not safe_proof_excerpt_count)
+        or known_asset_ids != [f"A{index}" for index in range(1, len(assets) + 1)]
+        or source_orders != list(range(1, len(canonical_assets) + 1))
+    ):
+        issues.append("source_asset_topology_invalid")
+
+    assignment = {}
+    duplicate_assignment_ids = set()
+    for contract in brief.get("section_guidance") or []:
+        if not isinstance(contract, dict):
+            continue
+        section_name = str(contract.get("section") or "").strip()
+        if section_name.casefold() not in section_index:
+            continue
+        section_name = canonical_section_names[section_name.casefold()]
+        for asset_id in contract.get("source_asset_ids") or []:
+            asset_id = str(asset_id or "").strip()
+            if not asset_id:
+                continue
+            if asset_id in assignment:
+                duplicate_assignment_ids.add(asset_id)
+                continue
+            assignment[asset_id] = section_name
+
+    known_asset_id_set = set(known_asset_ids)
+    assignment_is_complete = bool(
+        not known_asset_id_set
+        or (
+            set(assignment) == known_asset_id_set
+            and not duplicate_assignment_ids
+        )
+    )
+    fallback_used = bool(known_asset_id_set and not assignment_is_complete)
+    fallback_section = section_names[0] if section_names else ""
+    if fallback_used:
+        assignment = {
+            asset_id: fallback_section
+            for asset_id in known_asset_ids
+        }
+
+    seen_rendered = set()
+    operations = []
+    all_block_ids = []
+    duplicate_block_ids = set()
+    previous_target_index = -1
+    target_heading_keys = {}
+    for asset in canonical_assets:
+        asset_id = str(asset.get("id") or "")
+        source_block_ids = [
+            str(block_id)
+            for block_id in asset.get("source_block_ids") or []
+            if str(block_id or "")
+        ]
+        for block_id in source_block_ids:
+            if block_id in all_block_ids:
+                duplicate_block_ids.add(block_id)
+            all_block_ids.append(block_id)
+
+        rendered = _claim_bound_asset_text(asset)
+        drop_reason = _claim_bound_asset_drop_reason(
+            asset,
+            rendered,
+            forbidden_values,
+        )
+        rendered_key = _evidence_text(rendered)
+        if not drop_reason and rendered_key in seen_rendered:
+            drop_reason = "exact_duplicate"
+        if rendered_key:
+            seen_rendered.add(rendered_key)
+
+        target_section = assignment.get(asset_id, fallback_section)
+        target_position = section_index.get(target_section.casefold(), 0)
+        placement_action = (
+            "move"
+            if not fallback_used and target_position < previous_target_index
+            else "stay"
+        )
+        previous_target_index = max(previous_target_index, target_position)
+        heading_key = (
+            str(asset.get("heading_level") or "none"),
+            str(asset.get("heading") or "").strip(),
+        )
+        heading_drop_reason = _claim_bound_text_conflict_reason(
+            heading_key[1],
+            forbidden_values,
+        )
+        if heading_key[1] and not heading_drop_reason:
+            target_heading_keys.setdefault(target_section, set()).add(heading_key)
+        operations.append({
+            "id": f"P{len(operations) + 1}",
+            "asset_id": asset_id,
+            "source_block_ids": source_block_ids,
+            "source_order": _claim_bound_asset_order(asset),
+            "source_heading_level": heading_key[0],
+            "source_heading": heading_key[1],
+            "heading_action": (
+                "drop"
+                if heading_drop_reason
+                else ("preserve" if heading_key[1] else "none")
+            ),
+            "heading_reason_code": heading_drop_reason,
+            "content_action": "drop" if drop_reason else "preserve",
+            "placement_action": placement_action,
+            "target_section": target_section,
+            "reason_code": drop_reason or (
+                "source_order_fallback" if fallback_used else "source_default"
+            ),
+        })
+
+    expected_block_count = _claim_bound_nonnegative_int(
+        diagnostics.get("valid_block_count")
+    )
+    consumed_block_count = _claim_bound_nonnegative_int(
+        diagnostics.get("consumed_block_count")
+    )
+    if expected_block_count is None or consumed_block_count is None:
+        issues.append("source_asset_manifest_malformed")
+        expected_block_count = expected_block_count or 0
+        consumed_block_count = consumed_block_count or 0
+    expected_block_ids = {
+        f"O{index}"
+        for index in range(1, expected_block_count + 1)
+    }
+    accounted_block_ids = set(all_block_ids)
+    unaccounted_block_ids = sorted(
+        expected_block_ids - accounted_block_ids,
+        key=_claim_bound_block_sort_key,
+    )
+    unexpected_block_ids = sorted(
+        accounted_block_ids - expected_block_ids,
+        key=_claim_bound_block_sort_key,
+    )
+    if duplicate_block_ids:
+        issues.append("duplicate_source_block_ownership")
+    if unaccounted_block_ids or unexpected_block_ids:
+        issues.append("incomplete_source_block_coverage")
+    if consumed_block_count != expected_block_count:
+        issues.append("source_manifest_block_partition_incomplete")
+
+    for operation in operations:
+        if len(target_heading_keys.get(operation["target_section"], set())) > 1:
+            operation["merge_group"] = operation["target_section"]
+            if operation["content_action"] == "preserve":
+                operation["reason_code"] = "same_target_source_merge"
+        else:
+            operation["merge_group"] = ""
+
+    rendered_operation_count = sum(
+        operation["content_action"] != "drop"
+        for operation in operations
+    )
+    if rendered_operation_count == 0 and safe_proof_excerpt_count == 0:
+        issues.append("no_safe_source_content")
+
+    plan = {
+        "version": SOURCE_BLOCK_PLAN_VERSION,
+        "renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+        "registry_version": str(manifest.get("registry_version") or ""),
+        "manifest_version": str(manifest.get("version") or ""),
+        "manifest_hash": str(manifest.get("manifest_hash") or ""),
+        "template_section_order": section_names,
+        "fallback_used": fallback_used,
+        "operations": operations,
+        "diagnostics": {
+            "registry_block_count": expected_block_count,
+            "accounted_block_count": len(accounted_block_ids),
+            "unaccounted_block_ids": unaccounted_block_ids,
+            "unexpected_block_ids": unexpected_block_ids,
+            "duplicate_block_ids": sorted(
+                duplicate_block_ids,
+                key=_claim_bound_block_sort_key,
+            ),
+            "preserve_count": sum(
+                operation["content_action"] == "preserve"
+                for operation in operations
+            ),
+            "drop_count": sum(
+                operation["content_action"] == "drop"
+                for operation in operations
+            ),
+            "move_count": sum(
+                operation["placement_action"] == "move"
+                for operation in operations
+            ),
+            "merge_count": sum(
+                bool(operation["merge_group"])
+                for operation in operations
+            ),
+            "safe_proof_excerpt_count": safe_proof_excerpt_count,
+            "dropped_heading_count": sum(
+                operation["heading_action"] == "drop"
+                for operation in operations
+            ),
+            "issues": list(dict.fromkeys(issues)),
+        },
+    }
+    plan["valid"] = not plan["diagnostics"]["issues"]
+    plan["plan_hash"] = _canonical_contract_hash(plan)
+    return plan
+
+
+def _claim_bound_render_item(asset: dict, operation: dict) -> dict:
+    return {
+        "asset_id": str(asset.get("id") or ""),
+        "kind": str(asset.get("kind") or ""),
+        "rendered": _claim_bound_asset_text(asset),
+        "source_order": _claim_bound_asset_order(asset),
+        "heading_level": str(asset.get("heading_level") or "none"),
+        "heading": (
+            str(asset.get("heading") or "").strip()
+            if operation.get("heading_action") == "preserve"
+            else ""
+        ),
+        "source_block_ids": [
+            str(block_id)
+            for block_id in asset.get("source_block_ids") or []
+            if str(block_id or "")
+        ],
+    }
+
+
+def _safe_source_heading_line(level: str, heading: str) -> str:
+    text = _claim_bound_heading_text(heading)
+    if not text:
+        return ""
+    normalized_level = str(level or "").casefold()
+    if normalized_level == "h3":
+        return f"### {text}"
+    return f"## {text}"
+
+
+def _claim_bound_verified_proofs(strategy_brief: dict | None) -> dict[str, dict]:
+    verified = {}
+    for proof in (strategy_brief or {}).get("verified_facts") or []:
+        if not isinstance(proof, dict):
+            continue
+        proof_id = str(proof.get("id") or "").strip().casefold()
+        excerpt = str(proof.get("source_excerpt") or "").strip()
+        source = str(proof.get("source") or "").strip().casefold()
+        if (
+            proof_id
+            and proof_id not in verified
+            and excerpt
+            and source in _VERIFIED_FACT_SOURCES
+        ):
+            verified[proof_id] = proof
+    return verified
+
+
+def _claim_bound_proof_excerpts(
+    contract: dict | None,
+    *,
+    forbidden_values: list[str] | None = None,
+    verified_proofs: dict[str, dict] | None = None,
+) -> list[str]:
+    excerpts = []
+    seen = set()
+    forbidden = forbidden_values or []
+    proof_allowlist = verified_proofs or {}
+    for proof in (contract or {}).get("proof_facts") or []:
+        if not isinstance(proof, dict):
+            continue
+        canonical_proof = proof_allowlist.get(
+            str(proof.get("id") or "").strip().casefold()
+        )
+        if not canonical_proof:
+            continue
+        excerpt = str(canonical_proof.get("source_excerpt") or "").strip()
+        if (
+            str(proof.get("source_excerpt") or "").strip() != excerpt
+            or str(proof.get("source") or "").strip().casefold()
+            != str(canonical_proof.get("source") or "").strip().casefold()
+        ):
+            continue
+        key = _evidence_text(excerpt)
+        if (
+            excerpt
+            and key
+            and key not in seen
+            and not _claim_bound_text_conflict_reason(excerpt, forbidden)
+        ):
+            seen.add(key)
+            excerpts.append(excerpt)
+    return excerpts
+
+
+def _render_claim_bound_section(
+    section: dict,
+    render_items: list[dict],
+    contract: dict | None,
+    *,
+    h1: str,
+    forbidden_values: list[str],
+    verified_proofs: dict[str, dict],
+    used_headings: set[str],
+    visible_keys: set[str],
+) -> str:
+    """Render only canonical source text and exact evidence excerpts."""
+    section_name = str(section.get("name") or "")
+    heading_level = str(section.get("heading_level") or "none").casefold()
+    ordered_items = sorted(
+        render_items,
+        key=lambda item: (item["source_order"], item["asset_id"]),
+    )
+    lines = []
+    if heading_level == "h1" and str(h1 or "").strip():
+        lines.append(f"# {str(h1).strip()}")
+        used_headings.add(_evidence_text(h1))
+
+    for item in ordered_items:
+        rendered = str(item.get("rendered") or "").strip()
+        if not rendered:
+            continue
+        source_heading = str(item.get("heading") or "").strip()
+        heading_key = _evidence_text(source_heading)
+        if source_heading and heading_key not in used_headings:
+            heading_line = _safe_source_heading_line(
+                item.get("heading_level") or "h2",
+                source_heading,
+            )
+            if heading_line:
+                lines.append(heading_line)
+                used_headings.add(heading_key)
+        lines.append(rendered)
+        visible_keys.add(_evidence_text(rendered))
+
+    proof_excerpts = _claim_bound_proof_excerpts(
+        contract,
+        forbidden_values=forbidden_values,
+        verified_proofs=verified_proofs,
+    )
+    missing_excerpts = []
+    for excerpt in sorted(
+        proof_excerpts,
+        key=lambda value: (-len(_evidence_text(value)), _evidence_text(value)),
+    ):
+        excerpt_key = _evidence_text(excerpt)
+        if any(
+            (
+                excerpt_key in visible_key
+                or visible_key in excerpt_key
+            )
+            for visible_key in visible_keys
+            if visible_key
+        ):
+            continue
+        missing_excerpts.append(excerpt)
+        visible_keys.add(excerpt_key)
+    if missing_excerpts:
+        if not lines and heading_level in {"h2", "h3"}:
+            label = _clean_strategy_text(
+                section.get("label") or section_name,
+                SECTION_PLANNED_HEADING_CHAR_LIMIT,
+            )
+            if label and not _claim_bound_text_conflict_reason(
+                label,
+                forbidden_values,
+            ):
+                prefix = "###" if heading_level == "h3" else "##"
+                lines.append(f"{prefix} {label}")
+        lines.extend(missing_excerpts)
+
+    return "\n\n".join(line for line in lines if str(line).strip()).strip()
+
+
+def _claim_bound_blocked_result(
+    plan: dict,
+    strategy_brief: dict | None,
+    *reasons: str,
+) -> dict:
+    diagnostics = plan.setdefault("diagnostics", {})
+    diagnostics["issues"] = list(dict.fromkeys([
+        *(diagnostics.get("issues") or []),
+        *(reason for reason in reasons if reason),
+    ]))
+    plan["valid"] = False
+    plan_without_hash = {
+        key: value
+        for key, value in plan.items()
+        if key != "plan_hash"
+    }
+    plan["plan_hash"] = _canonical_contract_hash(plan_without_hash)
+    if isinstance(strategy_brief, dict):
+        strategy_brief["source_block_plan"] = deepcopy(plan)
+    return {
+        "_full_page": "",
+        "_word_count": 0,
+        "_quality_blocked": True,
+        "_quality_block_reasons": diagnostics["issues"],
+        "_source_block_plan": plan,
+    }
+
+
+def _generate_claim_bound_page(
+    *,
+    template: dict,
+    strategy_brief: dict | None,
+    source_asset_manifest: dict | None,
+    forbidden_phrases,
+    h1: str,
+    progress_callback=None,
+) -> dict:
+    forbidden_values = _claim_bound_forbidden_values(forbidden_phrases)
+    if isinstance(strategy_brief, dict):
+        strategy_brief["claim_bound_renderer_version"] = (
+            CLAIM_BOUND_RENDERER_VERSION
+        )
+        strategy_brief["source_block_plan_version"] = SOURCE_BLOCK_PLAN_VERSION
+    safe_h1 = _claim_bound_canonical_h1(
+        source_asset_manifest,
+        h1,
+        "",
+        forbidden_values,
+    )
+    plan = _claim_bound_source_plan(
+        strategy_brief,
+        source_asset_manifest,
+        template,
+        forbidden_phrases,
+    )
+    if isinstance(strategy_brief, dict):
+        strategy_brief["source_block_plan"] = deepcopy(plan)
+    requires_h1 = any(
+        str(section.get("heading_level") or "").casefold() == "h1"
+        for section in template.get("sections") or []
+        if isinstance(section, dict)
+    )
+    if requires_h1 and not safe_h1:
+        return _claim_bound_blocked_result(
+            plan,
+            strategy_brief,
+            "no_safe_canonical_h1",
+        )
+    if not plan["valid"]:
+        return _claim_bound_blocked_result(plan, strategy_brief)
+
+    assets_by_id = {
+        str(asset.get("id") or ""): asset
+        for asset in (source_asset_manifest or {}).get("assets") or []
+        if isinstance(asset, dict) and str(asset.get("id") or "")
+    }
+    operation_by_asset_id = {
+        operation["asset_id"]: operation
+        for operation in plan["operations"]
+    }
+    items_by_section = {name: [] for name in plan["template_section_order"]}
+    materialized_asset_ids = set()
+    for asset_id, operation in operation_by_asset_id.items():
+        if operation["content_action"] == "drop":
+            continue
+        asset = assets_by_id.get(asset_id)
+        target_section = operation["target_section"]
+        if asset is not None and target_section in items_by_section:
+            items_by_section[target_section].append(
+                _claim_bound_render_item(asset, operation)
+            )
+            materialized_asset_ids.add(asset_id)
+
+    expected_materialized_asset_ids = {
+        operation["asset_id"]
+        for operation in plan["operations"]
+        if operation["content_action"] != "drop"
+    }
+    if materialized_asset_ids != expected_materialized_asset_ids:
+        return _claim_bound_blocked_result(
+            plan,
+            strategy_brief,
+            "source_asset_materialization_incomplete",
+        )
+
+    contracts = {
+        str(item.get("section") or "").strip().casefold(): item
+        for item in (strategy_brief or {}).get("section_guidance") or []
+        if isinstance(item, dict)
+    }
+    verified_proofs = _claim_bound_verified_proofs(strategy_brief)
+    results = {}
+    sections = template.get("sections") or []
+    used_headings = set()
+    visible_keys = {
+        _evidence_text(item.get("rendered"))
+        for items in items_by_section.values()
+        for item in items
+        if _evidence_text(item.get("rendered"))
+    }
+    for index, section in enumerate(sections):
+        if progress_callback:
+            progress_callback(index, len(sections), section.get("label") or section.get("name") or "Section")
+        section_name = str(section.get("name") or "")
+        text = _render_claim_bound_section(
+            section,
+            items_by_section.get(section_name, []),
+            contracts.get(section_name.casefold()),
+            h1=safe_h1,
+            forbidden_values=forbidden_values,
+            verified_proofs=verified_proofs,
+            used_headings=used_headings,
+            visible_keys=visible_keys,
+        )
+        if text:
+            results[section_name] = text
+
+    full_page = "\n\n".join(
+        results.get(str(section.get("name") or ""), "")
+        for section in sections
+        if results.get(str(section.get("name") or ""), "")
+    )
+    if not full_page.strip():
+        return _claim_bound_blocked_result(
+            plan,
+            strategy_brief,
+            "no_safe_source_content",
+        )
+    rendered_conflict = _claim_bound_text_conflict_reason(
+        full_page,
+        forbidden_values,
+    )
+    if rendered_conflict:
+        return _claim_bound_blocked_result(
+            plan,
+            strategy_brief,
+            f"rendered_{rendered_conflict}",
+        )
+    results.update({
+        "_full_page": full_page,
+        "_word_count": len(full_page.split()),
+        "_quality_blocked": False,
+        "_quality_block_reasons": [],
+        "_source_block_plan": plan,
+    })
+    return results
 
 
 def _prior_repeated_authored_phrases(text: str) -> list[str]:
@@ -4358,11 +5320,28 @@ def generate_page(
     page_copy_guidance=None,
     page_quality_policy=None,
     page_copy_correction_enabled: bool = False,
+    claim_bound_renderer_version: str = "",
+    source_block_plan_version: str = "",
+    source_asset_manifest: dict | None = None,
 ) -> dict:
     """
     Runs the section-by-section generation loop.
     Returns: { section_name: text, "_full_page": assembled markdown, "_word_count": int }
     """
+    claim_bound_rendering = bool(
+        claim_bound_renderer_version == CLAIM_BOUND_RENDERER_VERSION
+        and source_block_plan_version == SOURCE_BLOCK_PLAN_VERSION
+    )
+    if claim_bound_rendering:
+        return _generate_claim_bound_page(
+            template=template,
+            strategy_brief=strategy_brief,
+            source_asset_manifest=source_asset_manifest,
+            forbidden_phrases=forbidden_phrases,
+            h1=h1,
+            progress_callback=progress_callback,
+        )
+
     fn = PROVIDER_FN.get(provider)
     if not fn:
         raise ValueError(f"Unknown provider: {provider}")
@@ -5572,6 +6551,8 @@ def generate_strategy_brief(
     source_asset_manifest: dict | None = None,
     page_quality_policy=None,
     page_copy_correction_enabled: bool = False,
+    claim_bound_renderer_version: str = "",
+    source_block_plan_version: str = "",
 ) -> dict:
     fn = PROVIDER_FN.get(provider)
     if not fn:
@@ -5580,6 +6561,11 @@ def generate_strategy_brief(
     resolved_model = model or DEFAULT_MODELS.get(provider)
     initial_quality_enabled = bool(
         enable_page_planning and page_quality_policy is not None
+    )
+    evidence_locked_reconstruction = bool(
+        initial_quality_enabled
+        and claim_bound_renderer_version == CLAIM_BOUND_RENDERER_VERSION
+        and source_block_plan_version == SOURCE_BLOCK_PLAN_VERSION
     )
     brand_context_block = brand_context or "BRAND CONTEXT:\nNone"
     canonical_owned_page_registry = (
@@ -5854,7 +6840,11 @@ JSON schema:
         source_asset_manifest=active_source_asset_manifest,
         source_asset_mapping_diagnostics=source_asset_mapping_diagnostics,
         page_copy_correction_enabled=page_copy_correction_enabled,
+        evidence_locked_reconstruction=evidence_locked_reconstruction,
     )
+    if evidence_locked_reconstruction:
+        brief["claim_bound_renderer_version"] = CLAIM_BOUND_RENDERER_VERSION
+        brief["source_block_plan_version"] = SOURCE_BLOCK_PLAN_VERSION
     if "collection" in (page_type or "").lower() or "category" in (page_type or "").lower():
         brief = _normalise_strategy_collection_references(brief, keyword or h1)
     return brief

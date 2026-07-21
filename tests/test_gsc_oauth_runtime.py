@@ -19,9 +19,14 @@ from routers import all_in_one, jobs
 from utils import copy_gen, gsc
 from utils.owned_page import (
     OWNED_PAGE_MAPPING_VERSION,
+    SOURCE_BLOCK_PLAN_VERSION,
     SOURCE_ASSET_MANIFEST_VERSION,
 )
-from utils.page_quality import ADAPTIVE_POLICY_VERSION, PAGE_QUALITY_POLICY_VERSION
+from utils.page_quality import (
+    ADAPTIVE_POLICY_VERSION,
+    CLAIM_BOUND_RENDERER_VERSION,
+    PAGE_QUALITY_POLICY_VERSION,
+)
 
 meta = all_in_one
 
@@ -604,6 +609,40 @@ class RuntimePathTests(unittest.TestCase):
                     any(query.operation == "update" for query in sb.executed)
                 )
 
+    def test_claim_bound_section_rerun_requires_a_complete_row_rerun(self):
+        strict_settings = {
+            "provider": "Claude",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+            "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
+            "page_copy_guidance": {"id": "balanced", "version": "1"},
+        }
+        background = _BackgroundTasks()
+        sb = _Supabase({
+            "jobs": [{
+                **_stored_job(),
+                "settings": strict_settings,
+                "results": [{"section_results": {"hero": "# Existing hero"}}],
+            }],
+        })
+
+        with self.assertRaises(HTTPException) as raised:
+            jobs.rerun_section(
+                job_id="job-1",
+                body=jobs.RerunSectionRequest(row_index=0, section_name="hero"),
+                background_tasks=background,
+                user=SimpleNamespace(id="user-1"),
+                sb=sb,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("complete row", raised.exception.detail)
+        self.assertEqual(background.calls, [])
+        self.assertFalse(any(query.operation == "update" for query in sb.executed))
+
     def test_successful_single_and_bulk_retry_clear_only_credential_error(self):
         cases = (
             (jobs._rerun_single_row, None),
@@ -892,6 +931,53 @@ class RuntimePathTests(unittest.TestCase):
                     ][-1]
                     self.assertEqual(terminal.filters, [("id", "job-1"), ("user_id", "user-1")])
                     _assert_persistence_is_secret_free(self, sb)
+
+    def test_claim_bound_complete_row_reruns_preserve_the_strict_renderer(self):
+        strict_settings = {
+            **_runtime_settings(),
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "source_asset_manifest_version": SOURCE_ASSET_MANIFEST_VERSION,
+            "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
+            "source_block_plan_version": SOURCE_BLOCK_PLAN_VERSION,
+            "page_copy_guidance": {"id": "balanced", "version": "1"},
+        }
+        for function, indices in (
+            (jobs._rerun_single_row, None),
+            (jobs._rerun_multiple_rows, [0]),
+        ):
+            with self.subTest(function=function.__name__):
+                sb = _Supabase({"jobs": [_stored_job()]})
+                with (
+                    patch.object(jobs, "hydrate_job_settings", return_value=strict_settings),
+                    patch.object(jobs, "_get_runtime_gsc_client", return_value="client"),
+                    patch.object(meta, "_process_single_row", return_value={"status": "ok"}) as process,
+                    patch.object(meta, "_update_job"),
+                ):
+                    if indices is None:
+                        function(
+                            "job-1",
+                            0,
+                            _stored_job()["rows"],
+                            strict_settings,
+                            sb,
+                            user_id="user-1",
+                        )
+                    else:
+                        function(
+                            "job-1",
+                            indices,
+                            _stored_job()["rows"],
+                            strict_settings,
+                            sb,
+                            "user-1",
+                        )
+
+                self.assertIs(
+                    process.call_args.kwargs["page_copy_correction_enabled"],
+                    True,
+                )
 
     def test_single_row_result_includes_safe_gsc_auth_method_label(self):
         sb = _Supabase({"jobs": [_stored_job()]})

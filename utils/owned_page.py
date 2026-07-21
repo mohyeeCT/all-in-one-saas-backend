@@ -18,6 +18,7 @@ from utils.page_quality import PageQualityConfigurationError
 
 OWNED_PAGE_MAPPING_VERSION = "current-aio-owned-blocks-v1"
 SOURCE_ASSET_MANIFEST_VERSION = "current-aio-source-assets-v1"
+SOURCE_BLOCK_PLAN_VERSION = "current-aio-source-block-plan-v1"
 
 OWNED_PAGE_SOURCE_MAX_CHARS = 10_000
 OWNED_PAGE_MAX_BLOCKS = 24
@@ -86,6 +87,18 @@ def get_owned_page_mapping_policy(version: str) -> OwnedPageMappingPolicy:
             f'Owned-page mapping version "{normalized_version or "<missing>"}" is unavailable.'
         )
     return policy
+
+
+def resolve_source_block_plan_version(version: object) -> str:
+    """Resolve the optional stored source-plan contract exactly."""
+    normalized_version = str(version or "").strip()
+    if not normalized_version:
+        return ""
+    if normalized_version != SOURCE_BLOCK_PLAN_VERSION:
+        raise PageQualityConfigurationError(
+            f'Source-block plan version "{normalized_version}" is unavailable.'
+        )
+    return normalized_version
 
 
 def _mapping_policy_for_registry(

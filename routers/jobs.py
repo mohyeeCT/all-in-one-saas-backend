@@ -9,6 +9,7 @@ from credentials import hydrate_job_settings, load_user_credentials, mark_gsc_re
 from abuse_protection import enforce_job_start, enforce_rate_limit, execute_active_job_write
 from safe_logging import log_safe_exception, log_safe_external_failure
 from utils.page_quality import (
+    CLAIM_BOUND_RENDERER_VERSION,
     PageQualityConfigurationError,
     page_quality_reruns_enabled,
 )
@@ -67,6 +68,14 @@ def _validate_page_quality_rerun_settings(
                 f"configuration is unavailable: {exc}"
             ),
         ) from None
+
+
+def _claim_bound_row_rerun_enabled(settings: dict) -> bool:
+    """Preserve the stored evidence-locked renderer on complete-row reruns."""
+    return (
+        str((settings or {}).get("claim_bound_renderer_version") or "").strip()
+        == CLAIM_BOUND_RENDERER_VERSION
+    )
 
 
 def _row_requests_page_copy(row: dict, settings: dict) -> bool:
@@ -513,7 +522,7 @@ def _rerun_single_row(
             brand_profile=brand_profile,
             gsc_auth_method=gsc_auth_method,
             scraper_override=scraper_override,
-            page_copy_correction_enabled=False,
+            page_copy_correction_enabled=_claim_bound_row_rerun_enabled(settings_with_key),
         )
 
         # Update just this row's result in the existing results array
@@ -675,7 +684,7 @@ def _rerun_multiple_rows(job_id: str, row_indices: list, rows: list, settings: d
                 user_id=user_id,
                 brand_profile=brand_profile,
                 gsc_auth_method=gsc_auth_method,
-                page_copy_correction_enabled=False,
+                page_copy_correction_enabled=_claim_bound_row_rerun_enabled(settings),
             )
             results[row_index] = result
             if result.get("error") or result.get("status") == "error":
@@ -770,6 +779,14 @@ def rerun_section(
         stored_settings,
         page_copy_requested=True,
     )
+    if _claim_bound_row_rerun_enabled(stored_settings):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Evidence-locked page copy must be rerun as a complete row so "
+                "its source-block plan can be rebuilt and validated safely."
+            ),
+        )
     results = job.get("results") or []
     row_index = body.row_index
 
