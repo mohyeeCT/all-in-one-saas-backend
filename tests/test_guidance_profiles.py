@@ -30,6 +30,7 @@ from utils.page_quality import (
     resolve_stored_guidance_profile,
     select_guidance_profile,
 )
+from utils.templates import TEMPLATES
 
 
 EXPECTED_PROFILE_IDS = [
@@ -247,8 +248,8 @@ def test_claim_bound_renderer_version_is_optional_legacy_and_exact_when_stored()
         resolve_claim_bound_renderer_version("future-renderer")
 
 
-@pytest.mark.parametrize("template_key", ["product_page", "collection_page"])
-def test_builtin_ecommerce_templates_bypass_claim_bound_rendering(template_key):
+@pytest.mark.parametrize("template_key", sorted(TEMPLATES))
+def test_builtin_templates_bypass_claim_bound_rendering(template_key):
     page_quality = {
         "enabled": True,
         "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
@@ -263,7 +264,7 @@ def test_builtin_ecommerce_templates_bypass_claim_bound_rendering(template_key):
     )
 
 
-def test_claim_bound_rendering_remains_available_outside_builtin_ecommerce_templates():
+def test_claim_bound_rendering_remains_available_for_custom_templates():
     page_quality = {
         "enabled": True,
         "claim_bound_renderer_version": CLAIM_BOUND_RENDERER_VERSION,
@@ -274,7 +275,7 @@ def test_claim_bound_rendering_remains_available_outside_builtin_ecommerce_templ
         page_quality,
         requested=True,
         template_key="service_page",
-        custom_template_text="",
+        custom_template_text="H1: Custom service structure",
     )
     assert all_in_one._claim_bound_rendering_is_active(
         page_quality,

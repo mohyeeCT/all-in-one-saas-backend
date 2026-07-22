@@ -3408,12 +3408,13 @@ def _claim_bound_source_plan(
         )
     )
     fallback_used = bool(known_asset_id_set and not assignment_is_complete)
-    fallback_section = section_names[0] if section_names else ""
     if fallback_used:
-        assignment = {
-            asset_id: fallback_section
-            for asset_id in known_asset_ids
-        }
+        issues.append("source_asset_assignment_incomplete")
+    unassigned_asset_ids = [
+        asset_id
+        for asset_id in known_asset_ids
+        if asset_id not in assignment
+    ]
 
     seen_rendered = set()
     operations = []
@@ -3445,8 +3446,8 @@ def _claim_bound_source_plan(
         if rendered_key:
             seen_rendered.add(rendered_key)
 
-        target_section = assignment.get(asset_id, fallback_section)
-        target_position = section_index.get(target_section.casefold(), 0)
+        target_section = assignment.get(asset_id, "")
+        target_position = section_index.get(target_section.casefold(), -1)
         placement_action = (
             "move"
             if not fallback_used and target_position < previous_target_index
@@ -3461,7 +3462,7 @@ def _claim_bound_source_plan(
             heading_key[1],
             forbidden_values,
         )
-        if heading_key[1] and not heading_drop_reason:
+        if target_section and heading_key[1] and not heading_drop_reason:
             target_heading_keys.setdefault(target_section, set()).add(heading_key)
         operations.append({
             "id": f"P{len(operations) + 1}",
@@ -3480,7 +3481,9 @@ def _claim_bound_source_plan(
             "placement_action": placement_action,
             "target_section": target_section,
             "reason_code": drop_reason or (
-                "source_order_fallback" if fallback_used else "source_default"
+                "source_assignment_missing"
+                if not target_section
+                else "source_default"
             ),
         })
 
@@ -3541,6 +3544,12 @@ def _claim_bound_source_plan(
         "diagnostics": {
             "registry_block_count": expected_block_count,
             "accounted_block_count": len(accounted_block_ids),
+            "unassigned_asset_ids": unassigned_asset_ids,
+            "duplicate_assignment_ids": [
+                asset_id
+                for asset_id in known_asset_ids
+                if asset_id in duplicate_assignment_ids
+            ],
             "unaccounted_block_ids": unaccounted_block_ids,
             "unexpected_block_ids": unexpected_block_ids,
             "duplicate_block_ids": sorted(

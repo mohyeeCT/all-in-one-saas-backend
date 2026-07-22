@@ -181,7 +181,7 @@ def test_q11_renders_every_exact_source_unit_without_section_provider_calls(
     )
 
 
-def test_incomplete_assignment_falls_back_to_complete_source_order(monkeypatch):
+def test_incomplete_assignment_is_blocked_without_first_section_dump(monkeypatch):
     source = (
         "# Existing H1\n\nExact opening statement.\n\n"
         "## Services\n\nExact service statement.\n\n"
@@ -203,16 +203,26 @@ def test_incomplete_assignment_falls_back_to_complete_source_order(monkeypatch):
     )
 
     assert provider_calls == []
-    assert result["_quality_blocked"] is False
-    assert result["_source_block_plan"]["fallback_used"] is True
-    assert result["_source_block_plan"]["diagnostics"]["accounted_block_count"] == len(
-        registry["blocks"]
+    assert result["_quality_blocked"] is True
+    assert result["_full_page"] == ""
+    assert "hero" not in result
+    assert "source_asset_assignment_incomplete" in result[
+        "_quality_block_reasons"
+    ]
+
+    plan = result["_source_block_plan"]
+    assert plan["fallback_used"] is True
+    assert plan["valid"] is False
+    assert plan["diagnostics"]["unassigned_asset_ids"]
+    assert all(
+        operation["target_section"] == ""
+        for operation in plan["operations"]
+        if operation["asset_id"] in plan["diagnostics"]["unassigned_asset_ids"]
     )
-    assert result["hero"].startswith("# Existing H1")
-    for asset in manifest["assets"]:
-        assert result["_full_page"].count(
-            copy_gen._claim_bound_asset_text(asset)
-        ) == 1
+    assert not any(
+        operation["reason_code"] == "source_order_fallback"
+        for operation in plan["operations"]
+    )
 
 
 def test_forbidden_direct_statement_is_an_auditable_drop(monkeypatch):

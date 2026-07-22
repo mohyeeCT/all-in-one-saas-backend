@@ -32,7 +32,7 @@ from utils.faq_scraper import (
     is_ecommerce_collection_page,
     scrape_page_context,
 )
-from utils.templates import get_template, get_templates_for_page_type, parse_custom_template
+from utils.templates import TEMPLATES, get_template, get_templates_for_page_type, parse_custom_template
 from utils.adaptive_templates import (
     adapt_template_for_generation,
     attach_depth_policies,
@@ -91,10 +91,7 @@ _SOURCE_ASSET_ADAPTIVE_REASONS = frozenset({
     "no_owned_proof",
     "keyword_section_without_owned_proof",
 })
-_STANDARD_ECOMMERCE_GENERATION_TEMPLATE_KEYS = frozenset({
-    "collection_page",
-    "product_page",
-})
+_STANDARD_BUILT_IN_GENERATION_TEMPLATE_KEYS = frozenset(TEMPLATES)
 _SOURCE_ASSET_ADAPTIVE_INSTRUCTION = (
     "The proof-only omission rule applies to newly authored factual claims, "
     "not to exact assigned source assets. Preserve those assigned assets as "
@@ -350,15 +347,15 @@ def _page_copy_correction_is_active(
     )
 
 
-def _uses_standard_ecommerce_page_generation(
+def _uses_standard_built_in_page_generation(
     template_key: str,
     custom_template_text: str,
 ) -> bool:
-    """Keep built-in ecommerce copy AI-authored instead of source-rendered."""
+    """Keep built-in page-copy templates AI-authored instead of source-rendered."""
     return bool(
         not str(custom_template_text or "").strip()
         and str(template_key or "").strip()
-        in _STANDARD_ECOMMERCE_GENERATION_TEMPLATE_KEYS
+        in _STANDARD_BUILT_IN_GENERATION_TEMPLATE_KEYS
     )
 
 
@@ -376,7 +373,7 @@ def _claim_bound_rendering_is_active(
         == CLAIM_BOUND_RENDERER_VERSION
         and page_quality.get("source_block_plan_version")
         == SOURCE_BLOCK_PLAN_VERSION
-        and not _uses_standard_ecommerce_page_generation(
+        and not _uses_standard_built_in_page_generation(
             template_key,
             custom_template_text,
         )
@@ -3641,9 +3638,9 @@ def _process_single_row(
         else:
             step("competitors unavailable: no organic results")
 
-    standard_ecommerce_generation_active = bool(
+    standard_built_in_generation_active = bool(
         gen_page_copy
-        and _uses_standard_ecommerce_page_generation(
+        and _uses_standard_built_in_page_generation(
             resolved_template_key,
             custom_template_text,
         )
@@ -3666,14 +3663,14 @@ def _process_single_row(
     )
     generation_source_asset_manifest = (
         None
-        if standard_ecommerce_generation_active
+        if standard_built_in_generation_active
         else source_asset_manifest
     )
     run_diagnostics["page_copy_quality"].update({
         "claim_bound_renderer_version": active_claim_bound_renderer_version,
         "source_block_plan_version": active_source_block_plan_version,
         "claim_bound_rendering": claim_bound_rendering_active,
-        "standard_ecommerce_generation": standard_ecommerce_generation_active,
+        "standard_built_in_generation": standard_built_in_generation_active,
         "exact_source_asset_preservation": bool(
             generation_source_asset_manifest
         ),

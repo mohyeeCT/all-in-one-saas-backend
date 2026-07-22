@@ -3,6 +3,7 @@ import json
 import sys
 import types
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 supabase_stub = types.ModuleType("supabase")
@@ -213,6 +214,181 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                 total_rows=1,
                 brand_profile=brand_profile,
             )
+
+    def _assert_large_built_in_page_uses_ai_generation(
+        self,
+        *,
+        template_key,
+        page_type,
+        business_type,
+        keyword,
+        h1,
+        captured_page,
+        minimum_block_count,
+    ):
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "brand_name": "Example Brand",
+                    "business_type": business_type,
+                    "jina_api_key": "jina-key",
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+
+        template_sections = TEMPLATES[template_key]["sections"]
+        section_guidance = [
+            {
+                "section": section["name"],
+                "proof_points": [
+                    f"Supported existing-page material for {section['label']}."
+                ],
+            }
+            for section in template_sections
+        ]
+        strategy_brief = {
+            "search_intent": "Commercial",
+            "page_goal": "Help readers evaluate the page topic.",
+            "primary_positioning": "Lead with the supported service value.",
+            "headline_direction": "Use the selected keyword as the H1 topic.",
+            "verified_facts": [],
+            "section_guidance": section_guidance,
+        }
+        generated_sections = {}
+        for section in template_sections:
+            if section["heading_level"] == "h1":
+                generated_sections[section["name"]] = (
+                    "# 832-804-3500\n\nAI-authored hero copy."
+                )
+            elif section["heading_level"] == "none":
+                generated_sections[section["name"]] = (
+                    f"AI-authored {section['label']} copy."
+                )
+            else:
+                generated_sections[section["name"]] = (
+                    f"## {section['label']}\n\n"
+                    f"AI-authored {section['name']} copy."
+                )
+        generated_page = {
+            **generated_sections,
+            "_full_page": "\n\n".join(generated_sections.values()),
+            "_word_count": 40,
+        }
+        ranked = [{
+            "keyword": keyword,
+            "volume": 100,
+            "difficulty": 20,
+            "score": 5.0,
+            "branded": False,
+        }]
+
+        with patch.object(
+            all_in_one,
+            "scrape_page_context",
+            return_value={
+                "success": True,
+                "content": captured_page,
+                "source": "jina",
+                "capture_version": settings["owned_page_capture_version"],
+            },
+        ), patch.object(
+            all_in_one,
+            "generate_strategy_brief",
+            return_value=strategy_brief,
+        ) as generate_strategy, patch.object(
+            all_in_one,
+            "generate_page",
+            return_value=generated_page,
+        ) as generate_page:
+            result = self._process(
+                {
+                    "url": f"https://example.com/{page_type}",
+                    "keyword": keyword,
+                    "page_type": page_type,
+                    "h1": h1,
+                    "template_key": template_key,
+                },
+                settings=settings,
+                ranked=ranked,
+            )
+
+        for generation_call in (generate_strategy, generate_page):
+            self.assertEqual(
+                generation_call.call_args.kwargs["claim_bound_renderer_version"],
+                "",
+            )
+            self.assertEqual(
+                generation_call.call_args.kwargs["source_block_plan_version"],
+                "",
+            )
+            self.assertIsNone(
+                generation_call.call_args.kwargs["source_asset_manifest"]
+            )
+
+        owned_page_registry = generate_strategy.call_args.kwargs[
+            "owned_page_registry"
+        ]
+        self.assertGreaterEqual(
+            len(owned_page_registry["blocks"]),
+            minimum_block_count,
+        )
+        self.assertEqual(
+            generate_strategy.call_args.kwargs["page_context"],
+            captured_page,
+        )
+        self.assertEqual(
+            generate_page.call_args.kwargs["client_existing_content"],
+            captured_page[:800],
+        )
+        self.assertEqual(
+            [
+                section["name"]
+                for section in generate_page.call_args.kwargs["template"]["sections"]
+            ],
+            [section["name"] for section in template_sections],
+        )
+        self.assertEqual(
+            set(result["section_results"]),
+            {section["name"] for section in template_sections},
+        )
+        self.assertTrue(result["section_results"]["hero"].startswith(f"# {h1}"))
+        page_copy = "\n\n".join(result["section_results"].values())
+        self.assertNotIn("# 832-804-3500", page_copy)
+        self.assertNotIn("PRIVACY POLICY", page_copy)
+        self.assertNotIn("DISCLAIMER", page_copy)
+        self.assertIsNone(result["claim_bound_renderer_version"])
+        self.assertIsNone(result["source_block_plan_version"])
+        self.assertIs(result["page_copy_quality_blocked"], False)
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "claim_bound_rendering"
+            ],
+            False,
+        )
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "standard_built_in_generation"
+            ],
+            True,
+        )
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "exact_source_asset_preservation"
+            ],
+            False,
+        )
+        self.assertGreater(
+            result["run_diagnostics"]["source_asset_manifest"]["asset_count"],
+            0,
+        )
+
+        return result
 
     def test_uses_h1_when_ranked_pool_empty_and_gsc_disabled(self):
         result = self._process({
@@ -486,7 +662,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         )
         self.assertIs(
             result["run_diagnostics"]["page_copy_quality"][
-                "standard_ecommerce_generation"
+                "standard_built_in_generation"
             ],
             True,
         )
@@ -499,6 +675,135 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertGreater(
             result["run_diagnostics"]["source_asset_manifest"]["asset_count"],
             0,
+        )
+
+    def test_homepage_uses_ai_generation_with_a_large_existing_page(self):
+        captured_page = (
+            Path(__file__).parent / "fixtures" / "q11_owned_page.md"
+        ).read_text(encoding="utf-8")
+
+        result = self._assert_large_built_in_page_uses_ai_generation(
+            template_key="homepage",
+            page_type="homepage",
+            business_type="b2b",
+            keyword="theatrical fabrics",
+            h1="Theatrical Fabrics, Stage Curtains & Production Supplies",
+            captured_page=captured_page,
+            minimum_block_count=15,
+        )
+
+        self.assertEqual(result["template_name"], "Homepage")
+        self.assertEqual(len(result["section_results"]), 6)
+
+    def test_service_page_uses_ai_generation_with_a_large_existing_page(self):
+        captured_page = (
+            Path(__file__).parent / "fixtures" / "service_owned_page_large.md"
+        ).read_text(encoding="utf-8")
+
+        result = self._assert_large_built_in_page_uses_ai_generation(
+            template_key="service_page",
+            page_type="service",
+            business_type="service",
+            keyword="houston estate planning and probate attorney",
+            h1="Houston Estate Planning and Probate Attorney",
+            captured_page=captured_page,
+            minimum_block_count=10,
+        )
+
+        self.assertEqual(result["template_name"], "Service Page")
+        self.assertEqual(len(result["section_results"]), 8)
+
+    def test_incomplete_custom_template_assignment_is_clearly_blocked(self):
+        captured_page = (
+            Path(__file__).parent / "fixtures" / "service_owned_page_large.md"
+        ).read_text(encoding="utf-8")
+        with patch.dict(
+            "os.environ",
+            {"AIO_PAGE_COPY_QUALITY_V1_MODE": "on"},
+        ):
+            settings, _ = all_in_one._new_job_page_quality_settings(
+                {
+                    **_settings(),
+                    "gen_page_copy": True,
+                    "business_type": "service",
+                    "jina_api_key": "jina-key",
+                    "custom_template_text": (
+                        "Hero | 100-180\n"
+                        "Services | 180-260\n"
+                        "Proof | 100-160\n"
+                        "Contact | 60-100"
+                    ),
+                },
+                "user-1",
+                page_copy_requested=True,
+            )
+        strategy_brief = {
+            "search_intent": "Commercial",
+            "page_goal": "Help readers evaluate the service.",
+            "primary_positioning": "Lead with supported legal services.",
+            "headline_direction": "Use a direct service headline.",
+            "verified_facts": [],
+            "section_guidance": [{
+                "section": "hero",
+                "source_asset_ids": ["A1"],
+            }],
+        }
+
+        with patch.object(
+            all_in_one,
+            "scrape_page_context",
+            return_value={
+                "success": True,
+                "content": captured_page,
+                "source": "jina",
+                "capture_version": settings["owned_page_capture_version"],
+            },
+        ), patch.object(
+            all_in_one,
+            "generate_strategy_brief",
+            return_value=strategy_brief,
+        ):
+            result = self._process(
+                {
+                    "url": "https://example.com/custom-service",
+                    "keyword": "estate planning services",
+                    "page_type": "service",
+                    "h1": "Estate Planning Services",
+                    "template_key": "service_page",
+                },
+                settings=settings,
+                ranked=[{
+                    "keyword": "estate planning services",
+                    "volume": 100,
+                    "difficulty": 20,
+                    "score": 5.0,
+                    "branded": False,
+                }],
+            )
+
+        self.assertEqual(result["section_results"], {})
+        self.assertIs(result["page_copy_quality_blocked"], True)
+        self.assertIn(
+            "source_asset_assignment_incomplete",
+            result["page_copy_quality_block_reasons"],
+        )
+        self.assertIs(result["source_block_plan"]["valid"], False)
+        self.assertTrue(
+            result["source_block_plan"]["diagnostics"][
+                "unassigned_asset_ids"
+            ]
+        )
+        self.assertTrue(any(
+            flag["code"] == "page_copy_quality_blocked"
+            and flag["severity"] == "error"
+            for flag in result["qa_flags"]
+        ))
+        self.assertEqual(result["status"], "error")
+        self.assertIs(
+            result["run_diagnostics"]["page_copy_quality"][
+                "claim_bound_rendering"
+            ],
+            True,
         )
 
     def test_page_copy_removes_template_faq_when_separate_faq_output_is_enabled(self):
