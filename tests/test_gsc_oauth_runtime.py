@@ -1159,6 +1159,86 @@ class RuntimePathTests(unittest.TestCase):
         self.assertNotIn(private_api_key, repr(final.payload))
         self.assertNotIn("_gsc_credentials", repr(final.payload))
 
+    def test_section_rerun_continues_when_serp_refresh_is_unavailable(self):
+        scenarios = {
+            "returned error": {
+                "return_value": {"error": "temporary upstream failure"},
+            },
+            "raised exception": {
+                "side_effect": RuntimeError("temporary upstream failure"),
+            },
+        }
+
+        for label, serp_behavior in scenarios.items():
+            with self.subTest(label=label):
+                job = {
+                    **_stored_job(),
+                    "rows": [{
+                        "url": "https://example.com/page",
+                        "page_type": "service",
+                        "template_key": "service_page",
+                    }],
+                    "results": [{
+                        "url": "https://example.com/page",
+                        "primary_keyword": "technical seo",
+                        "h1": "Technical SEO",
+                        "section_results": {"hero": "Existing hero"},
+                    }],
+                }
+                sb = _Supabase({"jobs": [job]})
+                runtime = {
+                    **_runtime_settings(),
+                    "dfs_login": "runtime-dfs-login",
+                    "provider": "Claude",
+                    "brand_name": "CopyPilot",
+                }
+                provider = Mock(return_value="# Fresh technical SEO hero")
+
+                with (
+                    patch.object(
+                        jobs,
+                        "hydrate_job_settings",
+                        return_value=runtime,
+                    ),
+                    patch(
+                        "utils.copy_gen.PROVIDER_FN",
+                        {"Claude": provider},
+                    ),
+                    patch(
+                        "utils.dfs.get_serp_data",
+                        **serp_behavior,
+                    ) as get_serp,
+                    patch.object(
+                        meta,
+                        "_build_combined_docx",
+                        return_value=b"safe-docx",
+                    ),
+                ):
+                    jobs._rerun_single_section(
+                        "job-1",
+                        0,
+                        "hero",
+                        job,
+                        "user-1",
+                        sb,
+                    )
+
+                get_serp.assert_called_once_with(
+                    "runtime-dfs-login",
+                    "runtime-dfs-secret",
+                    "technical seo",
+                    2840,
+                )
+                provider.assert_called_once()
+                self.assertEqual(
+                    sb.tables["jobs"][0]["current_step"],
+                    "Section 'hero' regenerated for row 1.",
+                )
+                self.assertEqual(
+                    sb.tables["jobs"][0]["results"][0]["section_results"]["hero"],
+                    "# Fresh technical SEO hero",
+                )
+
     def test_quality_v1_sonnet5_section_rerun_keeps_correction_transport(self):
         job = {
             **_stored_job(),

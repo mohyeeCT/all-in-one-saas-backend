@@ -880,6 +880,7 @@ def _rerun_single_section(
         _split_forbidden_phrases,
         _stored_page_quality_context,
         _template_for_page_copy,
+        _update_job,
     )
 
     try:
