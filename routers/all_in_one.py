@@ -604,6 +604,7 @@ _GENERIC_PAGE_HEADINGS = frozenset({
     "about",
     "benefits",
     "buying guide",
+    "collection context",
     "collection guidance",
     "collection story",
     "collection value",

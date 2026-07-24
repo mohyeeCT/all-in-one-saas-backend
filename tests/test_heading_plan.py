@@ -791,9 +791,9 @@ def test_collection_planning_uses_preselected_section_keywords_without_reranking
                 },
                 {
                     "section": "collection_value",
-                    "responsibility": "Explain a supported value point.",
-                    "planned_heading": "Custom Engraved Pocket Knife Options",
-                    "coverage_points": ["Explain the supported engraving option"],
+                    "responsibility": "Add non-promotional category context.",
+                    "planned_heading": "Custom Engraved Pocket Knife Styles",
+                    "coverage_points": ["Explain the supported category context"],
                 },
             ],
         })
@@ -816,8 +816,8 @@ def test_collection_planning_uses_preselected_section_keywords_without_reranking
             },
             {
                 "name": "collection_value",
-                "label": "Collection Value",
-                "purpose": "Explain supported category value.",
+                "label": "Collection Context",
+                "purpose": "Add useful non-promotional category depth.",
                 "heading_level": "h2",
             },
         ],
@@ -840,7 +840,8 @@ def test_collection_planning_uses_preselected_section_keywords_without_reranking
         in prompt
     )
     assert (
-        "collection_value: Collection Value. Explain supported category value. "
+        "collection_value: Collection Context. Add useful non-promotional "
+        "category depth. "
         "Already-selected heading keyword: custom engraved pocket knives."
         in prompt
     )
@@ -1242,6 +1243,7 @@ def test_legacy_collection_internal_heading_requires_editorial_review():
     [
         ("collection_story", "Collection Story"),
         ("collection_value", "Collection Value"),
+        ("collection_value", "Collection Context"),
     ],
 )
 def test_new_collection_internal_headings_require_editorial_review(

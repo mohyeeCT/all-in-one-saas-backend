@@ -104,10 +104,8 @@ ADAPTIVE_TEMPLATE_POLICIES = {
     },
     "collection_page": {
         "family": "ecommerce",
-        "responsive_sections": frozenset({
-            "collection_story", "collection_value", "collection_guidance",
-        }),
-        "claim_sensitive_sections": frozenset({"collection_value"}),
+        "responsive_sections": frozenset(),
+        "claim_sensitive_sections": frozenset(),
         "proof_only_sections": frozenset(),
     },
     "about_us": {

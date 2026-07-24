@@ -1371,10 +1371,14 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(intro["word_count"], [60, 80])
         self.assertEqual(story["word_count"], [80, 110])
         self.assertEqual(value["word_count"], [80, 110])
-        self.assertEqual(guidance["word_count"], [60, 80])
+        self.assertEqual(guidance["word_count"], [50, 60])
         self.assertEqual(story["keyword_slot"], "supporting")
         self.assertEqual(value["keyword_slot"], "supporting")
-        self.assertIn("under one H2", guidance["prompt_rules"])
+        self.assertEqual(value["label"], "Collection Context")
+        self.assertIn(
+            "under one specific, reader-facing H2",
+            guidance["prompt_rules"],
+        )
         self.assertEqual(
             section_names,
             [
@@ -1422,34 +1426,29 @@ class ProviderRoutingTests(unittest.TestCase):
             sections["collection_story"]["prompt_rules"],
         )
         self.assertIn(
+            "Reserve promotional factors, brand differentiation, and conversion language",
+            sections["collection_story"]["prompt_rules"],
+        )
+        self.assertIn(
             "Do not repeat the collection story",
             sections["collection_value"]["prompt_rules"],
         )
         self.assertIn(
-            "supported by the page or brief",
+            "Do not use promotional factors, brand differentiation, sales language",
             sections["collection_value"]["prompt_rules"],
         )
-
-    def test_sparse_collection_sections_allow_only_neutral_keyword_grounded_copy(self):
-        story_purpose, story_rules = copy_gen._evidence_sparse_section_contract(
-            "collection_story"
+        self.assertIn(
+            "Reserve supported promotional factors and conversion language",
+            sections["collection_value"]["prompt_rules"],
         )
-        value_purpose, value_rules = copy_gen._evidence_sparse_section_contract(
-            "collection_value"
+        self.assertIn(
+            "only collection section that may include supported promotional factors",
+            sections["collection_guidance"]["prompt_rules"],
         )
-        guidance_purpose, guidance_rules = (
-            copy_gen._evidence_sparse_section_contract(
-                "collection_guidance"
-            )
+        self.assertIn(
+            "Do not move unsupported claims into this closing section",
+            sections["collection_guidance"]["prompt_rules"],
         )
-
-        self.assertIn("neutral shopper motivation", story_purpose)
-        self.assertIn("assigned keyword", story_rules)
-        self.assertIn("do not add an occasion", story_rules)
-        self.assertIn("category-level decision value", value_purpose)
-        self.assertIn("without claiming verified quality", value_rules)
-        self.assertIn("category-level selection framing", guidance_purpose)
-        self.assertIn("Do not invent selection criteria", guidance_rules)
 
     def test_collection_reference_normalisation_names_the_category(self):
         text = copy_gen.normalise_collection_references(

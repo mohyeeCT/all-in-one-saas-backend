@@ -1344,7 +1344,7 @@ TEMPLATES = {
     "collection_page": {
         "name": "Collection / Category Page",
         "page_type": "collection",
-        "description": "Ecommerce category page copy with a focused SEO introduction, evidence-grounded collection storytelling and value, and concise purchase guidance. Optimised for CollectionPage schema.",
+        "description": "Ecommerce category page copy with a focused SEO introduction, non-promotional collection storytelling and context, and a concise evidence-grounded decision close. Optimised for CollectionPage schema.",
         "sections": [
             {
                 "name": "category_intro",
@@ -1377,24 +1377,26 @@ TEMPLATES = {
                     "Never use the internal section label 'Collection Story' as the H2. "
                     "Do not invent occasions, audiences, use cases, or emotional outcomes. "
                     "Do not make unsupported quality, popularity, heritage, performance, or durability claims. "
+                    "Reserve promotional factors, brand differentiation, and conversion language for the final collection guidance section. "
                     "Include the assigned supporting keyword or a close grammatical variant naturally, especially in the H2 when it remains reader-facing. "
                     "No em dashes."
                 ),
             },
             {
                 "name": "collection_value",
-                "label": "Collection Value",
-                "purpose": "A distinct conversion-focused section explaining a supported category benefit, differentiator, craftsmanship signal, convenience, or brand value.",
+                "label": "Collection Context",
+                "purpose": "A non-promotional section that adds useful topical depth by connecting the category to supported shopper priorities, experiences, or decision context.",
                 "word_count": [80, 110],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write one cohesive paragraph under one specific, reader-facing H2. "
-                    "Develop one supported reason to consider the category, such as a verified benefit, differentiator, craftsmanship signal, convenience, or brand value. "
-                    "Do not repeat the collection story, introduction, or the same customer outcome in different words. "
-                    "Never use the internal section label 'Collection Value' as the H2. "
-                    "Use only value points supported by the page or brief. "
-                    "Do not invent materials, construction methods, quality levels, product breadth, guarantees, outcomes, shipping, pricing, availability, or brand superiority. "
+                    "Add useful non-promotional depth by developing one supported category context, shopper priority, or practical consideration that is distinct from the collection story. "
+                    "Do not repeat the collection story, introduction, or the same customer need in different words. "
+                    "Never use the internal section label 'Collection Context' as the H2. "
+                    "Do not use promotional factors, brand differentiation, sales language, store reasons, offers, or calls to action. "
+                    "Reserve supported promotional factors and conversion language for the final collection guidance section. "
+                    "Do not invent materials, construction methods, quality levels, product breadth, guarantees, outcomes, shipping, pricing, availability, audiences, or use cases. "
                     "Use an assigned related keyword or a close grammatical variant naturally, especially in the H2 when it remains reader-facing. "
                     "No em dashes."
                 ),
@@ -1402,16 +1404,19 @@ TEMPLATES = {
             {
                 "name": "collection_guidance",
                 "label": "Helpful Buying Notes",
-                "purpose": "A focused guidance section that develops useful selection criteria, available product angles, and brand value only when supported by the page or brief.",
-                "word_count": [60, 80],
+                "purpose": "A concise decision close that combines supported selection guidance with one verified promotional factor, differentiator, or brand-value reason when available.",
+                "word_count": [50, 60],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write one concise, useful paragraph under one H2. "
+                    "Write one compact paragraph under one specific, reader-facing H2. "
                     "Make the H2 specific to the category and the shopper decision. "
                     "Never use the internal section label 'Helpful Buying Notes' as the H2. "
-                    "Mention selection guidance, product variety, or brand value only when the available context supports it. "
-                    "Do not repeat the introduction, collection story, or collection value section. "
+                    "This is the only collection section that may include supported promotional factors, brand differentiation, or conversion language. "
+                    "Combine concise selection guidance with no more than one verified reason to consider the category or brand when the page or brief supports it. "
+                    "If no promotional factor is verified, keep the close useful and decision-focused without inventing one. "
+                    "Do not repeat the introduction, collection story, or collection context section. "
+                    "Do not move unsupported claims into this closing section. "
                     "Do not invent sizes, materials, product groups, shipping, returns, guarantees, pricing, availability, or use cases. "
                     "Do not use generic headings like 'Collection Guidance', 'Buying Guide', 'How to Choose', 'What's in This Collection', or 'Why Shop With Us'. "
                     "Include the supporting keyword only if it reads naturally. "

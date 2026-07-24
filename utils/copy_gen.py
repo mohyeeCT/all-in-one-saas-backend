@@ -284,35 +284,6 @@ def _section_specific_prompt_rules(value: str) -> str:
 def _evidence_sparse_section_contract(section_name: str) -> tuple[str, str]:
     """Replace unsupported template requests with one evidence-owned job."""
     normalized_name = str(section_name or "").strip().casefold()
-    if normalized_name == "collection_story":
-        return (
-            "Connect the assigned category topic to a neutral shopper motivation "
-            "without adding client-specific claims.",
-            "Write one short, evidence-neutral paragraph using only the assigned "
-            "keyword or its close grammatical meaning. You may frame the need or "
-            "experience already expressed by that keyword, but do not add an "
-            "occasion, audience, use case, product attribute, emotional outcome, "
-            "or brand claim that the keyword does not establish.",
-        )
-    if normalized_name == "collection_value":
-        return (
-            "Explain neutral category-level decision value without claiming a "
-            "client-specific advantage.",
-            "Write one short, evidence-neutral paragraph using only the assigned "
-            "keyword or its close grammatical meaning. Explain why that category "
-            "topic may matter to a shopper without claiming verified quality, "
-            "craftsmanship, breadth, convenience, performance, availability, or "
-            "brand superiority.",
-        )
-    if normalized_name == "collection_guidance":
-        return (
-            "Offer neutral category-level selection framing without adding "
-            "product or client-specific facts.",
-            "Write one short, evidence-neutral paragraph using only distinctions "
-            "expressed by the assigned keyword or canonical category topic. Do "
-            "not invent selection criteria, product groupings, materials, sizes, "
-            "variants, use cases, pricing, availability, or policies.",
-        )
     if normalized_name == "faq":
         return (
             "Answer only question-and-answer material fully supported by this "
@@ -1925,6 +1896,7 @@ def strategy_brief_issues(
 _GENERIC_PLANNED_HEADINGS = {
     "about",
     "benefits",
+    "collection context",
     "collection story",
     "collection value",
     "conclusion",
