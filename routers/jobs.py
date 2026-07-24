@@ -858,6 +858,8 @@ def _rerun_single_section(
         _count_brand_mentions,
         _page_brand_mention_budget,
         _page_section_provider_options,
+        _reviewer_evidence_overlay,
+        _reviewer_instruction_outcome,
         _source_asset_exact_phrases,
         _validated_source_asset_section_names,
         DEFAULT_MODELS,
@@ -980,6 +982,18 @@ def _rerun_single_section(
             ),
         )
         stored_strategy_brief = row_result.get("strategy_brief") or {}
+        section_rerun_notes = dict(
+            row_result.get("section_rerun_notes") or {}
+        )
+        existing_notes = [
+            str(note).strip()
+            for note in section_rerun_notes.get(section_name, [])
+            if str(note).strip()
+        ]
+        new_note = str(reviewer_instruction or "").strip()
+        reviewer_corrections = (
+            existing_notes + ([new_note] if new_note else [])
+        )[-5:]
         source_asset_rerun_enabled = bool(
             page_quality.get("source_asset_manifest_version")
             == SOURCE_ASSET_MANIFEST_VERSION
@@ -1007,6 +1021,13 @@ def _rerun_single_section(
                 contract.pop("source_assets", None)
                 if had_source_asset_contract:
                     contract.pop("required_named_items", None)
+        strategy_brief, reviewer_evidence_context = (
+            _reviewer_evidence_overlay(
+                strategy_brief,
+                section_name,
+                reviewer_corrections,
+            )
+        )
         if row_result.get("adaptive_section_plan") or page_quality_enabled:
             template, _ = _adapt_page_template_for_generation(
                 template,
@@ -1043,7 +1064,6 @@ def _rerun_single_section(
         else:
             h1 = row_result.get("h1") or overall_primary_keyword
         section_results = dict(row_result.get("section_results") or {})
-        section_rerun_notes = dict(row_result.get("section_rerun_notes") or {})
         keyword_assignment = row_result.get("keyword_assignment") or {}
         section_assignment = keyword_assignment.get(section_name) or {}
         section_primary_keyword = section_assignment.get("primary") or overall_primary_keyword
@@ -1053,13 +1073,6 @@ def _rerun_single_section(
             [],
         )
         competitor_excerpts = (row_result.get("competitor_section_map") or {}).get(section_name, [])
-        existing_notes = [
-            str(note).strip()
-            for note in section_rerun_notes.get(section_name, [])
-            if str(note).strip()
-        ]
-        new_note = str(reviewer_instruction or "").strip()
-        reviewer_corrections = (existing_notes + ([new_note] if new_note else []))[-5:]
         brand_mention_budget = _page_brand_mention_budget(len(template["sections"])) if brand_name else None
         brand_mentions_used = sum(
             _count_brand_mentions(
@@ -1163,6 +1176,12 @@ def _rerun_single_section(
         )
         raw = fn(api_key, prompt, **provider_options)
         new_text = sanitise(raw, brand_name)
+        reviewer_outcome = None
+        if new_note:
+            reviewer_outcome = _reviewer_instruction_outcome(
+                new_text,
+                reviewer_evidence_context,
+            )
 
         # ── 7. Patch section, rebuild full_page + word_count ───────────────────
         section_results[section_name] = new_text
@@ -1248,8 +1267,14 @@ def _rerun_single_section(
         while len(current_results) <= row_index:
             current_results.append({})
 
+        current_row = current_results[row_index]
+        section_rerun_outcomes = dict(
+            current_row.get("section_rerun_outcomes") or {}
+        )
+        if reviewer_outcome:
+            section_rerun_outcomes[section_name] = reviewer_outcome
         current_results[row_index] = {
-            **current_results[row_index],
+            **current_row,
             "section_results": section_results,
             "section_rerun_notes": section_rerun_notes,
             "word_count": word_count,
@@ -1259,11 +1284,29 @@ def _rerun_single_section(
             "qa_flags": qa_flags,
             "status": _qa_status(qa_flags),
         }
+        if section_rerun_outcomes:
+            current_results[row_index][
+                "section_rerun_outcomes"
+            ] = section_rerun_outcomes
+
+        current_step = (
+            f"Section '{section_name}' regenerated for row {row_index + 1}."
+        )
+        if reviewer_outcome:
+            outcome_label = {
+                "applied": "Reviewer instruction applied.",
+                "partially_applied": (
+                    "Reviewer instruction partially applied."
+                ),
+                "blocked": "Reviewer instruction blocked.",
+            }.get(reviewer_outcome.get("status"), "")
+            if outcome_label:
+                current_step += f" {outcome_label}"
 
         sb.table("jobs").update({
             "results": current_results,
             "failed_rows": _failed_row_count(current_results),
-            "current_step": f"Section '{section_name}' regenerated for row {row_index + 1}.",
+            "current_step": current_step,
             "updated_at": "now()",
         }).eq("id", job_id).eq("user_id", user_id).execute()
 

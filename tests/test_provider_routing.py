@@ -1374,6 +1374,18 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("What's in This Collection", section_labels)
         self.assertNotIn("Why Shop With Us", section_labels)
 
+    def test_collection_guidance_requires_a_specific_reader_facing_heading(self):
+        guidance = get_template("collection_page")["sections"][1]
+
+        self.assertIn(
+            "Never use the internal section label 'Helpful Buying Notes'",
+            guidance["prompt_rules"],
+        )
+        self.assertIn(
+            "specific to the category and the shopper decision",
+            guidance["prompt_rules"],
+        )
+
     def test_collection_reference_normalisation_names_the_category(self):
         text = copy_gen.normalise_collection_references(
             "This collection includes several styles. Compare this category before choosing from this range.",

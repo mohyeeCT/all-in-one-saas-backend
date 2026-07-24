@@ -1782,6 +1782,163 @@ class RuntimePathTests(unittest.TestCase):
             ["too salesy, make it factual", "lead with the spec"],
         )
 
+    def test_section_rerun_can_reuse_explicitly_requested_verified_person(self):
+        stored_strategy = {
+            "verified_facts": [
+                {
+                    "id": "F1",
+                    "fact": (
+                        "Saman Dhukka focuses on estate planning and probate."
+                    ),
+                    "source_type": "current_page",
+                    "source_excerpt": (
+                        "Attorney Saman Dhukka focuses on estate planning "
+                        "and probate."
+                    ),
+                },
+                {
+                    "id": "F2",
+                    "fact": (
+                        "Ali Dhukka is a personal injury attorney who also "
+                        "handles business litigation."
+                    ),
+                    "source_type": "current_page",
+                    "source_excerpt": (
+                        "Attorney Ali Dhukka handles personal injury and "
+                        "business litigation."
+                    ),
+                },
+            ],
+            "section_guidance": [
+                {
+                    "section": "social_proof",
+                    "responsibility": "Introduce Saman Dhukka's legal focus.",
+                    "proof_fact_ids": ["F1"],
+                    "proof_points": [
+                        "Saman Dhukka focuses on estate planning and probate."
+                    ],
+                    "planned_heading": (
+                        "Attorney Saman Dhukka's Estate Planning and "
+                        "Probate Focus"
+                    ),
+                },
+                {
+                    "section": "solution",
+                    "responsibility": "Explain the firm's other legal work.",
+                    "proof_fact_ids": ["F2"],
+                    "proof_points": [
+                        "Ali Dhukka is a personal injury attorney who also "
+                        "handles business litigation."
+                    ],
+                },
+            ],
+        }
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/page",
+                "page_type": "service",
+                "template_key": "service_page",
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "url": "https://example.com/page",
+                "primary_keyword": "law firm",
+                "h1": "Dhukka Law",
+                "section_results": {
+                    "solution": "Existing services section.",
+                    "social_proof": "Existing Saman profile.",
+                },
+                "strategy_brief": stored_strategy,
+                "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+                "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+                "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+                "page_copy_guidance": {
+                    "id": "editorial_refresh",
+                    "label": "Editorial Refresh",
+                    "version": "1",
+                },
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "dfs_login": "",
+            "provider": "Claude",
+            "brand_name": "Dhukka Law",
+            "page_quality_policy_version": PAGE_QUALITY_POLICY_VERSION,
+            "adaptive_policy_version": ADAPTIVE_POLICY_VERSION,
+            "owned_page_mapping_version": OWNED_PAGE_MAPPING_VERSION,
+            "page_copy_guidance": {
+                "id": "editorial_refresh",
+                "version": "1",
+            },
+        }
+        provider = Mock(
+            return_value=(
+                "## Meet Saman Dhukka and Ali Dhukka\n"
+                "Saman Dhukka focuses on estate planning and probate. "
+                "Ali Dhukka handles personal injury and business litigation."
+            )
+        )
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
+            patch.object(meta, "_build_combined_docx", return_value=b"safe-docx"),
+        ):
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "social_proof",
+                job,
+                "user-1",
+                sb,
+                reviewer_instruction=(
+                    "Retain both Saman and Ali lawyers from the page."
+                ),
+            )
+
+        prompt = provider.call_args.args[1]
+        self.assertIn(
+            "Ali Dhukka is a personal injury attorney who also handles "
+            "business litigation.",
+            prompt,
+        )
+        self.assertEqual(
+            prompt.count(
+                "Ali Dhukka is a personal injury attorney who also handles "
+                "business litigation."
+            ),
+            1,
+        )
+        self.assertIn(
+            "Reviewer-approved verified evidence reuse",
+            prompt,
+        )
+        final = [
+            query for query in sb.executed
+            if query.operation == "update"
+            and query.payload
+            and "results" in query.payload
+        ][-1]
+        persisted = final.payload["results"][0]
+        self.assertEqual(persisted["strategy_brief"], stored_strategy)
+        self.assertEqual(
+            persisted["section_rerun_outcomes"]["social_proof"]["status"],
+            "applied",
+        )
+        self.assertEqual(
+            persisted["section_rerun_outcomes"]["social_proof"][
+                "matched_verified_fact_ids"
+            ],
+            ["F1", "F2"],
+        )
+        self.assertIn(
+            "instruction applied",
+            final.payload["current_step"].casefold(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

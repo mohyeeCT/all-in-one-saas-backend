@@ -603,8 +603,11 @@ _QA_SEVERITIES = {"warning", "review", "error"}
 _GENERIC_PAGE_HEADINGS = frozenset({
     "about",
     "benefits",
+    "buying guide",
+    "collection guidance",
     "conclusion",
     "features",
+    "helpful buying notes",
     "introduction",
     "our process",
     "our services",
@@ -2016,6 +2019,39 @@ def _source_testimonial_is_atomic(
     return False
 
 
+def _add_legacy_generic_heading_qa_flags(
+    flags: list[dict],
+    section_results: dict,
+    template: dict | None,
+):
+    for section in (template or {}).get("sections") or []:
+        expected_level = str(section.get("heading_level") or "").casefold()
+        if expected_level not in {"h2", "h3"}:
+            continue
+        section_name = str(section.get("name") or "")
+        actual = _first_markdown_heading(section_results.get(section_name, ""))
+        if not actual:
+            continue
+        actual_heading = actual[1]
+        if (
+            actual_heading.casefold() not in _GENERIC_PAGE_HEADINGS
+            and actual_heading.casefold()
+            != str(section.get("label") or "").strip().casefold()
+        ):
+            continue
+        flags.append({
+            "code": "page_heading_generic",
+            "message": (
+                f'Section "{section.get("label", section_name)}" uses '
+                "a generic reader-facing heading."
+            ),
+            "output": "page_copy",
+            "section": section_name,
+            "actual_heading": actual_heading,
+            "severity": "review",
+        })
+
+
 def _add_page_plan_qa_flags(
     flags: list[dict],
     section_results: dict,
@@ -2315,6 +2351,39 @@ def _add_page_plan_qa_flags(
                 "missing_items": missing_named_items,
                 "severity": "review",
             })
+        related_profile_subjects = [
+            str(value or "").strip()
+            for value in contract.get("related_profile_subjects") or []
+            if str(value or "").strip()
+        ]
+        if related_profile_subjects and text.strip():
+            profile_body = re.sub(
+                r"^\s{0,3}#{1,6}\s+[^\n]*(?:\n|$)",
+                "",
+                text,
+                count=1,
+            )
+            missing_profile_subjects = [
+                name
+                for name in related_profile_subjects
+                if not _contains_forbidden_phrase(
+                    _normalise_phrase(profile_body),
+                    _normalise_phrase(name),
+                )
+            ]
+            if missing_profile_subjects:
+                flags.append({
+                    "code": "page_related_profile_missing",
+                    "message": (
+                        f'Section "{section.get("label", section_name)}" '
+                        "names a related profile in its plan but omits that "
+                        "person from the section body."
+                    ),
+                    "output": "page_copy",
+                    "section": section_name,
+                    "missing_items": missing_profile_subjects,
+                    "severity": "review",
+                })
         if source_asset_section_enabled and text.strip():
             missing_testimonials = []
             unpreserved_source_lists = []
@@ -2989,6 +3058,12 @@ def _collect_qa_flags(
                     and str(flag.get("section") or "") in planned_depth_sections
                 )
             ]
+        else:
+            _add_legacy_generic_heading_qa_flags(
+                flags,
+                section_results,
+                template,
+            )
         authored_page_copy_text = "" if claim_bound_rendering else (
             _page_copy_without_materialized_source_units(
                 section_results,

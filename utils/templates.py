@@ -1372,9 +1372,11 @@ TEMPLATES = {
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write 3 to 5 useful paragraphs under one H2, not separate top-level sections. "
+                    "Make the H2 specific to the category and the shopper decision. "
+                    "Never use the internal section label 'Helpful Buying Notes' as the H2. "
                     "Mention selection guidance, product variety, or brand value only when the available context supports it. "
                     "Do not invent sizes, materials, product groups, shipping, returns, guarantees, pricing, availability, or use cases. "
-                    "Do not use headings like 'How to Choose', 'What's in This Collection', or 'Why Shop With Us'. "
+                    "Do not use generic headings like 'Collection Guidance', 'Buying Guide', 'How to Choose', 'What's in This Collection', or 'Why Shop With Us'. "
                     "Include the supporting keyword only if it reads naturally. "
                     "No em dashes."
                 ),

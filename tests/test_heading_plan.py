@@ -222,6 +222,141 @@ def test_planning_ignores_unknown_and_duplicate_section_contracts():
     assert contract["owned_block_ids"] == ["O1"]
 
 
+def test_page_refresh_keeps_related_attorney_profiles_in_one_section():
+    registry = build_owned_page_registry(
+        "## About Attorney Saman Dhukka\n"
+        "Saman Dhukka focuses on estate planning and probate.\n\n"
+        "## About Attorney Ali Dhukka\n"
+        "Ali Dhukka handles personal injury and business litigation."
+    )
+    template_sections = [
+        {
+            **TEMPLATE_SECTIONS[1],
+            "name": "solution",
+            "label": "Legal Services",
+        },
+        {
+            **TEMPLATE_SECTIONS[1],
+            "name": "social_proof",
+            "label": "Attorney Profiles",
+        },
+    ]
+    brief = copy_gen._normalise_strategy_brief(
+        {
+            "verified_facts": [
+                {
+                    "id": "F1",
+                    "fact": (
+                        "Saman Dhukka focuses on estate planning and probate."
+                    ),
+                    "source": "current_page",
+                    "source_excerpt": (
+                        "Saman Dhukka focuses on estate planning and probate."
+                    ),
+                },
+                {
+                    "id": "F2",
+                    "fact": (
+                        "The second attorney handles personal injury and "
+                        "business litigation."
+                    ),
+                    "source": "current_page",
+                    "source_excerpt": (
+                        "Ali Dhukka handles personal injury and business "
+                        "litigation."
+                    ),
+                },
+            ],
+            "proof_fact_ids": ["F1", "F2"],
+            "section_guidance": [
+                {
+                    "section": "solution",
+                    "responsibility": "Explain the firm's services.",
+                    "proof_fact_ids": ["F2"],
+                    "owned_block_ids": ["O2"],
+                },
+                {
+                    "section": "social_proof",
+                    "responsibility": "Introduce the attorneys.",
+                    "proof_fact_ids": ["F1"],
+                    "owned_block_ids": ["O1"],
+                    "planned_heading": (
+                        "Attorney Saman Dhukka's Estate Planning Focus"
+                    ),
+                },
+            ],
+        },
+        template_sections=template_sections,
+        owned_page_registry=registry,
+        page_copy_correction_enabled=True,
+    )
+
+    contracts = {
+        contract["section"]: contract
+        for contract in brief["section_guidance"]
+    }
+    profile_contract = contracts["social_proof"]
+    assert profile_contract["owned_block_ids"] == ["O1", "O2"]
+    assert [
+        fact["id"] for fact in profile_contract["proof_facts"]
+    ] == ["F1", "F2"]
+    assert profile_contract["required_named_items"] == [
+        "Saman Dhukka",
+        "Ali Dhukka",
+    ]
+    assert (
+        profile_contract["planned_heading"]
+        == "Meet Attorneys Saman Dhukka and Ali Dhukka"
+    )
+    assert "owned_block_ids" not in contracts["solution"]
+    assert "proof_facts" not in contracts["solution"]
+    flags = []
+    all_in_one._add_page_plan_qa_flags(
+        flags,
+        {
+            "solution": "## Legal Services\nGeneral service context.",
+            "social_proof": (
+                "## Meet Attorneys Saman Dhukka and Ali Dhukka\n"
+                "Saman Dhukka focuses on estate planning and probate."
+            ),
+        },
+        {"sections": template_sections},
+        brief,
+        get_page_quality_policy(PAGE_QUALITY_POLICY_VERSION),
+        page_copy_correction_enabled=True,
+    )
+    missing_profile = next(
+        flag
+        for flag in flags
+        if flag.get("code") == "page_related_profile_missing"
+        and flag.get("section") == "social_proof"
+    )
+    assert missing_profile["missing_items"] == ["Ali Dhukka"]
+
+
+def test_section_rerun_outcome_reports_media_limits_and_missing_people():
+    evidence_context = {
+        "requested_names": ["Saman Dhukka", "Ali Dhukka"],
+        "matched_verified_fact_ids": ["F1", "F2"],
+        "media_requested": True,
+    }
+
+    partial = copy_gen._reviewer_instruction_outcome(
+        "Saman Dhukka and Ali Dhukka are both included.",
+        evidence_context,
+    )
+    blocked = copy_gen._reviewer_instruction_outcome(
+        "A generic replacement that omits both requested people.",
+        {**evidence_context, "media_requested": False},
+    )
+
+    assert partial["status"] == "partially_applied"
+    assert "image placement is not supported" in partial["message"]
+    assert blocked["status"] == "blocked"
+    assert blocked["missing_names"] == ["Saman Dhukka", "Ali Dhukka"]
+    assert "instruction" not in partial
+
+
 def test_plan_or_mapping_advisories_do_not_invalidate_strategy_readiness():
     brief = copy_gen._normalise_strategy_brief(
         {
@@ -985,6 +1120,47 @@ def test_deterministic_heading_and_depth_flags_are_version_gated():
     assert "section_word_count_below_target" not in v1_codes
 
 
+def test_legacy_collection_internal_heading_requires_editorial_review():
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="rainbow foil",
+        faq_items=[],
+        section_results={
+            "collection_guidance": (
+                "## Helpful Buying Notes\n"
+                "Choose pieces that support one coordinated table setting."
+            ),
+        },
+        forbidden_phrases=[],
+        template={
+            "sections": [{
+                "name": "collection_guidance",
+                "label": "Helpful Buying Notes",
+                "heading_level": "h2",
+                "word_count": [60, 120],
+            }],
+        },
+        strategy_brief={},
+    )
+
+    matching = [
+        flag
+        for flag in flags
+        if flag.get("code") == "page_heading_generic"
+    ]
+
+    assert len(matching) == 1
+    assert matching[0]["section"] == "collection_guidance"
+    assert matching[0]["actual_heading"] == "Helpful Buying Notes"
+    assert matching[0]["severity"] == "review"
+
+
 @pytest.mark.parametrize(
     ("strategy", "generated_copy", "expected_code"),
     [
@@ -1031,11 +1207,8 @@ def test_missing_plan_or_generic_visible_heading_requires_editorial_review(
 
     assert len(matching) == 1
     assert matching[0]["severity"] == "review"
-    assert all(
-        flag["code"] not in {
-            "page_planned_heading_missing",
-            "page_heading_generic",
-        }
+    legacy_codes = {
+        flag["code"]
         for flag in all_in_one._collect_qa_flags(
             gen_meta=False,
             gen_faqs=False,
@@ -1051,6 +1224,10 @@ def test_missing_plan_or_generic_visible_heading_requires_editorial_review(
             template={"sections": [TEMPLATE_SECTIONS[1]]},
             strategy_brief=strategy,
         )
+    }
+    assert "page_planned_heading_missing" not in legacy_codes
+    assert ("page_heading_generic" in legacy_codes) == (
+        expected_code == "page_heading_generic"
     )
 
 

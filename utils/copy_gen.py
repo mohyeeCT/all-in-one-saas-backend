@@ -44,6 +44,42 @@ SECTION_PLAN_NOTE_LIMIT = 4
 SECTION_PLAN_NOTE_CHAR_LIMIT = 240
 SECTION_PLANNED_HEADING_CHAR_LIMIT = 120
 SECTION_RECAP_EVIDENCE_LIMIT = 4
+
+_REVIEWER_MEDIA_REQUEST_PATTERN = re.compile(
+    r"\b(?:image|images|photo|photos|picture|pictures|headshot|headshots|"
+    r"portrait|portraits|logo|logos|visual|visuals)\b",
+    flags=re.IGNORECASE,
+)
+_PROPER_NAME_PATTERN = re.compile(
+    r"\b[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*"
+    r"(?:\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*){1,3}\b"
+)
+_PERSON_ROLE_PREFIXES = {
+    "attorney",
+    "doctor",
+    "dr",
+    "lawyer",
+    "professor",
+    "founder",
+    "cofounder",
+}
+_RELATED_PROFILE_HEADING_PATTERN = re.compile(
+    r"^(?:about|meet)\s+(?:the\s+)?"
+    r"(?P<role>attorney|lawyer|doctor|dr\.?|agent|advisor|adviser|founder)"
+    r"\s+(?P<name>[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*"
+    r"(?:\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]*){1,3})$",
+    flags=re.IGNORECASE,
+)
+_RELATED_PROFILE_ROLE_LABELS = {
+    "attorney": "Attorneys",
+    "lawyer": "Lawyers",
+    "doctor": "Doctors",
+    "dr": "Doctors",
+    "agent": "Agents",
+    "advisor": "Advisors",
+    "adviser": "Advisers",
+    "founder": "Founders",
+}
 SECTION_RECAP_EVIDENCE_ITEM_CHAR_LIMIT = 400
 SECTION_RECAP_EVIDENCE_TOTAL_CHAR_LIMIT = 1400
 STRATEGY_BRIEF_MAX_TOKENS = 12288
@@ -997,6 +1033,289 @@ def _reconcile_related_source_assets(
     assigned_asset_ids.update(group_ids)
 
 
+def _related_profile_groups(
+    owned_page_registry: dict | list | None,
+) -> list[dict]:
+    blocks = (
+        owned_page_registry.get("blocks") or []
+        if isinstance(owned_page_registry, dict)
+        else owned_page_registry or []
+    )
+    groups = {}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        heading = str(block.get("heading") or "").strip()
+        match = _RELATED_PROFILE_HEADING_PATTERN.fullmatch(heading)
+        if not match:
+            continue
+        role = match.group("role").casefold().rstrip(".")
+        group_key = (
+            "legal"
+            if role in {"attorney", "lawyer"}
+            else "medical"
+            if role in {"doctor", "dr"}
+            else role
+        )
+        groups.setdefault(group_key, []).append({
+            "id": str(block.get("id") or ""),
+            "name": match.group("name").strip(),
+            "role": role,
+            "order": int(block.get("order") or 0),
+        })
+
+    related_groups = []
+    for profiles in groups.values():
+        ordered = sorted(
+            profiles,
+            key=lambda profile: (
+                profile["order"],
+                profile["id"],
+            ),
+        )
+        distinct_names = {
+            profile["name"].casefold() for profile in ordered
+        }
+        if len(distinct_names) >= 2:
+            related_groups.append(ordered)
+    return related_groups
+
+
+def _text_mentions_profile(
+    value: object,
+    profile_names: list[str],
+) -> bool:
+    text = str(value or "")
+    return any(
+        re.search(
+            rf"(?<!\w){re.escape(name)}(?!\w)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        for name in profile_names
+    )
+
+
+def _fact_mentions_profile(
+    fact: dict,
+    profile_names: list[str],
+) -> bool:
+    return _text_mentions_profile(
+        "\n".join(
+            str(value or "")
+            for value in (
+                fact.get("fact"),
+                fact.get("source_excerpt"),
+            )
+        ),
+        profile_names,
+    )
+
+
+def _reconcile_related_owned_profiles(
+    section_items: list[dict],
+    owned_page_registry: dict | list | None,
+    verified_facts: list[dict],
+    selected_proof_keys: set[str],
+    assigned_owned_block_ids: set[str],
+) -> dict:
+    """Keep explicit sibling profile blocks together when the plan splits them."""
+    diagnostics = {"active": True, "groups": [], "findings": []}
+    profile_groups = _related_profile_groups(owned_page_registry)
+    if not profile_groups:
+        return diagnostics
+
+    registry_blocks = (
+        owned_page_registry.get("blocks") or []
+        if isinstance(owned_page_registry, dict)
+        else owned_page_registry or []
+    )
+    block_order = {
+        str(block.get("id") or ""): int(block.get("order") or 0)
+        for block in registry_blocks
+        if isinstance(block, dict)
+    }
+
+    for profiles in profile_groups:
+        group_ids = [profile["id"] for profile in profiles]
+        profile_names = [profile["name"] for profile in profiles]
+        destination = None
+        for profile in profiles:
+            destination = next(
+                (
+                    contract
+                    for contract in section_items
+                    if profile["id"]
+                    in (contract.get("owned_block_ids") or [])
+                ),
+                None,
+            )
+            if destination is not None:
+                break
+        group_record = {
+            "profile_names": profile_names,
+            "block_ids": group_ids,
+            "section": (
+                str(destination.get("section") or "")
+                if destination is not None
+                else ""
+            ),
+        }
+        diagnostics["groups"].append(group_record)
+        if destination is None:
+            diagnostics["findings"].append({
+                "code": "related_profiles_unassigned",
+                **group_record,
+            })
+            continue
+
+        destination_non_profile_ids = [
+            block_id
+            for block_id in destination.get("owned_block_ids") or []
+            if block_id not in group_ids
+        ]
+        combined_ids = sorted(
+            dict.fromkeys(destination_non_profile_ids + group_ids),
+            key=lambda block_id: (
+                block_order.get(block_id, 10**9),
+                block_id,
+            ),
+        )
+        validated_ids, rejected = validate_owned_block_ids(
+            combined_ids,
+            owned_page_registry,
+        )
+        if validated_ids != combined_ids or rejected:
+            diagnostics["findings"].append({
+                "code": "related_profiles_exceed_section_limit",
+                **group_record,
+            })
+            continue
+
+        profile_facts = []
+        seen_profile_fact_keys = set()
+        for profile_name in profile_names:
+            for fact in verified_facts:
+                fact_key = _evidence_text(fact.get("fact"))
+                if (
+                    fact_key
+                    and fact_key in selected_proof_keys
+                    and fact_key not in seen_profile_fact_keys
+                    and _fact_mentions_profile(fact, [profile_name])
+                ):
+                    seen_profile_fact_keys.add(fact_key)
+                    profile_facts.append(dict(fact))
+
+        destination_other_facts = [
+            dict(fact)
+            for fact in destination.get("proof_facts") or []
+            if (
+                isinstance(fact, dict)
+                and not _fact_mentions_profile(fact, profile_names)
+            )
+        ]
+        if (
+            len(destination_other_facts) + len(profile_facts)
+            > SECTION_RECAP_EVIDENCE_LIMIT
+        ):
+            diagnostics["findings"].append({
+                "code": "related_profiles_exceed_evidence_limit",
+                **group_record,
+            })
+            continue
+
+        for contract in section_items:
+            remaining_ids = [
+                block_id
+                for block_id in contract.get("owned_block_ids") or []
+                if block_id not in group_ids
+            ]
+            if remaining_ids:
+                contract["owned_block_ids"] = remaining_ids
+                contract["owned_blocks"] = hydrate_owned_blocks(
+                    remaining_ids,
+                    owned_page_registry,
+                )
+            else:
+                contract.pop("owned_block_ids", None)
+                contract.pop("owned_blocks", None)
+
+            remaining_facts = [
+                dict(fact)
+                for fact in contract.get("proof_facts") or []
+                if (
+                    isinstance(fact, dict)
+                    and not _fact_mentions_profile(fact, profile_names)
+                )
+            ]
+            if remaining_facts:
+                contract["proof_facts"] = remaining_facts
+            else:
+                contract.pop("proof_facts", None)
+            remaining_points = [
+                str(point)
+                for point in contract.get("proof_points") or []
+                if not _text_mentions_profile(point, profile_names)
+            ]
+            if remaining_points:
+                contract["proof_points"] = remaining_points
+            else:
+                contract.pop("proof_points", None)
+
+        destination["owned_block_ids"] = combined_ids
+        destination["owned_blocks"] = hydrate_owned_blocks(
+            combined_ids,
+            owned_page_registry,
+        )
+        combined_facts = destination_other_facts + profile_facts
+        if combined_facts:
+            destination["proof_facts"] = combined_facts
+            destination["proof_points"] = [
+                str(fact.get("fact") or "").strip()
+                for fact in combined_facts
+                if str(fact.get("fact") or "").strip()
+            ]
+        required_names = []
+        seen_required_names = set()
+        for name in (
+            list(destination.get("required_named_items") or [])
+            + profile_names
+        ):
+            name_key = str(name or "").strip().casefold()
+            if name_key and name_key not in seen_required_names:
+                seen_required_names.add(name_key)
+                required_names.append(str(name).strip())
+        destination["required_named_items"] = required_names[
+            :SECTION_REQUIRED_NAMED_ITEM_LIMIT
+        ]
+        destination["related_profile_subjects"] = profile_names
+
+        current_heading = str(
+            destination.get("planned_heading") or ""
+        ).strip()
+        if any(
+            name.casefold() not in current_heading.casefold()
+            for name in profile_names
+        ):
+            role_label = _RELATED_PROFILE_ROLE_LABELS.get(
+                profiles[0]["role"],
+                "Team",
+            )
+            joined_names = (
+                " and ".join(profile_names)
+                if len(profile_names) == 2
+                else ", ".join(profile_names[:-1])
+                + f", and {profile_names[-1]}"
+            )
+            destination["planned_heading"] = (
+                f"Meet {role_label} {joined_names}"
+            )[:SECTION_PLANNED_HEADING_CHAR_LIMIT]
+        assigned_owned_block_ids.update(group_ids)
+        group_record["preserved"] = True
+
+    return diagnostics
+
+
 def _normalise_strategy_brief(
     data: dict,
     evidence_sources: dict | None = None,
@@ -1368,6 +1687,23 @@ def _normalise_strategy_brief(
             assigned_source_asset_ids,
             template_by_name,
         )
+    if (
+        page_copy_correction_enabled
+        and planning_enabled
+        and owned_page_registry is not None
+        and not source_asset_contract_enabled
+    ):
+        related_profile_diagnostics = _reconcile_related_owned_profiles(
+            section_items,
+            owned_page_registry,
+            verified_facts,
+            proof_point_keys,
+            assigned_owned_block_ids,
+        )
+        if related_profile_diagnostics.get("groups"):
+            brief["related_profile_preservation"] = (
+                related_profile_diagnostics
+            )
     if evidence_locked_reconstruction and source_asset_contract_enabled:
         for section_item in section_items:
             ordered_assets = sorted(
@@ -1751,6 +2087,277 @@ def _safe_output_constraints(strategy_values: dict) -> list[str]:
     return list(dict.fromkeys(constraints))[:10]
 
 
+def _verified_person_names(fact: dict) -> list[str]:
+    names = []
+    seen = set()
+    for value in (fact.get("fact"), fact.get("source_excerpt")):
+        source_text = str(value or "")
+        for match in _PROPER_NAME_PATTERN.finditer(source_text):
+            words = match.group(0).split()
+            while (
+                len(words) > 2
+                and words[0].casefold().replace("-", "") in _PERSON_ROLE_PREFIXES
+            ):
+                words.pop(0)
+            if len(words) < 2:
+                continue
+            name = " ".join(words)
+            escaped_name = re.escape(name)
+            if not re.search(
+                (
+                    rf"\b(?:attorney|lawyer|doctor|dr\.?|founder)\s+"
+                    rf"{escaped_name}(?!\w)"
+                    rf"|(?<!\w){escaped_name}(?:'s|’s)?\s+"
+                    r"(?:is|focuses|handles|serves|leads|works|practices|"
+                    r"represents|specializes|specialises|practice|work|"
+                    r"experience|focus)\b"
+                ),
+                source_text,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            key = name.casefold()
+            if key not in seen:
+                seen.add(key)
+                names.append(name)
+    return names
+
+
+def _reviewer_evidence_overlay(
+    strategy_brief: dict | None,
+    section_name: str,
+    reviewer_corrections: list[str] | None,
+) -> tuple[dict, dict]:
+    """Build a runtime-only section overlay from already verified evidence."""
+    brief = strategy_brief if isinstance(strategy_brief, dict) else {}
+    instruction = str((reviewer_corrections or [""])[-1] or "").strip()
+    context = {
+        "requested_names": [],
+        "matched_verified_fact_ids": [],
+        "media_requested": bool(
+            _REVIEWER_MEDIA_REQUEST_PATTERN.search(instruction)
+        ),
+    }
+    if not instruction:
+        return brief, context
+
+    verified_facts = [
+        fact
+        for fact in brief.get("verified_facts") or []
+        if isinstance(fact, dict) and str(fact.get("fact") or "").strip()
+    ]
+    names_by_fact = {
+        id(fact): _verified_person_names(fact)
+        for fact in verified_facts
+    }
+    first_name_owners = {}
+    for names in names_by_fact.values():
+        for name in names:
+            first_name_owners.setdefault(
+                name.split()[0].casefold(),
+                set(),
+            ).add(name.casefold())
+
+    matched_facts = []
+    requested_names = []
+    seen_names = set()
+    for fact in verified_facts:
+        fact_matched = False
+        for name in names_by_fact[id(fact)]:
+            aliases = [name]
+            first_name = name.split()[0]
+            if len(first_name) >= 3 and len(
+                first_name_owners.get(first_name.casefold(), set())
+            ) == 1:
+                aliases.append(first_name)
+            if not any(
+                re.search(
+                    rf"(?<!\w){re.escape(alias)}(?!\w)",
+                    instruction,
+                    flags=re.IGNORECASE,
+                )
+                for alias in aliases
+            ):
+                continue
+            fact_matched = True
+            name_key = name.casefold()
+            if name_key not in seen_names:
+                seen_names.add(name_key)
+                requested_names.append(name)
+        if fact_matched:
+            matched_facts.append(fact)
+
+    matched_facts = matched_facts[:SECTION_RECAP_EVIDENCE_LIMIT]
+    context["requested_names"] = requested_names[
+        :SECTION_RECAP_EVIDENCE_LIMIT
+    ]
+    context["matched_verified_fact_ids"] = [
+        str(fact.get("id") or "").strip()
+        for fact in matched_facts
+        if str(fact.get("id") or "").strip()
+    ]
+    if not matched_facts:
+        return brief, context
+
+    overlay = deepcopy(brief)
+    target_name = str(section_name or "").strip().casefold()
+    target_contract = next(
+        (
+            item
+            for item in overlay.get("section_guidance") or []
+            if isinstance(item, dict)
+            and str(item.get("section") or "").strip().casefold()
+            == target_name
+        ),
+        None,
+    )
+    if target_contract is None:
+        target_contract = {"section": str(section_name or "").strip()}
+        overlay.setdefault("section_guidance", []).append(target_contract)
+
+    proof_facts = [
+        dict(fact)
+        for fact in target_contract.get("proof_facts") or []
+        if isinstance(fact, dict)
+    ]
+    proof_points = [
+        str(value).strip()
+        for value in target_contract.get("proof_points") or []
+        if str(value).strip()
+    ]
+    existing_fact_keys = {
+        str(fact.get("id") or "").strip().casefold()
+        or _evidence_text(fact.get("fact"))
+        for fact in proof_facts
+    }
+    existing_point_keys = {_evidence_text(value) for value in proof_points}
+    for fact in matched_facts:
+        fact_key = (
+            str(fact.get("id") or "").strip().casefold()
+            or _evidence_text(fact.get("fact"))
+        )
+        fact_text = str(fact.get("fact") or "").strip()
+        if (
+            fact_key
+            and fact_key not in existing_fact_keys
+            and len(proof_facts) < SECTION_RECAP_EVIDENCE_LIMIT
+        ):
+            proof_facts.append(dict(fact))
+            existing_fact_keys.add(fact_key)
+        point_key = _evidence_text(fact_text)
+        if (
+            fact_text
+            and point_key not in existing_point_keys
+            and len(proof_points) < SECTION_RECAP_EVIDENCE_LIMIT
+        ):
+            proof_points.append(fact_text)
+            existing_point_keys.add(point_key)
+
+    target_contract["proof_facts"] = proof_facts
+    target_contract["proof_points"] = proof_points
+    target_contract["reviewer_evidence_override"] = True
+    target_contract["reviewer_required_names"] = list(
+        context["requested_names"]
+    )
+
+    planned_heading = str(
+        target_contract.get("planned_heading") or ""
+    ).strip()
+    required_names = context["requested_names"]
+    if (
+        len(required_names) >= 2
+        and any(
+            name.casefold() not in planned_heading.casefold()
+            for name in required_names
+        )
+    ):
+        joined_names = (
+            " and ".join(required_names)
+            if len(required_names) == 2
+            else ", ".join(required_names[:-1])
+            + f", and {required_names[-1]}"
+        )
+        target_contract["planned_heading"] = (
+            f"Meet {joined_names}"
+        )[:SECTION_PLANNED_HEADING_CHAR_LIMIT]
+
+    return overlay, context
+
+
+def _reviewer_instruction_outcome(
+    generated_text: str,
+    evidence_context: dict | None,
+) -> dict:
+    """Report only adherence checks that can be verified deterministically."""
+    context = evidence_context if isinstance(evidence_context, dict) else {}
+    required_names = [
+        str(value).strip()
+        for value in context.get("requested_names") or []
+        if str(value).strip()
+    ]
+    generated = str(generated_text or "")
+    present_names = [
+        name
+        for name in required_names
+        if re.search(
+            rf"(?<!\w){re.escape(name)}(?!\w)",
+            generated,
+            flags=re.IGNORECASE,
+        )
+    ]
+    missing_names = [
+        name for name in required_names if name not in present_names
+    ]
+    media_requested = bool(context.get("media_requested"))
+
+    if required_names:
+        if not present_names:
+            status = "blocked"
+            message = (
+                "The rerun completed, but none of the requested verified "
+                "people appeared in the generated section."
+            )
+        elif missing_names or media_requested:
+            status = "partially_applied"
+            message = (
+                "The text instruction was only partially satisfied."
+                if missing_names
+                else
+                "The verified text was included, but image placement is not "
+                "supported by section reruns."
+            )
+        else:
+            status = "applied"
+            message = (
+                "All requested people supported by verified job evidence "
+                "appeared in the regenerated section."
+            )
+    elif media_requested:
+        status = "blocked"
+        message = (
+            "Image placement is not supported by text-only section reruns."
+        )
+    else:
+        status = "applied"
+        message = (
+            "The instruction was applied to the rerun prompt. Style and "
+            "wording changes still require editorial review."
+        )
+
+    return {
+        "status": status,
+        "message": message,
+        "requested_names": required_names,
+        "missing_names": missing_names,
+        "matched_verified_fact_ids": [
+            str(value).strip()
+            for value in context.get("matched_verified_fact_ids") or []
+            if str(value).strip()
+        ],
+        "media_requested": media_requested,
+    }
+
+
 def format_strategy_brief_for_prompt(
     strategy_brief: dict | None,
     *,
@@ -1858,6 +2465,14 @@ def format_strategy_brief_for_prompt(
                         for fact in (item.get("proof_facts") or [])[:4]
                         if isinstance(fact, dict)
                     ]
+                    reviewer_evidence_override = bool(
+                        item.get("reviewer_evidence_override")
+                    )
+                    reviewer_required_names = _clean_bounded_strategy_list(
+                        item.get("reviewer_required_names"),
+                        max_items=SECTION_RECAP_EVIDENCE_LIMIT,
+                        max_chars=SECTION_REQUIRED_NAMED_ITEM_CHAR_LIMIT,
+                    )
                     planned_heading = _clean_strategy_text(item.get("planned_heading"), 120)
                     coverage_points = _clean_bounded_strategy_list(
                         item.get("coverage_points"),
@@ -1967,6 +2582,25 @@ def format_strategy_brief_for_prompt(
                     elif proof_points:
                         details.append("  Owned proof points (the only evidence allowed for concrete claims):")
                         details.extend(f"    - {proof_point}" for proof_point in proof_points)
+                    if reviewer_evidence_override:
+                        details.append(
+                            "  Reviewer-approved verified evidence reuse:"
+                        )
+                        details.append(
+                            "    The reviewer explicitly requested the "
+                            "matching owned proof points listed above. They "
+                            "may be reused here despite their original "
+                            "section assignment. Do not repeat them within "
+                            "this section or infer any new claim."
+                        )
+                    if reviewer_required_names:
+                        details.append(
+                            "  Required verified names for this rerun:"
+                        )
+                        details.extend(
+                            f"    - {name}"
+                            for name in reviewer_required_names
+                        )
                     if owned_blocks:
                         details.append(
                             "  Assigned owned-page material "
