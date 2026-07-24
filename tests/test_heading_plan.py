@@ -772,6 +772,82 @@ def test_initial_quality_strategy_requires_complete_source_evidence_and_specific
     assert "generic readiness question" in prompt
 
 
+def test_collection_planning_uses_preselected_section_keywords_without_reranking():
+    prompts = []
+
+    def provider(_api_key, prompt, **_kwargs):
+        prompts.append(prompt)
+        return json.dumps({
+            "search_intent": "Commercial",
+            "page_goal": "Help shoppers understand the collection.",
+            "primary_positioning": "Lead with the category.",
+            "headline_direction": "Use a direct category H1.",
+            "section_guidance": [
+                {
+                    "section": "collection_story",
+                    "responsibility": "Connect the category to the shopper.",
+                    "planned_heading": "Personalised Knives for Meaningful Gifts",
+                    "coverage_points": ["Explain the supported gifting angle"],
+                },
+                {
+                    "section": "collection_value",
+                    "responsibility": "Explain a supported value point.",
+                    "planned_heading": "Custom Engraved Pocket Knife Options",
+                    "coverage_points": ["Explain the supported engraving option"],
+                },
+            ],
+        })
+
+    copy_gen.PROVIDER_FN["CollectionHeadingKeywordTest"] = provider
+    copy_gen.generate_strategy_brief(
+        provider="CollectionHeadingKeywordTest",
+        api_key="key",
+        url="https://example.com/collections/knives",
+        keyword="personalised knives",
+        page_type="collection",
+        business_type="ecommerce",
+        brand_name="Example",
+        template_sections=[
+            {
+                "name": "collection_story",
+                "label": "Collection Story",
+                "purpose": "Connect the category to customer motivation.",
+                "heading_level": "h2",
+            },
+            {
+                "name": "collection_value",
+                "label": "Collection Value",
+                "purpose": "Explain supported category value.",
+                "heading_level": "h2",
+            },
+        ],
+        section_heading_keyword_assignments={
+            "collection_story": "personalised knife gifts",
+            "collection_value": "custom engraved pocket knives",
+        },
+        required_outputs=["page_copy"],
+        enable_page_planning=True,
+        page_quality_policy=get_page_quality_policy(
+            PAGE_QUALITY_POLICY_VERSION
+        ),
+        page_copy_correction_enabled=True,
+    )
+
+    prompt = prompts[0]
+    assert (
+        "collection_story: Collection Story. Connect the category to customer "
+        "motivation. Already-selected heading keyword: personalised knife gifts."
+        in prompt
+    )
+    assert (
+        "collection_value: Collection Value. Explain supported category value. "
+        "Already-selected heading keyword: custom engraved pocket knives."
+        in prompt
+    )
+    assert "Do not select, replace, or rerank these keywords" in prompt
+    assert "use its assigned keyword or a close grammatical variant" in prompt
+
+
 def test_initial_quality_planning_prompt_incremental_overhead_stays_bounded(
     monkeypatch,
 ):
@@ -1158,6 +1234,57 @@ def test_legacy_collection_internal_heading_requires_editorial_review():
     assert len(matching) == 1
     assert matching[0]["section"] == "collection_guidance"
     assert matching[0]["actual_heading"] == "Helpful Buying Notes"
+    assert matching[0]["severity"] == "review"
+
+
+@pytest.mark.parametrize(
+    ("section_name", "internal_heading"),
+    [
+        ("collection_story", "Collection Story"),
+        ("collection_value", "Collection Value"),
+    ],
+)
+def test_new_collection_internal_headings_require_editorial_review(
+    section_name,
+    internal_heading,
+):
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="personalised knives",
+        faq_items=[],
+        section_results={
+            section_name: (
+                f"## {internal_heading}\n"
+                "Supported category copy for the intended customer."
+            ),
+        },
+        forbidden_phrases=[],
+        template={
+            "sections": [{
+                "name": section_name,
+                "label": internal_heading,
+                "heading_level": "h2",
+                "word_count": [80, 110],
+            }],
+        },
+        strategy_brief={},
+    )
+
+    matching = [
+        flag
+        for flag in flags
+        if flag.get("code") == "page_heading_generic"
+    ]
+
+    assert len(matching) == 1
+    assert matching[0]["section"] == section_name
+    assert matching[0]["actual_heading"] == internal_heading
     assert matching[0]["severity"] == "review"
 
 

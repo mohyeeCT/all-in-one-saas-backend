@@ -117,6 +117,37 @@ def test_responsive_sections_preserve_one_proof_and_compact_zero_proof():
     assert "Use only as many blocks" not in adapted_by_name["pain_points"]["adaptive_instruction"]
 
 
+def test_collection_story_value_and_guidance_compact_when_evidence_is_sparse():
+    template = TEMPLATES["collection_page"]
+    adapted, plan = adapt_template_for_generation(
+        template,
+        "collection_page",
+        _strategy(
+            ("category_intro", []),
+            ("collection_story", []),
+            ("collection_value", []),
+            ("collection_guidance", []),
+        ),
+        adaptive_policy_version=ADAPTIVE_POLICY_VERSION,
+        correction_evidence_contract=True,
+    )
+    adapted_by_name = {
+        section["name"]: section
+        for section in adapted["sections"]
+    }
+    plan_by_section = _plan_by_section(plan)
+
+    assert adapted_by_name["category_intro"]["word_count"] == [60, 80]
+    for section_name in (
+        "collection_story",
+        "collection_value",
+        "collection_guidance",
+    ):
+        assert plan_by_section[section_name]["mode"] == "compact"
+        assert plan_by_section[section_name]["evidence_sparse"] is True
+        assert adapted_by_name[section_name]["word_count"] == [0, 60]
+
+
 def test_informational_templates_keep_structure_and_relax_only_fill_quotas():
     for template_key in (
         "blog_standard",

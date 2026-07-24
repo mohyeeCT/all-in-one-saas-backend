@@ -284,6 +284,35 @@ def _section_specific_prompt_rules(value: str) -> str:
 def _evidence_sparse_section_contract(section_name: str) -> tuple[str, str]:
     """Replace unsupported template requests with one evidence-owned job."""
     normalized_name = str(section_name or "").strip().casefold()
+    if normalized_name == "collection_story":
+        return (
+            "Connect the assigned category topic to a neutral shopper motivation "
+            "without adding client-specific claims.",
+            "Write one short, evidence-neutral paragraph using only the assigned "
+            "keyword or its close grammatical meaning. You may frame the need or "
+            "experience already expressed by that keyword, but do not add an "
+            "occasion, audience, use case, product attribute, emotional outcome, "
+            "or brand claim that the keyword does not establish.",
+        )
+    if normalized_name == "collection_value":
+        return (
+            "Explain neutral category-level decision value without claiming a "
+            "client-specific advantage.",
+            "Write one short, evidence-neutral paragraph using only the assigned "
+            "keyword or its close grammatical meaning. Explain why that category "
+            "topic may matter to a shopper without claiming verified quality, "
+            "craftsmanship, breadth, convenience, performance, availability, or "
+            "brand superiority.",
+        )
+    if normalized_name == "collection_guidance":
+        return (
+            "Offer neutral category-level selection framing without adding "
+            "product or client-specific facts.",
+            "Write one short, evidence-neutral paragraph using only distinctions "
+            "expressed by the assigned keyword or canonical category topic. Do "
+            "not invent selection criteria, product groupings, materials, sizes, "
+            "variants, use cases, pricing, availability, or policies.",
+        )
     if normalized_name == "faq":
         return (
             "Answer only question-and-answer material fully supported by this "
@@ -1896,6 +1925,8 @@ def strategy_brief_issues(
 _GENERIC_PLANNED_HEADINGS = {
     "about",
     "benefits",
+    "collection story",
+    "collection value",
     "conclusion",
     "features",
     "introduction",
@@ -6700,15 +6731,29 @@ def _strategy_brief_competitor_block(competitor_section_map: dict) -> str:
     return "\n".join(lines[:12]) or "Not available"
 
 
-def _strategy_brief_template_block(template_sections: list) -> str:
+def _strategy_brief_template_block(
+    template_sections: list,
+    section_heading_keyword_assignments: dict | None = None,
+) -> str:
     lines = []
+    keyword_assignments = section_heading_keyword_assignments or {}
     for section in (template_sections or [])[:12]:
         if not isinstance(section, dict):
             continue
         name = section.get("name") or ""
         label = section.get("label") or name
         purpose = section.get("purpose") or ""
-        lines.append(f"- {name}: {label}. {purpose}".strip())
+        line = f"- {name}: {label}. {purpose}".strip()
+        assigned_keyword = _clean_strategy_text(
+            keyword_assignments.get(name),
+            120,
+        )
+        if assigned_keyword:
+            line += (
+                " Already-selected heading keyword: "
+                f"{assigned_keyword}."
+            )
+        lines.append(line)
     return "\n".join(lines) or "Not available"
 
 
@@ -7213,6 +7258,7 @@ def generate_strategy_brief(
     paa_questions: list | None = None,
     competitor_section_map: dict | None = None,
     template_sections: list | None = None,
+    section_heading_keyword_assignments: dict | None = None,
     required_outputs: list[str] | None = None,
     model: str = None,
     enable_page_planning: bool = False,
@@ -7269,6 +7315,17 @@ def generate_strategy_brief(
         else ""
     )
     section_planning_schema = ""
+    assigned_heading_keyword_rules = ""
+    if section_heading_keyword_assignments:
+        assigned_heading_keyword_rules = (
+            "\n- When a Template sections line includes an already-selected "
+            "heading keyword, use its assigned keyword or a close grammatical "
+            "variant in that section's planned_heading when it remains natural "
+            "and reader-facing."
+            "\n- Do not select, replace, or rerank these keywords. If the same "
+            "keyword is assigned to more than one section, use a distinct close "
+            "variant in one heading instead of repeating the same heading phrase."
+        )
     section_heading_rules = (
         "- Section guidance must not prescribe exact heading copy. "
         "Only headline_direction may direct the title or H1."
@@ -7370,6 +7427,7 @@ def generate_strategy_brief(
             "questions or ideas the section must address.\n"
             f"{source_assignment_rules}"
             "- Do not choose or return depth_policy. The server assigns it after normalization."
+            f"{assigned_heading_keyword_rules}"
             f"{correction_heading_rule}"
             f"{quality_section_planning_rules}"
         )
@@ -7414,7 +7472,10 @@ Competitor section signals:
 {_strategy_brief_competitor_block(competitor_section_map or {})}
 
 Template sections:
-{_strategy_brief_template_block(template_sections or [])}
+{_strategy_brief_template_block(
+    template_sections or [],
+    section_heading_keyword_assignments,
+)}
 
 Rules:
 - Do not invent facts, policies, guarantees, pricing, certifications, availability, outcomes, or performance claims.

@@ -605,6 +605,8 @@ _GENERIC_PAGE_HEADINGS = frozenset({
     "benefits",
     "buying guide",
     "collection guidance",
+    "collection story",
+    "collection value",
     "conclusion",
     "features",
     "helpful buying notes",
@@ -3771,6 +3773,20 @@ def _process_single_row(
     if gen_meta or gen_faqs or gen_page_copy:
         step("building strategy brief...")
         try:
+            section_heading_keyword_assignments = {}
+            if resolved_template_key == "collection_page":
+                for section_name in (
+                    "collection_story",
+                    "collection_value",
+                ):
+                    assigned_keyword = str(
+                        kw_assignment.get(section_name, {}).get("supporting")
+                        or ""
+                    ).strip()
+                    if assigned_keyword:
+                        section_heading_keyword_assignments[
+                            section_name
+                        ] = assigned_keyword
             strategy_brief = generate_strategy_brief(
                 provider=provider,
                 api_key=api_key,
@@ -3789,6 +3805,9 @@ def _process_single_row(
                 paa_questions=paa_questions,
                 competitor_section_map=competitor_section_map,
                 template_sections=(template or {}).get("sections", []),
+                section_heading_keyword_assignments=(
+                    section_heading_keyword_assignments
+                ),
                 required_outputs=required_strategy_outputs,
                 enable_page_planning=page_planning_enabled,
                 owned_page_registry=owned_page_registry,

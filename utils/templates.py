@@ -1344,13 +1344,13 @@ TEMPLATES = {
     "collection_page": {
         "name": "Collection / Category Page",
         "page_type": "collection",
-        "description": "Ecommerce category page copy with a focused SEO introduction and evidence-grounded purchase guidance. Optimised for CollectionPage schema.",
+        "description": "Ecommerce category page copy with a focused SEO introduction, evidence-grounded collection storytelling and value, and concise purchase guidance. Optimised for CollectionPage schema.",
         "sections": [
             {
                 "name": "category_intro",
                 "label": "Category Introduction",
                 "purpose": "Focused category description. Keyword in H1 and opening paragraph. Quickly tells shoppers what the category offers and why it matters.",
-                "word_count": [70, 130],
+                "word_count": [60, 80],
                 "keyword_slot": "primary",
                 "heading_level": "h1",
                 "prompt_rules": (
@@ -1364,17 +1364,54 @@ TEMPLATES = {
                 ),
             },
             {
-                "name": "collection_guidance",
-                "label": "Helpful Buying Notes",
-                "purpose": "A focused guidance section that develops useful selection criteria, available product angles, and brand value only when supported by the page or brief.",
-                "word_count": [60, 120],
+                "name": "collection_story",
+                "label": "Collection Story",
+                "purpose": "A concise, customer-centred narrative that connects the category to a supported motivation, experience, occasion, or practical need.",
+                "word_count": [80, 110],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write 3 to 5 useful paragraphs under one H2, not separate top-level sections. "
+                    "Write one cohesive paragraph under one specific, reader-facing H2. "
+                    "Build a concise story around the customer's motivation, intended experience, meaningful occasion, or practical need only when the available context supports it. "
+                    "Connect the category to what the shopper is trying to accomplish without repeating the introduction. "
+                    "Never use the internal section label 'Collection Story' as the H2. "
+                    "Do not invent occasions, audiences, use cases, or emotional outcomes. "
+                    "Do not make unsupported quality, popularity, heritage, performance, or durability claims. "
+                    "Include the assigned supporting keyword or a close grammatical variant naturally, especially in the H2 when it remains reader-facing. "
+                    "No em dashes."
+                ),
+            },
+            {
+                "name": "collection_value",
+                "label": "Collection Value",
+                "purpose": "A distinct conversion-focused section explaining a supported category benefit, differentiator, craftsmanship signal, convenience, or brand value.",
+                "word_count": [80, 110],
+                "keyword_slot": "supporting",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write one cohesive paragraph under one specific, reader-facing H2. "
+                    "Develop one supported reason to consider the category, such as a verified benefit, differentiator, craftsmanship signal, convenience, or brand value. "
+                    "Do not repeat the collection story, introduction, or the same customer outcome in different words. "
+                    "Never use the internal section label 'Collection Value' as the H2. "
+                    "Use only value points supported by the page or brief. "
+                    "Do not invent materials, construction methods, quality levels, product breadth, guarantees, outcomes, shipping, pricing, availability, or brand superiority. "
+                    "Use an assigned related keyword or a close grammatical variant naturally, especially in the H2 when it remains reader-facing. "
+                    "No em dashes."
+                ),
+            },
+            {
+                "name": "collection_guidance",
+                "label": "Helpful Buying Notes",
+                "purpose": "A focused guidance section that develops useful selection criteria, available product angles, and brand value only when supported by the page or brief.",
+                "word_count": [60, 80],
+                "keyword_slot": "supporting",
+                "heading_level": "h2",
+                "prompt_rules": (
+                    "Write one concise, useful paragraph under one H2. "
                     "Make the H2 specific to the category and the shopper decision. "
                     "Never use the internal section label 'Helpful Buying Notes' as the H2. "
                     "Mention selection guidance, product variety, or brand value only when the available context supports it. "
+                    "Do not repeat the introduction, collection story, or collection value section. "
                     "Do not invent sizes, materials, product groups, shipping, returns, guarantees, pricing, availability, or use cases. "
                     "Do not use generic headings like 'Collection Guidance', 'Buying Guide', 'How to Choose', 'What's in This Collection', or 'Why Shop With Us'. "
                     "Include the supporting keyword only if it reads naturally. "

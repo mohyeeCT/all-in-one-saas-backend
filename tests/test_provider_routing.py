@@ -1354,19 +1354,36 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Evidence, format, keyword, and safety constraints remain binding", prompt)
         self.assertIn("fewest complete paragraphs or blocks", prompt)
 
-    def test_collection_template_uses_concise_intro_and_single_guidance_section(self):
+    def test_collection_template_uses_four_concise_distinct_sections(self):
         template = get_template("collection_page")
         section_names = [section["name"] for section in template["sections"]]
         section_labels = [section["label"] for section in template["sections"]]
-        intro = template["sections"][0]
-        guidance = template["sections"][1]
+        sections = {
+            section["name"]: section
+            for section in template["sections"]
+        }
+        intro = sections["category_intro"]
+        story = sections["collection_story"]
+        value = sections["collection_value"]
+        guidance = sections["collection_guidance"]
 
         self.assertEqual(intro["name"], "category_intro")
-        self.assertEqual(intro["word_count"], [70, 130])
-        self.assertEqual(guidance["word_count"], [60, 120])
+        self.assertEqual(intro["word_count"], [60, 80])
+        self.assertEqual(story["word_count"], [80, 110])
+        self.assertEqual(value["word_count"], [80, 110])
+        self.assertEqual(guidance["word_count"], [60, 80])
+        self.assertEqual(story["keyword_slot"], "supporting")
+        self.assertEqual(value["keyword_slot"], "supporting")
         self.assertIn("under one H2", guidance["prompt_rules"])
-        self.assertIn("collection_guidance", section_names)
-        self.assertEqual(section_names, ["category_intro", "collection_guidance"])
+        self.assertEqual(
+            section_names,
+            [
+                "category_intro",
+                "collection_story",
+                "collection_value",
+                "collection_guidance",
+            ],
+        )
         self.assertNotIn("buying_guide", section_names)
         self.assertNotIn("subcategory_overview", section_names)
         self.assertNotIn("brand_value", section_names)
@@ -1375,7 +1392,11 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertNotIn("Why Shop With Us", section_labels)
 
     def test_collection_guidance_requires_a_specific_reader_facing_heading(self):
-        guidance = get_template("collection_page")["sections"][1]
+        guidance = next(
+            section
+            for section in get_template("collection_page")["sections"]
+            if section["name"] == "collection_guidance"
+        )
 
         self.assertIn(
             "Never use the internal section label 'Helpful Buying Notes'",
@@ -1385,6 +1406,50 @@ class ProviderRoutingTests(unittest.TestCase):
             "specific to the category and the shopper decision",
             guidance["prompt_rules"],
         )
+
+    def test_collection_story_and_value_require_supported_distinct_angles(self):
+        sections = {
+            section["name"]: section
+            for section in get_template("collection_page")["sections"]
+        }
+
+        self.assertIn(
+            "customer's motivation",
+            sections["collection_story"]["prompt_rules"],
+        )
+        self.assertIn(
+            "Do not invent occasions, audiences, use cases, or emotional outcomes",
+            sections["collection_story"]["prompt_rules"],
+        )
+        self.assertIn(
+            "Do not repeat the collection story",
+            sections["collection_value"]["prompt_rules"],
+        )
+        self.assertIn(
+            "supported by the page or brief",
+            sections["collection_value"]["prompt_rules"],
+        )
+
+    def test_sparse_collection_sections_allow_only_neutral_keyword_grounded_copy(self):
+        story_purpose, story_rules = copy_gen._evidence_sparse_section_contract(
+            "collection_story"
+        )
+        value_purpose, value_rules = copy_gen._evidence_sparse_section_contract(
+            "collection_value"
+        )
+        guidance_purpose, guidance_rules = (
+            copy_gen._evidence_sparse_section_contract(
+                "collection_guidance"
+            )
+        )
+
+        self.assertIn("neutral shopper motivation", story_purpose)
+        self.assertIn("assigned keyword", story_rules)
+        self.assertIn("do not add an occasion", story_rules)
+        self.assertIn("category-level decision value", value_purpose)
+        self.assertIn("without claiming verified quality", value_rules)
+        self.assertIn("category-level selection framing", guidance_purpose)
+        self.assertIn("Do not invent selection criteria", guidance_rules)
 
     def test_collection_reference_normalisation_names_the_category(self):
         text = copy_gen.normalise_collection_references(

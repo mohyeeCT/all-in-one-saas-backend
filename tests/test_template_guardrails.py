@@ -55,19 +55,26 @@ def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
         "about_us": (1370, 2350),
         "contact_us": (720, 1220),
         "product_page": (460, 790),
-        "collection_page": (130, 250),
+        "collection_page": (280, 380),
     }
 
-    assert sum(len(template["sections"]) for template in TEMPLATES.values()) == 86
+    assert sum(len(template["sections"]) for template in TEMPLATES.values()) == 88
     for template_key, expected in expected_totals.items():
         assert (_total_word_min(template_key), _total_word_max(template_key)) == expected
 
-    for template in TEMPLATES.values():
+    for template_key, template in TEMPLATES.items():
         for section in template["sections"]:
             minimum, maximum = section["word_count"]
             assert minimum >= 40
             assert maximum > minimum
-            assert maximum - minimum >= 30
+            if (
+                template_key == "collection_page"
+                and section["name"]
+                in {"category_intro", "collection_guidance"}
+            ):
+                assert maximum - minimum == 20
+            else:
+                assert maximum - minimum >= 30
 
 
 def test_ecommerce_templates_use_concise_word_ranges():
@@ -84,8 +91,10 @@ def test_ecommerce_templates_use_concise_word_ranges():
         section["word_count"]
         for section in TEMPLATES["collection_page"]["sections"]
     ] == [
-        [70, 130],
-        [60, 120],
+        [60, 80],
+        [80, 110],
+        [80, 110],
+        [60, 80],
     ]
 
 
