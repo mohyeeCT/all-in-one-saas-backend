@@ -858,6 +858,7 @@ def _rerun_single_section(
         _count_brand_mentions,
         _page_brand_mention_budget,
         _page_section_provider_options,
+        _reconcile_collection_promotional_evidence,
         _reviewer_evidence_overlay,
         _reviewer_instruction_outcome,
         _source_asset_exact_phrases,
@@ -1021,6 +1022,26 @@ def _rerun_single_section(
                 contract.pop("source_assets", None)
                 if had_source_asset_contract:
                     contract.pop("required_named_items", None)
+        if (
+            resolved_template_key == "collection_page"
+            and isinstance(strategy_brief, dict)
+        ):
+            strategy_brief = deepcopy(strategy_brief)
+            source_diagnostics = strategy_brief.get(
+                "source_asset_mapping_diagnostics"
+            )
+            assigned_source_asset_ids = {
+                str(asset_id)
+                for asset_id in (
+                    source_diagnostics.get("assigned_asset_ids") or []
+                    if isinstance(source_diagnostics, dict)
+                    else []
+                )
+            }
+            _reconcile_collection_promotional_evidence(
+                strategy_brief.get("section_guidance") or [],
+                assigned_source_asset_ids,
+            )
         strategy_brief, reviewer_evidence_context = (
             _reviewer_evidence_overlay(
                 strategy_brief,

@@ -165,6 +165,30 @@ _SOURCE_ASSET_KINDS = frozenset({
     "named_list",
     "testimonial",
 })
+_COLLECTION_NON_PROMOTIONAL_SECTIONS = (
+    "category_intro",
+    "collection_story",
+    "collection_value",
+)
+_COLLECTION_GUIDANCE_SECTION = "collection_guidance"
+_COLLECTION_TEMPLATE_SECTIONS = frozenset({
+    *_COLLECTION_NON_PROMOTIONAL_SECTIONS,
+    _COLLECTION_GUIDANCE_SECTION,
+})
+_COLLECTION_PROMOTIONAL_LANGUAGE_RE = re.compile(
+    r"\b(?:shipping|delivery|return\s+(?:policy|window)|"
+    r"returns?\s+(?:accepted|available|within)|"
+    r"discount(?:ed|s)?|sales?|coupons?|"
+    r"promo(?:tion|tions|tional)?|clearance|rebates?|warrant(?:y|ies)|"
+    r"guarantee(?:d|s)?)\b"
+    r"|\b(?:free|complimentary)\s+(?:gift|returns?|sample|trial)\b"
+    r"|\b(?:special|limited[-\s]?time|exclusive)\s+"
+    r"(?:offers?|deals?|pricing)\b"
+    r"|\b(?:save|spend)\s+(?:up\s+to\s+)?(?:(?:USD|GBP|EUR|\$)\s*)?\d"
+    r"|\b\d+(?:\.\d+)?\s*%\s*off\b"
+    r"|\bbuy\s+\w+\s+get\s+\w+\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _source_text_looks_instruction_shaped(value: str) -> bool:
@@ -586,6 +610,24 @@ def _ecommerce_page_copy_inventory_guardrail(page_type: str) -> str:
     )
 
 
+def _is_collection_page_type(page_type: str) -> bool:
+    normalized = str(page_type or "").strip().casefold()
+    return "collection" in normalized or "category" in normalized
+
+
+def _uses_collection_template(template_sections: list | None) -> bool:
+    section_names = {
+        str(section.get("name") or "").strip().casefold()
+        for section in template_sections or []
+        if isinstance(section, dict)
+    }
+    return _COLLECTION_TEMPLATE_SECTIONS.issubset(section_names)
+
+
+def _is_collection_promotional_text(value: object) -> bool:
+    return bool(_COLLECTION_PROMOTIONAL_LANGUAGE_RE.search(str(value or "")))
+
+
 def _product_name_naturalness_guardrail(page_type: str) -> str:
     return _PRODUCT_NAME_NATURALNESS_GUARDRAIL if _is_product_page(page_type) else ""
 
@@ -837,6 +879,184 @@ def _source_asset_required_named_items(source_assets: list[dict]) -> list[str]:
                 seen_items.add(item_key)
                 required_items.append(item)
     return required_items
+
+
+def _collection_source_asset_text(asset: dict) -> str:
+    values = [
+        asset.get("heading"),
+        *(asset.get("source_texts") or []),
+    ]
+    return "\n".join(
+        str(value).strip()
+        for value in values
+        if str(value or "").strip()
+    )
+
+
+def _set_contract_source_assets(
+    contract: dict,
+    source_assets: list[dict],
+) -> None:
+    if not source_assets:
+        contract.pop("source_asset_ids", None)
+        contract.pop("source_assets", None)
+        contract.pop("required_named_items", None)
+        return
+
+    contract["source_asset_ids"] = [
+        str(asset.get("id") or "")
+        for asset in source_assets
+        if str(asset.get("id") or "")
+    ]
+    contract["source_assets"] = source_assets
+    required_items = _source_asset_required_named_items(source_assets)
+    if required_items:
+        contract["required_named_items"] = required_items
+    else:
+        contract.pop("required_named_items", None)
+
+
+def _reconcile_collection_promotional_evidence(
+    section_items: list[dict],
+    assigned_source_asset_ids: set[str],
+) -> None:
+    """Keep collection promotions out of editorial sections."""
+    contracts = {
+        str(contract.get("section") or "").strip().casefold(): contract
+        for contract in section_items
+        if isinstance(contract, dict)
+    }
+    promotional_assets = []
+    promotional_facts = []
+    for section_name in _COLLECTION_NON_PROMOTIONAL_SECTIONS:
+        contract = contracts.get(section_name)
+        if contract is None:
+            continue
+
+        source_assets = [
+            asset
+            for asset in contract.get("source_assets") or []
+            if isinstance(asset, dict)
+        ]
+        retained_assets = [
+            asset
+            for asset in source_assets
+            if not _is_collection_promotional_text(
+                _collection_source_asset_text(asset)
+            )
+        ]
+        promotional_assets.extend(
+            asset for asset in source_assets if asset not in retained_assets
+        )
+        if source_assets:
+            _set_contract_source_assets(contract, retained_assets)
+
+        proof_facts = [
+            fact
+            for fact in contract.get("proof_facts") or []
+            if isinstance(fact, dict)
+        ]
+        retained_facts = [
+            fact
+            for fact in proof_facts
+            if not _is_collection_promotional_text(
+                f"{fact.get('fact', '')}\n{fact.get('source_excerpt', '')}"
+            )
+        ]
+        promotional_facts.extend(
+            fact for fact in proof_facts if fact not in retained_facts
+        )
+        if proof_facts:
+            if retained_facts:
+                contract["proof_facts"] = retained_facts
+            else:
+                contract.pop("proof_facts", None)
+
+        proof_points = [
+            point
+            for point in contract.get("proof_points") or []
+            if not _is_collection_promotional_text(point)
+        ]
+        if proof_points:
+            contract["proof_points"] = proof_points
+        else:
+            contract.pop("proof_points", None)
+
+    if not promotional_assets and not promotional_facts:
+        return
+
+    guidance = contracts.get(_COLLECTION_GUIDANCE_SECTION)
+    if guidance is None:
+        guidance = {"section": _COLLECTION_GUIDANCE_SECTION}
+        section_items.append(guidance)
+
+    guidance_assets = [
+        asset
+        for asset in guidance.get("source_assets") or []
+        if isinstance(asset, dict)
+    ]
+    selected_asset_id = ""
+    if promotional_assets and not any(
+        _is_collection_promotional_text(
+            _collection_source_asset_text(asset)
+        )
+        for asset in guidance_assets
+    ):
+        candidate = min(
+            promotional_assets,
+            key=lambda asset: (
+                int(asset.get("order") or 0),
+                str(asset.get("id") or ""),
+            ),
+        )
+        if (
+            len(guidance_assets) < SECTION_SOURCE_ASSET_LIMIT
+            and (
+                sum(
+                    _source_asset_char_count(asset)
+                    for asset in guidance_assets
+                )
+                + _source_asset_char_count(candidate)
+                <= SECTION_SOURCE_ASSET_CHAR_LIMIT
+            )
+        ):
+            guidance_assets.append(candidate)
+            selected_asset_id = str(candidate.get("id") or "")
+
+    for asset in promotional_assets:
+        asset_id = str(asset.get("id") or "")
+        if asset_id != selected_asset_id:
+            assigned_source_asset_ids.discard(asset_id)
+    _set_contract_source_assets(guidance, guidance_assets)
+
+    guidance_facts = [
+        fact
+        for fact in guidance.get("proof_facts") or []
+        if isinstance(fact, dict)
+    ]
+    guidance_points = list(guidance.get("proof_points") or [])
+    guidance_has_promotional_fact = any(
+        _is_collection_promotional_text(
+            f"{fact.get('fact', '')}\n{fact.get('source_excerpt', '')}"
+        )
+        for fact in guidance_facts
+    )
+    if promotional_facts and not guidance_has_promotional_fact:
+        if len(guidance_facts) >= SECTION_RECAP_EVIDENCE_LIMIT:
+            removed_fact = guidance_facts.pop()
+            removed_text = str(removed_fact.get("fact") or "").strip()
+            guidance_points = [
+                point for point in guidance_points if point != removed_text
+            ]
+        promotional_fact = promotional_facts[0]
+        guidance_facts.append(promotional_fact)
+        promotional_point = str(promotional_fact.get("fact") or "").strip()
+        if promotional_point and promotional_point not in guidance_points:
+            guidance_points.append(promotional_point)
+    if guidance_facts:
+        guidance["proof_facts"] = guidance_facts
+    if guidance_points:
+        guidance["proof_points"] = guidance_points
 
 
 def _reconcile_related_source_assets(
@@ -1326,6 +1546,7 @@ def _normalise_strategy_brief(
     source_asset_mapping_diagnostics: dict | None = None,
     page_copy_correction_enabled: bool = False,
     evidence_locked_reconstruction: bool = False,
+    page_type: str = "",
 ) -> dict:
     brief = {}
     planning_enabled = template_sections is not None
@@ -1686,6 +1907,15 @@ def _normalise_strategy_brief(
             source_assets_by_id,
             assigned_source_asset_ids,
             template_by_name,
+        )
+    if (
+        planning_enabled
+        and _is_collection_page_type(page_type)
+        and _uses_collection_template(template_sections)
+    ):
+        _reconcile_collection_promotional_evidence(
+            section_items,
+            assigned_source_asset_ids,
         )
     if (
         page_copy_correction_enabled
@@ -7298,6 +7528,18 @@ def generate_strategy_brief(
             "keyword is assigned to more than one section, use a distinct close "
             "variant in one heading instead of repeating the same heading phrase."
         )
+    collection_evidence_routing_rules = ""
+    if (
+        _is_collection_page_type(page_type)
+        and _uses_collection_template(template_sections)
+    ):
+        collection_evidence_routing_rules = (
+            "\n- On collection or category pages, assign shipping, delivery, "
+            "returns, discounts, sales, coupons, promotions, and other store "
+            "incentives only to collection_guidance. Never assign them to "
+            "category_intro, collection_story, or collection_value. Use no "
+            "more than one supported promotional factor in collection_guidance."
+        )
     section_heading_rules = (
         "- Section guidance must not prescribe exact heading copy. "
         "Only headline_direction may direct the title or H1."
@@ -7400,6 +7642,7 @@ def generate_strategy_brief(
             f"{source_assignment_rules}"
             "- Do not choose or return depth_policy. The server assigns it after normalization."
             f"{assigned_heading_keyword_rules}"
+            f"{collection_evidence_routing_rules}"
             f"{correction_heading_rule}"
             f"{quality_section_planning_rules}"
         )
@@ -7543,6 +7786,7 @@ JSON schema:
         source_asset_mapping_diagnostics=source_asset_mapping_diagnostics,
         page_copy_correction_enabled=page_copy_correction_enabled,
         evidence_locked_reconstruction=evidence_locked_reconstruction,
+        page_type=page_type,
     )
     if evidence_locked_reconstruction:
         brief["claim_bound_renderer_version"] = CLAIM_BOUND_RENDERER_VERSION

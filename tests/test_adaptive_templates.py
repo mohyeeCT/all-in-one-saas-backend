@@ -148,7 +148,7 @@ def test_collection_sections_keep_approved_ranges_when_evidence_is_sparse():
         [60, 80],
         [80, 110],
         [80, 110],
-        [50, 60],
+        [40, 50],
     ]
     assert not any(
         section.get("evidence_sparse")

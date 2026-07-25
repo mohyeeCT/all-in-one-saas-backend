@@ -809,6 +809,12 @@ def test_collection_planning_uses_preselected_section_keywords_without_reranking
         brand_name="Example",
         template_sections=[
             {
+                "name": "category_intro",
+                "label": "Category Introduction",
+                "purpose": "Introduce the category.",
+                "heading_level": "h1",
+            },
+            {
                 "name": "collection_story",
                 "label": "Collection Story",
                 "purpose": "Connect the category to customer motivation.",
@@ -818,6 +824,12 @@ def test_collection_planning_uses_preselected_section_keywords_without_reranking
                 "name": "collection_value",
                 "label": "Collection Context",
                 "purpose": "Add useful non-promotional category depth.",
+                "heading_level": "h2",
+            },
+            {
+                "name": "collection_guidance",
+                "label": "Helpful Buying Notes",
+                "purpose": "Close with supported buying guidance.",
                 "heading_level": "h2",
             },
         ],
@@ -847,6 +859,86 @@ def test_collection_planning_uses_preselected_section_keywords_without_reranking
     )
     assert "Do not select, replace, or rerank these keywords" in prompt
     assert "use its assigned keyword or a close grammatical variant" in prompt
+    assert (
+        "assign shipping, delivery, returns, discounts, sales, coupons, "
+        "promotions, and other store incentives only to collection_guidance"
+        in prompt
+    )
+
+
+def test_collection_promotional_language_is_reviewed_outside_guidance():
+    template = all_in_one.get_template("collection_page")
+    flags = all_in_one._collect_qa_flags(
+        gen_meta=False,
+        gen_faqs=False,
+        gen_page_copy=True,
+        generated_title="",
+        generated_description="",
+        optimised_h1="",
+        input_h1="",
+        primary_keyword="bear and son knives",
+        faq_items=[],
+        section_results={
+            "category_intro": " ".join(["intro"] * 60),
+            "collection_story": " ".join(["story"] * 80),
+            "collection_value": (
+                "## Practical Knife Options\n\n"
+                "Orders over $50 receive free shipping alongside the supported "
+                "category information."
+            ),
+            "collection_guidance": " ".join(["guidance"] * 45),
+        },
+        forbidden_phrases=[],
+        template=template,
+        page_type="collection",
+        strategy_brief={},
+    )
+
+    matching = [
+        flag
+        for flag in flags
+        if flag.get("code") == "collection_promotion_outside_guidance"
+    ]
+
+    assert len(matching) == 1
+    assert matching[0]["section"] == "collection_value"
+    assert matching[0]["severity"] == "review"
+
+
+def test_collection_guidance_uses_strict_body_word_range():
+    template = all_in_one.get_template("collection_page")
+    flags = []
+    all_in_one._add_section_word_count_flags(
+        flags,
+        {
+            "collection_guidance": (
+                "## Supported Buying Details\n\n"
+                + " ".join(["guidance"] * 51)
+            ),
+        },
+        template,
+    )
+
+    assert len(flags) == 1
+    assert flags[0]["code"] == "section_word_count_above_target"
+    assert flags[0]["section"] == "collection_guidance"
+    assert flags[0]["actual_words"] == 51
+    assert flags[0]["target_min"] == 40
+    assert flags[0]["target_max"] == 50
+    assert flags[0]["severity"] == "review"
+
+    within_range_flags = []
+    all_in_one._add_section_word_count_flags(
+        within_range_flags,
+        {
+            "collection_guidance": (
+                "## Supported Buying Details\n\n"
+                + " ".join(["guidance"] * 50)
+            ),
+        },
+        template,
+    )
+    assert within_range_flags == []
 
 
 def test_initial_quality_planning_prompt_incremental_overhead_stays_bounded(

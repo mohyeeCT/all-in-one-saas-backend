@@ -1405,11 +1405,11 @@ TEMPLATES = {
                 "name": "collection_guidance",
                 "label": "Helpful Buying Notes",
                 "purpose": "A concise decision close that combines supported selection guidance with one verified promotional factor, differentiator, or brand-value reason when available.",
-                "word_count": [50, 60],
+                "word_count": [40, 50],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write one compact paragraph under one specific, reader-facing H2. "
+                    "Write one compact paragraph of 40 to 50 words, excluding the H2, under one specific, reader-facing H2. "
                     "Make the H2 specific to the category and the shopper decision. "
                     "Never use the internal section label 'Helpful Buying Notes' as the H2. "
                     "This is the only collection section that may include supported promotional factors, brand differentiation, or conversion language. "

@@ -63,6 +63,7 @@ from utils.page_types import default_template_key_for_page_type, normalize_page_
 from utils.copy_gen import (
     _claim_bound_canonical_h1,
     _has_non_negated_action_match,
+    _is_collection_promotional_text,
     _supported_page_action_types,
     _source_asset_exact_phrases,
     _source_asset_forbidden_conflicts,
@@ -618,6 +619,17 @@ _GENERIC_PAGE_HEADINGS = frozenset({
     "services",
     "why choose us",
 })
+_COLLECTION_TEMPLATE_SECTION_NAMES = frozenset({
+    "category_intro",
+    "collection_story",
+    "collection_value",
+    "collection_guidance",
+})
+_COLLECTION_NON_PROMOTIONAL_SECTION_NAMES = (
+    "category_intro",
+    "collection_story",
+    "collection_value",
+)
 _B2B_CONSUMER_CTAS = (
     "shop now",
     "add to cart",
@@ -1094,6 +1106,55 @@ def _add_h1_alignment_flag(flags: list[dict], optimised_h1: str, section_results
 
 def _word_count_for_qa(text: str) -> int:
     return len(_normalise_similarity_text(text))
+
+
+def _is_collection_template(template: dict | None) -> bool:
+    section_names = {
+        str(section.get("name") or "").strip().casefold()
+        for section in (template or {}).get("sections") or []
+        if isinstance(section, dict)
+    }
+    return _COLLECTION_TEMPLATE_SECTION_NAMES.issubset(section_names)
+
+
+def _collection_section_body(text: str) -> str:
+    return re.sub(
+        r"^[ \t]{0,3}#{1,6}[ \t]+[^\n]*(?:\n|$)",
+        "",
+        str(text or ""),
+        count=1,
+    ).lstrip()
+
+
+def _add_collection_section_role_flags(
+    flags: list[dict],
+    section_results: dict,
+    template: dict | None,
+) -> None:
+    if not _is_collection_template(template):
+        return
+
+    sections_by_name = {
+        str(section.get("name") or "").strip().casefold(): section
+        for section in (template or {}).get("sections") or []
+        if isinstance(section, dict)
+    }
+    for section_name in _COLLECTION_NON_PROMOTIONAL_SECTION_NAMES:
+        text = str((section_results or {}).get(section_name) or "")
+        if not text.strip() or not _is_collection_promotional_text(text):
+            continue
+        section = sections_by_name.get(section_name, {})
+        flags.append({
+            "code": "collection_promotion_outside_guidance",
+            "message": (
+                f'Section "{section.get("label", section_name)}" includes '
+                "promotional or store-policy language reserved for the final "
+                "collection guidance section."
+            ),
+            "output": "page_copy",
+            "section": section_name,
+            "severity": "review",
+        })
 
 
 def _limit_faq_items(faq_items: list, requested_count: int) -> tuple[list, bool]:
@@ -1852,10 +1913,31 @@ def _add_section_word_count_flags(flags: list[dict], section_results: dict, temp
         if len(target) != 2:
             continue
         target_min, target_max = target
-        actual_words = _word_count_for_qa(str(text))
-        severe_min = int(target_min * 0.6)
-        tolerated_min = int(target_min * 0.8)
-        tolerated_max = int(target_max * 1.2)
+        strict_collection_guidance = bool(
+            section_name == "collection_guidance"
+            and _is_collection_template(template)
+        )
+        countable_text = (
+            _collection_section_body(str(text))
+            if strict_collection_guidance
+            else str(text)
+        )
+        actual_words = _word_count_for_qa(countable_text)
+        severe_min = (
+            target_min
+            if strict_collection_guidance
+            else int(target_min * 0.6)
+        )
+        tolerated_min = (
+            target_min
+            if strict_collection_guidance
+            else int(target_min * 0.8)
+        )
+        tolerated_max = (
+            target_max
+            if strict_collection_guidance
+            else int(target_max * 1.2)
+        )
 
         if actual_words < severe_min:
             flags.append({
@@ -3031,6 +3113,11 @@ def _collect_qa_flags(
                 brand_name=brand_name,
             )
         if not claim_bound_rendering:
+            _add_collection_section_role_flags(
+                flags,
+                section_results,
+                template,
+            )
             _add_section_word_count_flags(flags, section_results, template)
         page_quality_policy = (
             get_page_quality_policy(page_quality_policy_version)

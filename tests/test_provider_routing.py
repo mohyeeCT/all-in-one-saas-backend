@@ -1371,7 +1371,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(intro["word_count"], [60, 80])
         self.assertEqual(story["word_count"], [80, 110])
         self.assertEqual(value["word_count"], [80, 110])
-        self.assertEqual(guidance["word_count"], [50, 60])
+        self.assertEqual(guidance["word_count"], [40, 50])
         self.assertEqual(story["keyword_slot"], "supporting")
         self.assertEqual(value["keyword_slot"], "supporting")
         self.assertEqual(value["label"], "Collection Context")
@@ -1408,6 +1408,10 @@ class ProviderRoutingTests(unittest.TestCase):
         )
         self.assertIn(
             "specific to the category and the shopper decision",
+            guidance["prompt_rules"],
+        )
+        self.assertIn(
+            "40 to 50 words, excluding the H2",
             guidance["prompt_rules"],
         )
 

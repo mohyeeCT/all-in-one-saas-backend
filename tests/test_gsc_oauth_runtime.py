@@ -1239,6 +1239,85 @@ class RuntimePathTests(unittest.TestCase):
                     "# Fresh technical SEO hero",
                 )
 
+    def test_collection_context_rerun_excludes_stored_shipping_promotion(self):
+        shipping_fact = {
+            "id": "F1",
+            "fact": "Orders over $50 receive free shipping.",
+            "source": "current_page",
+            "source_excerpt": "Free shipping on orders over $50.",
+        }
+        strategy_brief = {
+            "verified_facts": [shipping_fact],
+            "proof_points_to_use": [shipping_fact["fact"]],
+            "section_guidance": [
+                {
+                    "section": "collection_value",
+                    "responsibility": "Add non-promotional collection context.",
+                    "proof_facts": [shipping_fact],
+                    "proof_points": [shipping_fact["fact"]],
+                },
+                {
+                    "section": "collection_guidance",
+                    "responsibility": "Close with supported buying guidance.",
+                },
+            ],
+        }
+        job = {
+            **_stored_job(),
+            "rows": [{
+                "url": "https://example.com/collections/knives",
+                "page_type": "collection",
+                "template_key": "collection_page",
+                "gen_faqs": False,
+            }],
+            "results": [{
+                "url": "https://example.com/collections/knives",
+                "primary_keyword": "bear and son knives",
+                "h1": "Bear and Son Knives",
+                "section_results": {
+                    "collection_value": (
+                        "## Knife Options\nExisting collection context."
+                    ),
+                },
+                "strategy_brief": strategy_brief,
+            }],
+        }
+        sb = _Supabase({"jobs": [job]})
+        runtime = {
+            **_runtime_settings(),
+            "api_key": "runtime-api-secret",
+            "dfs_login": "",
+            "provider": "Claude",
+        }
+        provider = Mock(
+            return_value=(
+                "## Knife Options for Different Preferences\n"
+                + " ".join(["context"] * 85)
+            )
+        )
+
+        with (
+            patch.object(jobs, "hydrate_job_settings", return_value=runtime),
+            patch("utils.copy_gen.PROVIDER_FN", {"Claude": provider}),
+            patch.object(
+                meta,
+                "_build_combined_docx",
+                return_value=b"safe-docx",
+            ),
+        ):
+            jobs._rerun_single_section(
+                "job-1",
+                0,
+                "collection_value",
+                job,
+                "user-1",
+                sb,
+            )
+
+        prompt = provider.call_args.args[1]
+        self.assertNotIn("free shipping", prompt.casefold())
+        self.assertNotIn("$50", prompt)
+
     def test_quality_v1_sonnet5_section_rerun_keeps_correction_transport(self):
         job = {
             **_stored_job(),

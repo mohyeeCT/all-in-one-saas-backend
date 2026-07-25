@@ -47,6 +47,7 @@ def _strategy_call(
     page_context: str,
     provider_name: str = "SourceAssetWiringTest",
     page_copy_correction_enabled: bool = False,
+    page_type: str = "homepage",
 ):
     calls = []
 
@@ -60,7 +61,7 @@ def _strategy_call(
         api_key="test-key",
         url="https://example.com",
         keyword="production supplies",
-        page_type="homepage",
+        page_type=page_type,
         business_type="b2b",
         brand_name="Example",
         h1="Production Supplies",
@@ -218,6 +219,99 @@ def test_correction_only_strategy_prompt_requests_keyword_h2_and_asset_audit(
         assert rule in correction_prompt
         assert rule not in non_correction_prompt
     assert len(correction_prompt) - len(non_correction_prompt) < 1_000
+
+
+def test_collection_promotional_evidence_moves_to_final_guidance(monkeypatch):
+    source = (
+        "## Shipping\n\n"
+        "Free shipping is available on orders over $50.\n\n"
+        "## Knife Selection\n\n"
+        "The collection includes fixed-blade and folding knife options."
+    )
+    registry = build_owned_page_registry(source)
+    manifest = build_source_asset_manifest(registry)
+    sections = deepcopy(all_in_one.get_template("collection_page")["sections"])
+    response = {
+        "verified_facts": [
+            {
+                "id": "F1",
+                "fact": "Orders over $50 receive free shipping.",
+                "source": "current_page",
+                "source_excerpt": (
+                    "Free shipping is available on orders over $50."
+                ),
+            },
+            {
+                "id": "F2",
+                "fact": (
+                    "The collection includes fixed-blade and folding knife "
+                    "options."
+                ),
+                "source": "current_page",
+                "source_excerpt": (
+                    "The collection includes fixed-blade and folding knife "
+                    "options."
+                ),
+            },
+        ],
+        "proof_fact_ids": ["F1", "F2"],
+        "section_guidance": [
+            {
+                "section": "category_intro",
+                "responsibility": "Introduce the category.",
+            },
+            {
+                "section": "collection_story",
+                "responsibility": "Explain supported knife choices.",
+                "proof_fact_ids": ["F2"],
+                "source_asset_ids": ["A2"],
+            },
+            {
+                "section": "collection_value",
+                "responsibility": "Add non-promotional collection context.",
+                "proof_fact_ids": ["F1"],
+                "source_asset_ids": ["A1"],
+            },
+            {
+                "section": "collection_guidance",
+                "responsibility": "Close with supported buying guidance.",
+            },
+        ],
+    }
+
+    brief, _ = _strategy_call(
+        monkeypatch,
+        response=response,
+        registry=registry,
+        manifest=manifest,
+        sections=sections,
+        page_context=source,
+        provider_name="CollectionPromotionRoutingTest",
+        page_copy_correction_enabled=True,
+        page_type="collection",
+    )
+
+    contracts = {
+        contract["section"]: contract
+        for contract in brief["section_guidance"]
+    }
+    context = contracts["collection_value"]
+    guidance = contracts["collection_guidance"]
+
+    assert context.get("source_asset_ids", []) == []
+    assert context.get("proof_facts", []) == []
+    assert context.get("proof_points", []) == []
+    assert guidance["source_asset_ids"] == ["A1"]
+    assert guidance["proof_facts"][0]["id"] == "F1"
+    assert guidance["proof_points"] == [
+        "Orders over $50 receive free shipping."
+    ]
+    assert contracts["collection_story"]["source_asset_ids"] == ["A2"]
+    assert contracts["collection_story"]["proof_facts"][0]["id"] == "F2"
+
+    diagnostics = brief["source_asset_mapping_diagnostics"]
+    assert diagnostics["assigned_asset_ids"] == ["A2", "A1"]
+    assert diagnostics["unassigned_asset_ids"] == []
 
 
 def test_correction_reconciles_omitted_safe_same_heading_asset(

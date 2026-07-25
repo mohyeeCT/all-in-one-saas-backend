@@ -55,7 +55,7 @@ def test_predefined_templates_use_expanded_intent_appropriate_word_ranges():
         "about_us": (1370, 2350),
         "contact_us": (720, 1220),
         "product_page": (460, 790),
-        "collection_page": (270, 360),
+        "collection_page": (260, 350),
     }
 
     assert sum(len(template["sections"]) for template in TEMPLATES.values()) == 88
@@ -98,7 +98,7 @@ def test_ecommerce_templates_use_concise_word_ranges():
         [60, 80],
         [80, 110],
         [80, 110],
-        [50, 60],
+        [40, 50],
     ]
 
 
