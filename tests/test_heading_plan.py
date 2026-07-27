@@ -767,7 +767,7 @@ def test_initial_quality_strategy_requires_complete_source_evidence_and_specific
     assert "no partial lists or labels outside the assigned block" in prompt
     assert "named resource, attributed proof, and next-step path" in prompt
     assert "Testimonials support only attributed sentiment" in prompt
-    assert "Planning fields may organise verified material but add no client capability" in prompt
+    assert "Planning fields may organize verified material but add no client capability" in prompt
     assert "required_named_items" in prompt
     assert "generic readiness question" in prompt
 
@@ -1714,7 +1714,7 @@ def test_legacy_combined_docx_keeps_legacy_h1_and_section_label_format():
         template=template,
         generated_title="Calibration Support Services",
         generated_description="Understand calibration support.",
-        optimised_h1="Optimised Calibration H1",
+        optimised_h1="Optimized Calibration H1",
         faq_items=[],
         faq_schema=None,
         section_results={

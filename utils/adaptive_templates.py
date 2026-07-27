@@ -173,7 +173,7 @@ _FLEXIBLE_STRUCTURE_INSTRUCTION = (
 )
 
 _COMPACT_INSTRUCTION = (
-    "Use compact mode. Fulfil the section responsibility in the fewest complete paragraphs or "
+    "Use compact mode. Fulfill the section responsibility in the fewest complete paragraphs or "
     "blocks supported by its owned proof points. Do not add filler or extra claims to satisfy a "
     "numeric count."
 )

@@ -20,6 +20,7 @@ from utils.page_quality import (
     CLAIM_BOUND_RENDERER_VERSION,
     PAGE_QUALITY_POLICY_VERSION,
 )
+from utils.language import US_ENGLISH_OUTPUT_RULE
 from utils.templates import SHARED_SECTION_CRAFT_GUIDANCE
 from safe_logging import log_safe_exception
 
@@ -332,7 +333,7 @@ def _evidence_sparse_section_contract(section_name: str) -> tuple[str, str]:
         "Preserve this section's exact evidence without extending its scope.",
         "State each distinct same-section proposition no more than once. If the "
         "section owns no authored proposition, use only the required heading and "
-        "any server-materialized source unit. Do not fulfil generic template "
+        "any server-materialized source unit. Do not fulfill generic template "
         "requests for services, benefits, local relevance, coverage, process, "
         "comparisons, advice, or outcomes without exact same-section support.",
     )
@@ -495,8 +496,8 @@ _ECOMMERCE_COLLECTION_GUARDRAIL = (
 _ECOMMERCE_PAGE_COPY_INVENTORY_GUARDRAIL = (
     "Ecommerce inventory boundary:\n"
     "- Treat scraped product cards, option labels, and filter values as context "
-    "for recognising the page, not as topics to expand into prose.\n"
-    "- Do not introduce or enumerate product colors, colour names, finishes, "
+    "for recognizing the page, not as topics to expand into prose.\n"
+    "- Do not introduce or enumerate product colors, color names, finishes, "
     "sizes, variants, prices, stock states, or shipping statements from that "
     "inventory.\n"
     "- If an assigned keyword or canonical H1 contains a color, use it only "
@@ -560,7 +561,7 @@ def _bottom_funnel_product_guardrail(business_type: str, page_type: str) -> str:
         return ""
     return (
         "BOTTOM-OF-FUNNEL PRODUCT FAQ RULES:\n"
-        "- For product, collection, category, and ecommerce pages, prioritise pre-purchase decision barriers over broad category education.\n"
+        "- For product, collection, category, and ecommerce pages, prioritize pre-purchase decision barriers over broad category education.\n"
         "- Prefer commercial-intent questions that can be answered from the provided page, H1, keyword, brand profile, AI Overview, PAA, or scraped context.\n"
         "- Do not invent product facts, specifications, ingredients, compatibility, sizing, materials, performance claims, or setup details.\n"
         "- Avoid top-of-funnel category education such as \"What is [product/category]?\" unless the page is genuinely informational or the product/category is unfamiliar.\n"
@@ -5815,12 +5816,12 @@ def _build_section_prompt(
         else (
             "- Give this evidence-bounded section one distinct job: preserve "
             "its owned exact evidence, or provide one neutral transition when "
-            "it owns none. Do not fulfil any unsupported part of the template "
+                "it owns none. Do not fulfill any unsupported part of the template "
             "purpose."
             if evidence_sparse
             else (
-                "- Give this section one distinct job: fulfil its stated purpose "
-                "without re-summarising the page strategy or earlier sections."
+                "- Give this section one distinct job: fulfill its stated purpose "
+                "without re-summarizing the page strategy or earlier sections."
             )
         )
     )
@@ -5931,6 +5932,8 @@ Section-specific rules:
 
 Positive writing guidance:
 {SHARED_SECTION_CRAFT_GUIDANCE}
+
+{US_ENGLISH_OUTPUT_RULE}
 
 Hard rules for all output:
 - Use calm, professional punctuation without em dashes or exclamation marks.
@@ -6524,6 +6527,7 @@ Brand name: {brand_name or "N/A"}. When used, use exact casing.
 Page H1 (context only, do not copy verbatim): {h1 or "Not provided"}
 {forbidden_line}
 {brand_profile_block}
+{US_ENGLISH_OUTPUT_RULE}
 {_UNSUPPORTED_CLAIM_GUARDRAIL}
 {collection_guardrail}
 {bottom_funnel_guardrail}
@@ -6750,6 +6754,8 @@ Business type: {biz_ctx}
     return f"""You are an expert SEO copywriter. Generate FAQ content for {len(pages)} web pages listed below.
 
 For each page, generate exactly {num_faqs} FAQ questions that real visitors would ask about THAT SPECIFIC PAGE.
+
+{US_ENGLISH_OUTPUT_RULE}
 
 Rules for all pages:
 - Focus on what is unique and specific to each page — not generic questions that apply to every page in the category
@@ -7655,7 +7661,7 @@ def generate_strategy_brief(
 - Facts are ceilings: every claim's subject, predicate, qualifier, cause, comparison, and outcome must be entailed by its exact excerpt. Do not strengthen wording or infer mechanisms, requirements, fit, dimensions, rigging, sightlines, durability, availability, substitutions, consistency, timelines, budgets, processes, performance, or results.
 - Testimonials support only attributed sentiment; relationship length, scale, inventory, or portfolio breadth prove no general guarantee, practice, performance, or result.
 - For existing-page improvements, retain every distinct, stable, relevant offering, category, named resource, attributed proof, and next-step path supporting the page goal. Assign each material fact once through proof_fact_ids; omit only duplicates, volatile or unsupported details, or irrelevant tangents.
-- Planning fields may organise verified material but add no client capability, condition, mechanism, benefit, or outcome.
+- Planning fields may organize verified material but add no client capability, condition, mechanism, benefit, or outcome.
 """
     prompt = f"""Create a page-level strategy brief before writing copy.
 
@@ -7691,6 +7697,8 @@ Template sections:
     template_sections or [],
     section_heading_keyword_assignments,
 )}
+
+{US_ENGLISH_OUTPUT_RULE}
 
 Rules:
 - Do not invent facts, policies, guarantees, pricing, certifications, availability, outcomes, or performance claims.
@@ -7979,6 +7987,8 @@ META BUSINESS STRATEGY:
 {brand_context}
 {strategy_block}
 
+{US_ENGLISH_OUTPUT_RULE}
+
 Rules:
 - Generate {META_CANDIDATE_COUNT} genuinely distinct metadata candidates so the strongest can be selected without another AI call.
 - Title should be {META_TITLE_PREFERRED_MIN} to {META_TITLE_PREFERRED_MAX} characters.
@@ -7986,7 +7996,7 @@ Rules:
 - Meta description should be {META_DESCRIPTION_PREFERRED_MIN} to {META_DESCRIPTION_PREFERRED_MAX} characters.
 - Prefer {META_DESCRIPTION_TARGET_MIN} to {META_DESCRIPTION_TARGET_MAX} characters for the strongest description.
 - H1 has no hard character limit but should aim for under 80 characters.
-- Prioritise strong, natural copy over mechanically forcing the old 60/155-character limits.
+- Prioritize strong, natural copy over mechanically forcing the old 60/155-character limits.
 - The H1 must include the target keyword or a close grammatical variant that preserves its meaningful topic, modifier, and location terms. Reordering words and changing singular or plural forms is allowed when needed for natural language.
 - Every title must include the target keyword or a close grammatical variant, preferably near the start. Do not let the brand or a broad benefit displace the target topic.
 - Every description must reinforce the target topic, communicate page-specific value, and end with a clear next action appropriate to the business and page type.

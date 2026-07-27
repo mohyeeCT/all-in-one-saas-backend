@@ -401,6 +401,8 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("Tone: Helpful", captured["prompt"])
         self.assertIn("Target audience: Unverified audience detail", captured["prompt"])
         self.assertIn("Unique selling points: Unverified product claim", captured["prompt"])
+        self.assertIn("U.S. ENGLISH REQUIREMENT", captured["prompt"])
+        self.assertIn("Do not imitate British spelling", captured["prompt"])
 
     def test_paa_answer_snippets_are_sentence_aware(self):
         answer = (
@@ -478,6 +480,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("never use exact product, result, SKU, variant, filter, inventory, price, or availability counts", captured["prompt"])
         self.assertIn("BRAND CONTEXT:", captured["prompt"])
         self.assertIn("- Voice: Plainspoken expert", captured["prompt"])
+        self.assertIn("U.S. ENGLISH REQUIREMENT", captured["prompt"])
         self.assertIn("- Tone: Confident", captured["prompt"])
         self.assertIn("- Target audience: Facilities managers", captured["prompt"])
         self.assertNotIn("Title maximum 60 characters", captured["prompt"])
@@ -645,7 +648,7 @@ class ProviderRoutingTests(unittest.TestCase):
                     },
                     {
                         "id": "F2",
-                        "fact": "The client brief prioritises ISO experience.",
+                        "fact": "The client brief prioritizes ISO experience.",
                         "source": "client_brief",
                         "source_excerpt": "Focus on ISO experience.",
                     },
@@ -709,7 +712,7 @@ class ProviderRoutingTests(unittest.TestCase):
             brief["proof_points_to_use"],
             [
                 "The current page mentions audits and implementation support.",
-                "The client brief prioritises ISO experience.",
+                "The client brief prioritizes ISO experience.",
             ],
         )
         self.assertEqual(brief["verified_facts"][0]["id"], "F1")
@@ -722,7 +725,7 @@ class ProviderRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             brief["section_guidance"][1]["proof_points"],
-            ["The client brief prioritises ISO experience."],
+            ["The client brief prioritizes ISO experience."],
         )
         self.assertEqual(captured["model"], "strategy-model")
         self.assertEqual(captured["max_tokens"], copy_gen.STRATEGY_BRIEF_MAX_TOKENS)
@@ -738,6 +741,7 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("exact product, result, SKU, variant, filter, inventory, price, and availability counts are volatile", captured["prompt"])
         self.assertIn("must preserve the core target-keyword topic", captured["prompt"])
         self.assertIn("late-page-evidence", captured["prompt"])
+        self.assertIn("U.S. ENGLISH REQUIREMENT", captured["prompt"])
 
     def test_incomplete_strategy_brief_is_not_automatically_repaired(self):
         captured_prompts = []
@@ -1331,7 +1335,7 @@ class ProviderRoutingTests(unittest.TestCase):
                 "prompt_rules": "Write exactly 3 benefit blocks.",
                 "adaptive_mode": "compact",
                 "adaptive_instruction": (
-                    "Use compact mode. Fulfil the section responsibility in the fewest complete "
+                    "Use compact mode. Fulfill the section responsibility in the fewest complete "
                     "paragraphs or blocks supported by its owned proof points."
                 ),
             },
@@ -1353,6 +1357,8 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertIn("overrides only numeric quantity requirements", prompt)
         self.assertIn("Evidence, format, keyword, and safety constraints remain binding", prompt)
         self.assertIn("fewest complete paragraphs or blocks", prompt)
+        self.assertIn("U.S. ENGLISH REQUIREMENT", prompt)
+        self.assertIn("exact source material", prompt)
 
     def test_collection_template_uses_four_concise_distinct_sections(self):
         template = get_template("collection_page")

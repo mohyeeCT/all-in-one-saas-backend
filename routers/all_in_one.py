@@ -60,6 +60,7 @@ from utils.page_quality import (
     select_guidance_profile,
 )
 from utils.page_types import default_template_key_for_page_type, normalize_page_type
+from utils.language import find_non_us_english_spellings
 from utils.copy_gen import (
     _claim_bound_canonical_h1,
     _has_non_negated_action_match,
@@ -836,6 +837,24 @@ def _add_qa_flag(
     flags.append(flag)
 
 
+def _add_us_english_qa_flags(
+    flags: list[dict],
+    authored_outputs: list[tuple[str, str]],
+    protected_phrases: list[str],
+):
+    for output, text in authored_outputs:
+        matches = find_non_us_english_spellings(text, protected_phrases)
+        if not matches:
+            continue
+        _add_qa_flag(
+            flags,
+            "non_us_english_spelling",
+            f"Non-U.S. English spelling found in {output}.",
+            output,
+        )
+        flags[-1]["details"] = matches[:5]
+
+
 def _qa_status(flags: list[dict]) -> str:
     severities = {str(flag.get("severity") or "review") for flag in (flags or [])}
     if "error" in severities:
@@ -1097,7 +1116,7 @@ def _add_h1_alignment_flag(flags: list[dict], optimised_h1: str, section_results
         return
     flags.append({
         "code": "page_h1_differs_from_meta_h1",
-        "message": "Page-copy H1 differs from the optimised meta H1.",
+        "message": "Page-copy H1 differs from the optimized meta H1.",
         "output": "page_copy",
         "meta_h1": optimised_h1,
         "page_h1": page_h1,
@@ -1735,7 +1754,7 @@ def _add_keyword_placement_flags(
         _add_qa_flag(
             flags,
             "target_keyword_missing_from_h1",
-            "Target keyword or a close grammatical variant was not found in the optimised H1.",
+            "Target keyword or a close grammatical variant was not found in the optimized H1.",
             "meta_h1",
             severity="warning",
         )
@@ -3051,7 +3070,7 @@ def _collect_qa_flags(
         if not (generated_description or "").strip():
             _add_qa_flag(flags, "meta_missing_description", "Meta description was requested but no description was generated.", "meta")
         if not (optimised_h1 or "").strip():
-            _add_qa_flag(flags, "meta_missing_h1", "Optimised H1 was requested but no H1 was generated.", "meta")
+            _add_qa_flag(flags, "meta_missing_h1", "Optimized H1 was requested but no H1 was generated.", "meta")
         if (generated_title or "").strip().lower() == (input_h1 or "").strip().lower() and (input_h1 or "").strip():
             _add_qa_flag(flags, "meta_title_matches_h1", "Generated title matches the input H1.", "meta")
 
@@ -3257,6 +3276,11 @@ def _collect_qa_flags(
         flags,
         business_type,
         authored_outputs,
+    )
+    _add_us_english_qa_flags(
+        flags,
+        authored_outputs,
+        [brand_name, input_h1],
     )
 
     seen_matches = set()
@@ -3999,7 +4023,7 @@ def _process_single_row(
             generated_title       = meta_result.get("title", "")
             generated_description = meta_result.get("description", "")
             optimised_h1          = meta_result.get("h1_optimised", "")
-            # Use optimised H1 as page H1 if we didn't have one
+            # Use optimized H1 as page H1 if we didn't have one
             if not h1 and optimised_h1:
                 h1 = optimised_h1
             step("✓ meta — title: " + str(len(generated_title or "")) + " chars, desc: " + str(len(generated_description or "")) + " chars")
@@ -4543,7 +4567,7 @@ def _build_combined_docx(
             p.add_run(char_note)
         if optimised_h1:
             p = doc.add_paragraph()
-            p.add_run("Optimised H1: ").bold = True
+            p.add_run("Optimized H1: ").bold = True
             p.add_run(optimised_h1)
         doc.add_paragraph("")
 

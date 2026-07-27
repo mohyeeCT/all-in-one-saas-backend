@@ -60,7 +60,7 @@ TEMPLATES = {
                     "Explain why this topic matters to the reader's situation. "
                     "Use available data or trends when provided; otherwise use a concrete reader scenario to ground it. "
                     "Do not repeat the intro. Move the argument forward. "
-                    "H2 must be a question or a statement readers would recognise as their own concern."
+                    "H2 must be a question or a statement readers would recognize as their own concern."
                 ),
             },
             {
@@ -107,12 +107,12 @@ TEMPLATES = {
             {
                 "name": "summary",
                 "label": "Key Takeaways",
-                "purpose": "Summarise the core points in scannable format. Re-hits primary keyword naturally.",
+                "purpose": "Summarize the core points in scannable format. Re-hits primary keyword naturally.",
                 "word_count": [150, 240],
                 "keyword_slot": "primary",
                 "heading_level": "h2",
                 "prompt_rules": (
-                    "Write 3 to 5 short bullet points summarising the most actionable insights from the page. "
+                    "Write 3 to 5 short bullet points summarizing the most actionable insights from the page. "
                     "Each bullet should be a complete sentence. No vague bullets. "
                     "Re-include the primary keyword naturally in the H2 or first bullet. "
                     "Do not introduce new information here."
@@ -447,7 +447,7 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Describe what made the problem difficult to solve. "
                     "This is the section readers will most identify with. It should mirror their own frustrations. "
-                    "Be specific about the obstacles: technical, organisational, budget, or market. "
+                    "Be specific about the obstacles: technical, organizational, budget, or market. "
                     "Do not mention the solution here."
                 ),
             },
@@ -633,7 +633,7 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write a single short social proof statement: one sentence or a short list of three trust signals. "
                     "Use confirmed proof only: client count, project count, named outcome, exact quote, certification, partnership, or audience type. "
-                    "If no proof is provided, write a neutral audience or specialisation statement without numbers, ratings, quotes, or named clients. "
+                    "If no proof is provided, write a neutral audience or specialization statement without numbers, ratings, quotes, or named clients. "
                     "Be specific without inventing claims. Never write vague statements like 'quality you can trust'. "
                     "No heading needed. No em dashes."
                 ),
@@ -664,7 +664,7 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write an H2 and exactly 3 differentiator blocks. Each block: a bold label (3 to 5 words), then 2 to 3 sentences of explanation. "
                     "Each differentiator must be specific and provable, not 'quality service' or 'experienced team'. "
-                    "Good differentiators can reference a confirmed process, time-to-value promise, guarantee, specialisation, or result metric. "
+                    "Good differentiators can reference a confirmed process, time-to-value promise, guarantee, specialization, or result metric. "
                     "Do not invent guarantees, timelines, certifications, competitors, or result metrics. "
                     "Benefit-focused copy converts significantly better than feature-focused copy. Lead with what the client gains, not what the business has. "
                     "No em dashes. No exclamation marks."
@@ -680,7 +680,7 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write one short credibility block using confirmed social proof only. "
                     "If a client quote or result stat is provided in the brief, use it exactly with attribution. "
-                    "If no quote or result stat is provided, write a neutral credibility sentence based on confirmed services, audience, specialisation, or process. "
+                    "If no quote or result stat is provided, write a neutral credibility sentence based on confirmed services, audience, specialization, or process. "
                     "Do not fabricate quotation marks, names, titles, companies, metrics, ratings, or before/after claims. "
                     "No vague statements like 'they were amazing to work with'. "
                     "No em dashes."
@@ -865,7 +865,7 @@ TEMPLATES = {
                 "prompt_rules": (
                     "Write the solution section: H2 followed by 2 to 3 paragraphs. "
                     "Describe what the service does, who it is for, and the advantages it delivers. "
-                    "Name specific deliverables, tools, methods, or specialisations where provided in the brief. "
+                    "Name specific deliverables, tools, methods, or specializations where provided in the brief. "
                     "Focus on what the client gets, not on what the business does. "
                     "Incorporate supporting keyword naturally. "
                     "Language should shift from the problem-focused tone of the previous section to a clear, confident solution tone. "
@@ -1096,13 +1096,13 @@ TEMPLATES = {
             {
                 "name": "company_story",
                 "label": "Our Story",
-                "purpose": "Company origin and background. Focused on what matters to clients: why this business exists, what drives it, and what it specialises in.",
+                "purpose": "Company origin and background. Focused on what matters to clients: why this business exists, what drives it, and what it specializes in.",
                 "word_count": [360, 600],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",
                 "prompt_rules": (
                     "Write the company story focused on the things clients care about, not a full history. "
-                    "Cover: why the business was founded or why the team does this work, what the business specialises in, and how the approach has been shaped by real client experience. "
+                    "Cover: why the business was founded or why the team does this work, what the business specializes in, and how the approach has been shaped by real client experience. "
                     "If a founding story or background is provided in the brief, use it. If not, write a present-day purpose statement based only on confirmed services, audience, and approach. "
                     "Do not invent founders, dates, origin stories, company history, or motivations. "
                     "Do not list every job the founders ever had. Focus on what is relevant to the client. "
@@ -1137,7 +1137,7 @@ TEMPLATES = {
                     "Write a paragraph or short list of credibility signals. "
                     "Include where relevant and available: years in business, number of clients or projects, industries served, geographic coverage, key partnerships, or certifications. "
                     "Use specific numbers, partnerships, certifications, awards, client counts, or geographic coverage only when provided in the brief or scraped page content. "
-                    "If no proof points are provided, describe confirmed specialisation, audience, or working approach without numbers or named credentials. "
+                    "If no proof points are provided, describe confirmed specialization, audience, or working approach without numbers or named credentials. "
                     "Do not invent years in business, client counts, regions, partnerships, certifications, awards, or notable clients. "
                     "Weave this in naturally. Do not make it feel like a resume or a trophy wall. "
                     "Include supporting keyword. No em dashes."
@@ -1254,7 +1254,7 @@ TEMPLATES = {
     "product_page": {
         "name": "Product Page",
         "page_type": "product",
-        "description": "Ecommerce product detail page (PDP). Leads with benefits then supports with features. Keyword in product name H1. Specifications, use cases, social proof, and FAQ. Optimised for Product schema.",
+        "description": "Ecommerce product detail page (PDP). Leads with benefits then supports with features. Keyword in product name H1. Specifications, use cases, social proof, and FAQ. Optimized for Product schema.",
         "sections": [
             {
                 "name": "product_intro",
@@ -1344,7 +1344,7 @@ TEMPLATES = {
     "collection_page": {
         "name": "Collection / Category Page",
         "page_type": "collection",
-        "description": "Ecommerce category page copy with a focused SEO introduction, non-promotional collection storytelling and context, and a concise evidence-grounded decision close. Optimised for CollectionPage schema.",
+        "description": "Ecommerce category page copy with a focused SEO introduction, non-promotional collection storytelling and context, and a concise evidence-grounded decision close. Optimized for CollectionPage schema.",
         "sections": [
             {
                 "name": "category_intro",
@@ -1366,7 +1366,7 @@ TEMPLATES = {
             {
                 "name": "collection_story",
                 "label": "Collection Story",
-                "purpose": "A concise, customer-centred narrative that connects the category to a supported motivation, experience, occasion, or practical need.",
+                "purpose": "A concise, customer-centered narrative that connects the category to a supported motivation, experience, occasion, or practical need.",
                 "word_count": [80, 110],
                 "keyword_slot": "supporting",
                 "heading_level": "h2",

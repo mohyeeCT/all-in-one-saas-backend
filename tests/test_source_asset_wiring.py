@@ -3624,7 +3624,7 @@ def test_page_copy_correction_uses_bounded_exact_recap_evidence_without_reassign
     assert "the only earlier-section facts this recap may restate" in corrected_prompt
     assert "supplier behavior, pricing, process, cause, or outcome" in corrected_prompt
     assert (
-        "without re-summarising the page strategy or earlier sections"
+        "without re-summarizing the page strategy or earlier sections"
         not in corrected_prompt
     )
     assert "an explicit restatement exception for this summary only" in (

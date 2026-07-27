@@ -172,7 +172,7 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
                     "page_goal": "Help the reader evaluate the page topic.",
                     "primary_positioning": "Lead with the page's core value.",
                     "headline_direction": "Use a clear, natural headline.",
-                    "meta_direction": "Summarise the page accurately.",
+                    "meta_direction": "Summarize the page accurately.",
                     "faq_direction": "Answer relevant decision questions.",
                     "verified_facts": [{
                         "id": "F1",
@@ -2112,6 +2112,39 @@ class AllInOneH1KeywordFallbackTests(unittest.TestCase):
         self.assertEqual(by_code["target_keyword_missing_from_h1"]["severity"], "warning")
         self.assertEqual(by_code["meta_title_outside_preferred_range"]["severity"], "warning")
         self.assertEqual(by_code["meta_description_missing_action"]["severity"], "warning")
+
+    def test_us_english_qa_flags_authored_copy_and_protects_official_names(self):
+        flags = []
+        all_in_one._add_us_english_qa_flags(
+            flags,
+            [(
+                "page_copy",
+                "The organisation prioritises clear colour and labour guidance for every service option.",
+            )],
+            [],
+        )
+
+        self.assertEqual(flags[0]["code"], "non_us_english_spelling")
+        self.assertEqual(
+            flags[0]["details"],
+            ["organisation", "prioritises", "colour", "labour"],
+        )
+
+        protected_flags = []
+        all_in_one._add_us_english_qa_flags(
+            protected_flags,
+            [("page_copy", "Colour Centre is the official brand name.")],
+            ["Colour Centre"],
+        )
+        self.assertEqual(protected_flags, [])
+
+        valid_us_flags = []
+        all_in_one._add_us_english_qa_flags(
+            valid_us_flags,
+            [("page_copy", "Orders are fulfilled promptly by a fulfilling team.")],
+            [],
+        )
+        self.assertEqual(valid_us_flags, [])
 
     def test_new_quality_checks_do_not_flag_compliant_natural_variants(self):
         title = "Systems for Industrial Dosing in Reliable Facility Operations"
