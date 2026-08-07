@@ -511,8 +511,17 @@ _PRODUCT_NAME_NATURALNESS_GUARDRAIL = (
     "- Use the product name 2 or 3 times max across all questions and answers. Across the full FAQ set for this page, count every mention in both questions and answers.\n"
     "- This limit includes exact names, shortened product-name variations, reordered names, and partial names that still point to the same specific item.\n"
     "- Do not replace the full product name with half-name variations, such as using only the flavor, model, collection phrase, or distinctive modifier, unless that phrase describes the general item category rather than this specific product.\n"
-    "- Prefer natural generic references such as 'this product', 'this item', 'it', 'this option', or a concise category phrase when the meaning is clear.\n"
+    "- Prefer a concise, page-specific product or category noun phrase when the full product name would sound repetitive.\n"
     "- Do not force any product-name wording into every FAQ. Keep the language conversational and natural."
+)
+
+
+_FAQ_REFERENCE_CLARITY_GUARDRAIL = (
+    "FAQ REFERENCE CLARITY RULES:\n"
+    "- Prefer a concise, page-specific product or category noun phrase derived naturally from the page H1 or target keyword, without mechanically repeating the full keyword.\n"
+    "- Use no more than one vague standalone reference across the full FAQ set, counting questions and answers together. Vague references include 'this product', 'this collection', 'this item', 'this option', 'this category', 'these products', and 'these items'.\n"
+    "- Do not repeatedly begin questions or answers with a vague reference. Use a descriptive noun phrase or a clear pronoun whose antecedent appears in the same sentence.\n"
+    "- Do not replace vague references by repeating the exact product name, collection name, brand name, or target keyword in every FAQ."
 )
 
 
@@ -631,6 +640,14 @@ def _is_collection_promotional_text(value: object) -> bool:
 
 def _product_name_naturalness_guardrail(page_type: str) -> str:
     return _PRODUCT_NAME_NATURALNESS_GUARDRAIL if _is_product_page(page_type) else ""
+
+
+def _faq_reference_clarity_guardrail(page_type: str) -> str:
+    return (
+        _FAQ_REFERENCE_CLARITY_GUARDRAIL
+        if _is_product_page(page_type) or _is_collection_page_type(page_type)
+        else ""
+    )
 
 
 def _brand_name_naturalness_guardrail(brand_name: str) -> str:
@@ -6474,6 +6491,7 @@ def _build_faq_prompt(
     )
     bottom_funnel_guardrail = _bottom_funnel_product_guardrail(business_type, page_type)
     product_name_guardrail = _product_name_naturalness_guardrail(page_type)
+    reference_clarity_guardrail = _faq_reference_clarity_guardrail(page_type)
     brand_name_guardrail = _brand_name_naturalness_guardrail(brand_name)
     main_keyword_guardrail = _main_keyword_naturalness_guardrail(keyword)
 
@@ -6532,6 +6550,7 @@ Page H1 (context only, do not copy verbatim): {h1 or "Not provided"}
 {collection_guardrail}
 {bottom_funnel_guardrail}
 {product_name_guardrail}
+{reference_clarity_guardrail}
 {brand_name_guardrail}
 {main_keyword_guardrail}
 

@@ -656,6 +656,15 @@ _FAQ_RISKY_TOPICS = (
     "availability",
     "pricing",
 )
+_FAQ_VAGUE_REFERENCES = (
+    "this product",
+    "this collection",
+    "this item",
+    "this option",
+    "this category",
+    "these products",
+    "these items",
+)
 
 
 def _safe_gsc_auth_method(settings: dict, gsc_credentials: dict | None, gsc_client=None) -> str:
@@ -1853,6 +1862,8 @@ def _add_meta_field_quality_flags(
 
 def _add_faq_quality_flags(flags: list[dict], faq_items: list):
     seen_questions = set()
+    vague_reference_count = 0
+    vague_reference_opening_count = 0
     for index, item in enumerate(faq_items or []):
         if not isinstance(item, dict):
             continue
@@ -1876,6 +1887,13 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
                 severity="warning",
             )
         combined = f"{question}\n{answer}"
+        for text in (question, answer):
+            stripped_text = text.lstrip(" \t\r\n\"'([{“‘")
+            for phrase in _FAQ_VAGUE_REFERENCES:
+                pattern = rf"(?<!\w){re.escape(phrase)}(?!\w)"
+                vague_reference_count += len(re.findall(pattern, text, flags=re.IGNORECASE))
+                if re.match(pattern, stripped_text, flags=re.IGNORECASE):
+                    vague_reference_opening_count += 1
         for topic in _FAQ_RISKY_TOPICS:
             if _contains_forbidden_phrase(combined, topic):
                 _add_qa_flag(
@@ -1887,6 +1905,14 @@ def _add_faq_quality_flags(flags: list[dict], faq_items: list):
                     severity="warning",
                 )
                 break
+    if vague_reference_count > 1 or vague_reference_opening_count > 1:
+        _add_qa_flag(
+            flags,
+            "faq_vague_reference_repetition",
+            "FAQ set repeatedly uses vague product or collection references instead of clear page-specific wording.",
+            "faq",
+            severity="warning",
+        )
 
 
 def _add_keyword_presence_flags(
