@@ -519,8 +519,8 @@ _PRODUCT_NAME_NATURALNESS_GUARDRAIL = (
 _FAQ_REFERENCE_CLARITY_GUARDRAIL = (
     "FAQ REFERENCE CLARITY RULES:\n"
     "- Prefer a concise, page-specific product or category noun phrase derived naturally from the page H1 or target keyword, without mechanically repeating the full keyword.\n"
-    "- Use no more than one vague standalone reference across the full FAQ set, counting questions and answers together. Vague references include 'this product', 'this collection', 'this item', 'this option', 'this category', 'these products', and 'these items'.\n"
-    "- Do not repeatedly begin questions or answers with a vague reference. Use a descriptive noun phrase or a clear pronoun whose antecedent appears in the same sentence.\n"
+    "- Do not use vague standalone references anywhere in the FAQ set. Prohibited phrases include 'this product', 'the product', 'this collection', 'the collection', 'this category', 'the category', 'this item', 'this option', 'these products', and 'these items'.\n"
+    "- Use a descriptive noun phrase or a clear pronoun whose antecedent appears in the same sentence.\n"
     "- Do not replace vague references by repeating the exact product name, collection name, brand name, or target keyword in every FAQ."
 )
 
